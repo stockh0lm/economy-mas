@@ -1,5 +1,5 @@
-import time
 import json
+
 from logger import setup_logger, log
 from config import CONFIG
 
@@ -70,15 +70,35 @@ def main():
         log(f"---- Simulation Step {step} ----", level="INFO")
 
         # Staat: Steuern erheben, Hypervermögen überwachen und Mittel verteilen
+
         state.step(households + companies)
-
-        # Haushalte führen ihre Aktionen (Einkommen, Konsum, Sparen, Arbeitskraftangebot) aus
+        new_households = []
+        alive_households = []
         for hh in households:
-            hh.step(step, state)
+            result = hh.step(step, state)
+            if result == "DEAD":
+                # Haushalt stirbt und wird nicht weitergeführt
+                continue
+            elif result is not None:
+                # Splitting: Der neue Haushalt wird hinzugefügt, während der Elternhaushalt weiterlebt
+                new_households.append(result)
+                alive_households.append(hh)
+            else:
+                alive_households.append(hh)
+        households = alive_households + new_households
 
-        # Unternehmen produzieren, verkaufen, zahlen Löhne und Steuern
+        new_companies = []
+        surviving_companies = []
         for comp in companies:
-            comp.step(step, state)
+            result = comp.step(step, state)
+            if result == "DEAD":
+                continue  # Unternehmen wird entfernt
+            elif result is not None:
+                new_companies.append(result)
+                surviving_companies.append(comp)
+            else:
+                surviving_companies.append(comp)
+        companies = surviving_companies + new_companies
 
         # WarengeldBank: Überprüfung der Lagerbestände und Einziehen von Kontoführungsgebühren
         warengeld_bank.step(step, companies)
@@ -100,9 +120,6 @@ def main():
 
         # Arbeitsmarkt: Matching zwischen registrierten Arbeitssuchenden und Jobangeboten
         labor_market.step(step)
-
-        # Kurze Pause zwischen den Schritten
-        time.sleep(1)
 
     log("Simulation complete.", level="INFO")
 
