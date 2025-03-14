@@ -1,3 +1,4 @@
+# economic_agent.py
 from .base_agent import BaseAgent
 
 class EconomicAgent(BaseAgent):

@@ -1,81 +1,145 @@
+# labor_market.py
+from dataclasses import dataclass
+from typing import Protocol, TypeAlias, List, Optional, Tuple
 from .base_agent import BaseAgent
 from logger import log
 from config import CONFIG
 
 
-class LaborMarket(BaseAgent):
-    def __init__(self, unique_id):
-        super().__init__(unique_id)
-        # Liste der registrierten Jobangebote; jedes Angebot ist ein Dictionary mit
-        # 'employer' (Referenz zum anbietenden Unternehmen), 'wage' und 'positions'
-        self.job_offers = []
-        # Liste der registrierten arbeitssuchenden Agenten (z. B. Haushalte)
-        self.registered_workers = []
+class EmployerProtocol(Protocol):
+    """Protocol defining the requirements for employer agents"""
+    unique_id: str
 
-    def register_job_offer(self, employer, wage, positions=1):
+
+class WorkerProtocol(Protocol):
+    """Protocol defining the requirements for worker agents"""
+    unique_id: str
+    employed: bool
+    current_wage: float
+
+
+@dataclass
+class JobOffer:
+    """Represents a job offer in the labor market"""
+    employer: EmployerProtocol
+    wage: float
+    positions: int
+
+
+WorkerMatchResult: TypeAlias = Tuple[WorkerProtocol, EmployerProtocol, float]
+
+
+class LaborMarket(BaseAgent):
+    """
+    Manages job offers and worker matching in the economic simulation.
+
+    Handles:
+    - Registration of job offers from employers
+    - Registration of workers seeking employment
+    - Matching workers to available job positions
+    - Setting default wage levels for unmatched workers
+    """
+
+    def __init__(self, unique_id: str) -> None:
         """
-        Ein Unternehmen (employer) registriert ein Jobangebot mit einem bestimmten
-        Lohn (wage) und einer Anzahl von Positionen.
+        Initialize a labor market.
+
+        Args:
+            unique_id: Unique identifier for this labor market
         """
-        offer = {'employer': employer, 'wage': wage, 'positions': positions}
+        super().__init__(unique_id)
+        self.job_offers: List[JobOffer] = []
+        self.registered_workers: List[WorkerProtocol] = []
+
+        # Configuration parameters
+        self.default_wage: float = CONFIG.get("default_wage", 10)  # Default wage for unmatched workers
+
+    def register_job_offer(self, employer: EmployerProtocol, wage: float, positions: int = 1) -> None:
+        """
+        Register a job offer from an employer.
+
+        Args:
+            employer: The company or entity offering the job
+            wage: The offered wage amount
+            positions: Number of positions available (default: 1)
+        """
+        offer = JobOffer(employer=employer, wage=wage, positions=positions)
         self.job_offers.append(offer)
-        log(f"LaborMarket {self.unique_id}: Registered job offer from employer {employer.unique_id} with wage {wage} and {positions} positions.",
+        log(f"LaborMarket {self.unique_id}: Registered job offer from employer {employer.unique_id} "
+            f"with wage {wage:.2f} and {positions} positions.",
             level="INFO")
 
-    def register_worker(self, worker):
+    def register_worker(self, worker: WorkerProtocol) -> None:
         """
-        Registriert einen arbeitssuchenden Haushalt oder sonstigen Agenten.
+        Register a worker seeking employment.
+
+        Args:
+            worker: Worker agent looking for employment
         """
         if worker not in self.registered_workers:
             self.registered_workers.append(worker)
             log(f"LaborMarket {self.unique_id}: Registered worker {worker.unique_id}.", level="INFO")
 
-    def match_workers_to_jobs(self):
+    def match_workers_to_jobs(self) -> List[WorkerMatchResult]:
         """
-        Führt ein einfaches Matching zwischen Jobangeboten und registrierten Arbeitssuchenden durch.
-        Für jedes Jobangebot werden verfügbare (arbeitslose) Worker zugeordnet, bis alle Positionen besetzt sind.
-        Dabei wird dem Worker ein Attribut 'employed' (True) sowie ein 'current_wage' zugewiesen.
+        Match registered workers to available job positions.
+
+        For each job offer, available workers are assigned until all positions are filled
+        or no more workers are available. Each matched worker is marked as employed
+        and assigned their wage.
+
+        Returns:
+            List of successful matches as (worker, employer, wage) tuples
         """
-        matches = []
+        matches: List[WorkerMatchResult] = []
+
         for offer in self.job_offers:
-            positions = offer['positions']
-            wage = offer['wage']
-            employer = offer['employer']
-            # Suche verfügbare Worker: wir gehen davon aus, dass ein Worker nicht 'employed' ist
             available_workers = [w for w in self.registered_workers if not hasattr(w, 'employed') or not w.employed]
-            num_matches = min(positions, len(available_workers))
+            num_matches = min(offer.positions, len(available_workers))
+
             for i in range(num_matches):
                 worker = available_workers[i]
                 worker.employed = True
-                worker.current_wage = wage
-                matches.append((worker, employer, wage))
-                log(f"LaborMarket {self.unique_id}: Matched worker {worker.unique_id} with employer {employer.unique_id} at wage {wage}.",
+                worker.current_wage = offer.wage
+                matches.append((worker, offer.employer, offer.wage))
+                log(f"LaborMarket {self.unique_id}: Matched worker {worker.unique_id} "
+                    f"with employer {offer.employer.unique_id} at wage {offer.wage:.2f}.",
                     level="INFO")
-        # Nach Matching können die Jobangebote gelöscht werden, da sie besetzt wurden
+
+        # Clear job offers after matching
         self.job_offers = []
         return matches
 
-    def set_wage_levels(self, default_wage):
+    def set_wage_levels(self) -> None:
         """
-        Setzt für alle registrierten, noch nicht beschäftigten Worker einen Mindestlohn,
-        falls noch kein aktueller Lohn zugewiesen wurde.
+        Set default wage for all unmatched workers.
+
+        Workers without a current wage are assigned the default wage from configuration.
         """
         for worker in self.registered_workers:
             if not hasattr(worker, 'current_wage') or worker.current_wage is None:
-                worker.current_wage = default_wage
-                log(f"LaborMarket {self.unique_id}: Set default wage {default_wage} for worker {worker.unique_id}.",
+                worker.current_wage = self.default_wage
+                log(f"LaborMarket {self.unique_id}: Set default wage {self.default_wage:.2f} "
+                    f"for worker {worker.unique_id}.",
                     level="INFO")
 
-    def step(self, current_step):
+    def step(self, current_step: int) -> None:
         """
-        Simulationsschritt des Arbeitsmarktes:
-         1. Zunächst werden alle registrierten Jobangebote gematcht.
-         2. Anschließend wird für alle noch nicht besetzten Worker ein Mindestlohn gesetzt.
-         3. Die Anzahl der gematchten Positionen wird geloggt.
+        Execute one simulation step for the labor market.
+
+        During each step:
+        1. Match workers to available job positions
+        2. Set default wages for unmatched workers
+        3. Log matching statistics
+
+        Args:
+            current_step: Current simulation step number
         """
         log(f"LaborMarket {self.unique_id} starting step {current_step}.", level="INFO")
+
         matches = self.match_workers_to_jobs()
-        default_wage = CONFIG.get("default_wage", 10)
-        self.set_wage_levels(default_wage)
-        log(f"LaborMarket {self.unique_id} completed step {current_step}. {len(matches)} job matches made.",
+        self.set_wage_levels()
+
+        log(f"LaborMarket {self.unique_id} completed step {current_step}. "
+            f"{len(matches)} job matches made.",
             level="INFO")

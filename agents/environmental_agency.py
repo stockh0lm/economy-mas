@@ -1,133 +1,262 @@
+# environmental_agency.py
+from typing import Protocol, TypeAlias, cast, runtime_checkable
 from .base_agent import BaseAgent
 from logger import log
 from config import CONFIG
 
-class EnvironmentalAgency(BaseAgent):
-    def __init__(self, unique_id):
-        super().__init__(unique_id)
-        # Umweltstandards, z. B. maximal erlaubter Umweltimpact pro Unternehmen
-        self.env_standards = {
-            "max_environmental_impact": CONFIG.get("max_environmental_impact", 10)
-        }
-        # Hier werden die eingesammelten Umweltsteuern akkumuliert.
-        self.collected_env_tax = 0.0
 
-    def set_env_standards(self, standards_dict):
+@runtime_checkable
+class EnvironmentalImpactAgent(Protocol):
+    """Protocol for agents that have environmental impact"""
+    unique_id: str
+    environmental_impact: float
+
+
+@runtime_checkable
+class BillingAgent(Protocol):
+    """Protocol for agents that can be billed"""
+    unique_id: str
+    balance: float
+
+
+class BillableImpactAgent(EnvironmentalImpactAgent, BillingAgent):
+    """Protocol for agents with both environmental impact and billing capability"""
+    pass
+
+
+# Type aliases for improved readability
+AgentWithImpact: TypeAlias = EnvironmentalImpactAgent
+AgentWithBalance: TypeAlias = BillableImpactAgent
+
+
+class EnvironmentalAgency(BaseAgent):
+    """
+    Monitors environmental standards and collects environmental taxes.
+    """
+
+    def __init__(self, unique_id: str) -> None:
         """
-        Ermöglicht das Setzen bzw. Aktualisieren der Umweltstandards.
+        Initialize an environmental agency with standard parameters.
+
+        Args:
+            unique_id: Unique identifier for this agency
+        """
+        super().__init__(unique_id)
+
+        # Environmental standards from configuration
+        self.env_standards: dict[str, float] = {
+            "max_environmental_impact": CONFIG.get("max_environmental_impact", 10.0)
+        }
+
+        # Accumulated environmental taxes
+        self.collected_env_tax: float = 0.0
+
+        # Penalty factor from configuration
+        self.penalty_factor: float = CONFIG.get("penalty_factor_env_audit", 5.0)
+
+    def set_env_standards(self, standards_dict: dict[str, float]) -> None:
+        """
+        Update environmental standards with new values.
+
+        Args:
+            standards_dict: Dictionary of standard names and their values
         """
         self.env_standards.update(standards_dict)
-        log(f"EnvironmentalAgency {self.unique_id} set new environmental standards: {self.env_standards}.", level="INFO")
+        log(f"EnvironmentalAgency {self.unique_id} set new environmental standards: {self.env_standards}.",
+            level="INFO")
 
-    def collect_env_tax(self, agents):
+    def collect_env_tax(self, agents: list[AgentWithImpact]) -> float:
         """
-        Iteriert über übergebene Agenten (z. B. Unternehmen, Haushalte) und sammelt
-        eine Umweltsteuer basierend auf ihrem 'environment_impact'. Der Steuersatz
-        wird aus der Konfiguration gelesen (z. B. 0.02).
+        Collect environmental tax from agents based on their impact.
+
+        Args:
+            agents: Collection of agents with environmental impact
+
+        Returns:
+            Total environmental tax collected in this operation
         """
-        tax_rate = CONFIG.get("tax_rates", {}).get("umweltsteuer", 0.02)
-        total_tax = 0.0
+        tax_rate: float = CONFIG.get("tax_rates", {}).get("umweltsteuer", 0.02)
+        total_tax: float = 0.0
+
         for agent in agents:
-            if hasattr(agent, "environment_impact"):
-                # Steuerbetrag basiert auf dem Umweltimpact
-                tax = agent.environment_impact * tax_rate
-                total_tax += tax
-                # Falls der Agent über ein Konto verfügt, wird der Steuerbetrag abgezogen
-                if hasattr(agent, "balance"):
-                    agent.balance -= tax
-                log(f"EnvironmentalAgency {self.unique_id} collected {tax:.2f} env tax from agent {agent.unique_id}.", level="INFO")
+            # Calculate tax based on environmental impact
+            tax: float = agent.environmental_impact * tax_rate
+            total_tax += tax
+
+            # Deduct tax from agent's balance if available
+            if isinstance(agent, BillingAgent):
+                billing_agent = cast(BillingAgent, agent)
+                billing_agent.balance -= tax
+
+            log(f"EnvironmentalAgency {self.unique_id} collected {tax:.2f} env tax from agent {agent.unique_id}.",
+                level="INFO")
+
         self.collected_env_tax += total_tax
-        log(f"EnvironmentalAgency {self.unique_id} total collected env tax: {self.collected_env_tax:.2f}.", level="INFO")
+        log(f"EnvironmentalAgency {self.unique_id} total collected env tax: {self.collected_env_tax:.2f}.",
+            level="INFO")
+
         return total_tax
 
-    def audit_company(self, company):
+    def audit_company(self, company: AgentWithImpact) -> float:
         """
-        Prüft, ob das Unternehmen die Umweltstandards einhält. Liegt der
-        'environmental_impact' über dem erlaubten Maximum, wird ein Strafbetrag
-        (hier als Differenz mal einem Straffaktor) erhoben und dem Staat bzw.
-        der Clearingstelle gemeldet.
+        Audit a company for environmental compliance and impose penalties if needed.
+
+        Args:
+            company: Company to audit for environmental compliance
+
+        Returns:
+            Amount of penalty imposed (0.0 if compliant)
         """
-        max_impact = self.env_standards.get("max_environmental_impact", 10)
-        if hasattr(company, "environmental_impact") and company.environmental_impact > max_impact:
-            # Straffaktor als Platzhalter, z. B. 5 Einheiten pro überschrittenem Impact-Punkt
-            penalty_factor = 5
-            excess = company.environmental_impact - max_impact
-            penalty = excess * penalty_factor
-            if hasattr(company, "balance"):
-                company.balance -= penalty
-            log(f"EnvironmentalAgency {self.unique_id} audited company {company.unique_id} and imposed a penalty of {penalty:.2f} for excess environmental impact.", level="WARNING")
+        max_impact: float = self.env_standards.get("max_environmental_impact", 10.0)
+
+        if company.environmental_impact > max_impact:
+            # Calculate penalty based on excess impact
+            excess: float = company.environmental_impact - max_impact
+            penalty: float = excess * self.penalty_factor
+
+            # Apply penalty if company has balance attribute
+            if isinstance(company, BillingAgent):
+                billing_company = cast(BillingAgent, company)
+                billing_company.balance -= penalty
+
+            log(f"EnvironmentalAgency {self.unique_id} audited company {company.unique_id} and imposed "
+                f"a penalty of {penalty:.2f} for excess environmental impact.",
+                level="WARNING")
+
             return penalty
         else:
-            log(f"EnvironmentalAgency {self.unique_id} audited company {company.unique_id}: Compliance confirmed.", level="DEBUG")
+            log(f"EnvironmentalAgency {self.unique_id} audited company {company.unique_id}: Compliance confirmed.",
+                level="DEBUG")
+
             return 0.0
 
-    def step(self, current_step, agents):
+    def step(self, current_step: int, agents: list[AgentWithImpact]) -> None:
         """
-        Simulationsschritt der EnvironmentalAgency:
-          1. Umweltsteuern von relevanten Agenten einziehen.
-          2. Unternehmen auditen und bei Überschreitungen Strafzahlungen erheben.
-          3. (Platzhalter) Weitere Aufgaben, z. B. Beratung oder Subventionierung, können hier ergänzt werden.
+        Execute one simulation step for the environmental agency.
+
+        Args:
+            current_step: Current simulation step number
+            agents: Collection of agents to monitor and tax
         """
         log(f"EnvironmentalAgency {self.unique_id} starting step {current_step}.", level="INFO")
+
+        # Collect environmental taxes
         self.collect_env_tax(agents)
-        # Audit alle Unternehmen (angenommen, Unternehmen besitzen das Attribut 'environmental_impact')
+
+        # Audit all agents with environmental_impact attribute
         for agent in agents:
-            if hasattr(agent, "environmental_impact"):
-                self.audit_company(agent)
+            self.audit_company(agent)
+
         log(f"EnvironmentalAgency {self.unique_id} completed step {current_step}.", level="INFO")
 
 
 class RecyclingCompany(BaseAgent):
-    def __init__(self, unique_id, recycling_efficiency=0.8):
+    """
+    Collects and processes waste into recycled materials.
+    """
+
+    def __init__(
+        self,
+        unique_id: str,
+        recycling_efficiency: float | None = None
+    ) -> None:
         """
-        Parameter:
-          recycling_efficiency: Anteil der Abfälle, der zu wiederverwertbaren Materialien verarbeitet wird.
+        Initialize a recycling company with specified efficiency.
+
+        Args:
+            unique_id: Unique identifier for this company
+            recycling_efficiency: Percentage of waste that can be recycled (0.0-1.0)
         """
         super().__init__(unique_id)
-        self.recycling_efficiency = recycling_efficiency
-        self.waste_collected = 0.0
-        self.processed_materials = 0.0
 
-    def collect_waste(self, source, waste_amount):
+        # Set recycling efficiency from config or parameter
+        self.recycling_efficiency: float = (
+            recycling_efficiency if recycling_efficiency is not None
+            else CONFIG.get("recycling_efficiency", 0.8)
+        )
+
+        # Operating metrics
+        self.waste_collected: float = 0.0
+        self.processed_materials: float = 0.0
+
+    def collect_waste(self, source: BaseAgent, waste_amount: float) -> float:
         """
-        Simuliert die Sammlung von Abfällen von einem Agenten (z. B. Unternehmen oder Haushalt).
-        Der gesammelte Abfall wird zum internen Pool hinzugefügt.
+        Collect waste from an agent and add it to the collection pool.
+
+        Args:
+            source: Agent providing the waste
+            waste_amount: Amount of waste to collect
+
+        Returns:
+            Amount of waste actually collected
         """
+        if waste_amount <= 0:
+            log(f"RecyclingCompany {self.unique_id}: Cannot collect negative or zero waste amount.",
+                level="WARNING")
+            return 0.0
+
         self.waste_collected += waste_amount
-        log(f"RecyclingCompany {self.unique_id} collected {waste_amount:.2f} units of waste from {source.unique_id}. Total waste: {self.waste_collected:.2f}.", level="INFO")
+
+        log(f"RecyclingCompany {self.unique_id} collected {waste_amount:.2f} units of waste from "
+            f"{source.unique_id}. Total waste: {self.waste_collected:.2f}.",
+            level="INFO")
+
         return waste_amount
 
-    def process_recycling(self):
+    def process_recycling(self) -> float:
         """
-        Verarbeitet den gesammelten Abfall. Ein Teil des Abfalls wird gemäß der Recyclingeffizienz
-        in wiederverwertbare Materialien umgewandelt.
+        Process collected waste into recycled materials.
+
+        Returns:
+            Amount of recycled materials produced
         """
-        processed = self.waste_collected * self.recycling_efficiency
+        if self.waste_collected <= 0:
+            log(f"RecyclingCompany {self.unique_id}: No waste to process.",
+                level="DEBUG")
+            return 0.0
+
+        processed: float = self.waste_collected * self.recycling_efficiency
         self.processed_materials += processed
-        log(f"RecyclingCompany {self.unique_id} processed {processed:.2f} units of waste into recycled materials. Total processed: {self.processed_materials:.2f}.", level="INFO")
-        # Nach der Verarbeitung wird der gesammelte Abfall reduziert
+
+        log(f"RecyclingCompany {self.unique_id} processed {processed:.2f} units of waste into "
+            f"recycled materials. Total processed: {self.processed_materials:.2f}.",
+            level="INFO")
+
+        # Reset collected waste after processing
         self.waste_collected = 0.0
+
         return processed
 
-    def report_materials(self):
+    def report_materials(self) -> float:
         """
-        Gibt die Menge der recycelten Materialien zurück, die als Input für nachhaltige
-        Produktionsprozesse oder zur Weiterverwertung dienen können.
+        Report the amount of recycled materials available.
+
+        Returns:
+            Current quantity of processed recycled materials
         """
-        log(f"RecyclingCompany {self.unique_id} reports {self.processed_materials:.2f} units of recycled materials available.", level="INFO")
+        log(f"RecyclingCompany {self.unique_id} reports {self.processed_materials:.2f} "
+            f"units of recycled materials available.",
+            level="INFO")
+
         return self.processed_materials
 
-    def step(self, current_step):
+    def step(self, current_step: int) -> None:
         """
-        Simulationsschritt der RecyclingCompany:
-          1. Verarbeitet gesammelt Abfall (falls vorhanden).
-          2. Meldet die verarbeiteten Materialien.
-          3. (Platzhalter) Weitere Interaktionen, z. B. Wettbewerb mit anderen Recyclingunternehmen.
+        Execute one simulation step for the recycling company.
+
+        Args:
+            current_step: Current simulation step number
         """
         log(f"RecyclingCompany {self.unique_id} starting step {current_step}.", level="INFO")
+
+        # Process waste if available
         if self.waste_collected > 0:
             self.process_recycling()
         else:
-            log(f"RecyclingCompany {self.unique_id} has no waste to process at step {current_step}.", level="DEBUG")
+            log(f"RecyclingCompany {self.unique_id} has no waste to process at step {current_step}.",
+                level="DEBUG")
+
+        # Report available materials
         self.report_materials()
+
         log(f"RecyclingCompany {self.unique_id} completed step {current_step}.", level="INFO")

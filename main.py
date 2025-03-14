@@ -1,10 +1,10 @@
+# main.py
 import json
-import time
+from typing import TypeAlias, Literal
 
 from logger import setup_logger, log
 from config import CONFIG
 
-# Importiere alle Agentenklassen
 from agents.household_agent import Household
 from agents.company_agent import Company
 from agents.state_agent import State
@@ -15,42 +15,66 @@ from agents.environmental_agency import EnvironmentalAgency, RecyclingCompany
 from agents.financial_market import FinancialMarket
 from agents.labor_market import LaborMarket
 
+# Type aliases
+AgentResult: TypeAlias = None | Literal["DEAD"] | object
+AgentDict: TypeAlias = dict[str, State | list[Household | Company] | WarengeldBank | SavingsBank | ClearingAgent |
+                            EnvironmentalAgency | RecyclingCompany | FinancialMarket | LaborMarket | list[object]]
 
-def initialize_agents():
-    """Erstellt und gibt alle benötigten Agenten zurück."""
-    state = State("state_1")
+def initialize_agents() -> AgentDict:
+    """Initialize all simulation agents and their relationships."""
+    state: State = State(CONFIG["STATE_ID"])
 
-    households = [
-        Household("household_1", income=100, land_area=50, environment_impact=1),
-        Household("household_2", income=120, land_area=60, environment_impact=2),
-        Household("household_3", income=80, land_area=40, environment_impact=1)
-    ]
+    # Create initial households based on configuration
+    households: list[Household] = []
+    for i, params in enumerate(CONFIG["INITIAL_HOUSEHOLDS"]):
+        households.append(
+            Household(
+                f"{CONFIG['HOUSEHOLD_ID_PREFIX']}{i+1}",
+                income=params["income"],
+                land_area=params["land_area"],
+                environmental_impact=params["environmental_impact"]
+            )
+        )
 
-    companies = [
-        Company("company_1", production_capacity=100, land_area=100, environmental_impact=5),
-        Company("company_2", production_capacity=80, land_area=80, environmental_impact=4)
-    ]
+    # Create initial companies based on configuration
+    companies: list[Company] = []
+    for i, params in enumerate(CONFIG["INITIAL_COMPANIES"]):
+        companies.append(
+            Company(
+                f"{CONFIG['COMPANY_ID_PREFIX']}{i+1}",
+                production_capacity=params["production_capacity"],
+                land_area=params["land_area"],
+                environmental_impact=params["environmental_impact"]
+            )
+        )
 
-    warengeld_bank = WarengeldBank("bank_1")
-    savings_bank = SavingsBank("savings_bank_1")
+    warengeld_bank = WarengeldBank(CONFIG["BANK_ID"])
+    savings_bank = SavingsBank(CONFIG["SAVINGS_BANK_ID"])
 
-    clearing_agent = ClearingAgent("clearing_1")
+    clearing_agent = ClearingAgent(CONFIG["CLEARING_AGENT_ID"])
     clearing_agent.monitored_banks.append(warengeld_bank)
-    clearing_agent.monitored_sparkassen.append(savings_bank)
+    clearing_agent.monitored_savings_banks.append(savings_bank)
 
-    environmental_agency = EnvironmentalAgency("env_agency_1")
-    recycling_company = RecyclingCompany("recycling_1", recycling_efficiency=0.8)
-    financial_market = FinancialMarket("financial_market_1")
-    labor_market = LaborMarket("labor_market_1")
+    environmental_agency = EnvironmentalAgency(CONFIG["ENV_AGENCY_ID"])
+    recycling_company = RecyclingCompany(
+        CONFIG["RECYCLING_COMPANY_ID"],
+        recycling_efficiency=CONFIG["recycling_efficiency"]
+    )
+    financial_market = FinancialMarket(CONFIG["FINANCIAL_MARKET_ID"])
+    labor_market = LaborMarket(CONFIG["LABOR_MARKET_ID"])
+    state.labor_market = labor_market
 
-    # Registriere Haushalte und Firmen beim Arbeitsmarkt
+    # Register workers and job offers in labor market
     for hh in households:
         labor_market.register_worker(hh)
     for comp in companies:
-        labor_market.register_job_offer(comp, wage=10, positions=3)
+        labor_market.register_job_offer(
+            comp,
+            wage=CONFIG["default_wage"],
+            positions=CONFIG["INITIAL_JOB_POSITIONS_PER_COMPANY"]
+        )
 
-    # Kombiniere relevante Agenten für übergreifende Operationen
-    all_agents = households + companies + [state, warengeld_bank, savings_bank]
+    all_agents: list[object] = households + companies + [state, warengeld_bank, savings_bank]
 
     return {
         "state": state,
@@ -66,64 +90,76 @@ def initialize_agents():
         "all_agents": all_agents
     }
 
+def update_households(households: list[Household], step: int, state: State) -> list[Household]:
+    """Update all households and manage newly created or dead households."""
+    new_households: list[Household] = []
+    alive_households: list[Household] = []
 
-def update_households(households, step, state):
-    """Führt den Simulationsschritt für Haushalte aus und aktualisiert die Liste.
-       Gibt die aktualisierte Liste der lebenden Haushalte zurück."""
-    new_households = []
-    alive_households = []
-    for hh in households:
-        result = hh.step(step, state)
+    for household in households:
+        result: AgentResult = household.step(step, state)
+
         if result == "DEAD":
-            log(f"Household {hh.unique_id} removed (dead).", level="INFO")
-            continue  # Haushalt stirbt und wird nicht weitergeführt
+            log(f"Household {household.unique_id} removed (dead).", level="INFO")
+            continue
         elif result is not None:
             new_households.append(result)
-            alive_households.append(hh)
+            alive_households.append(household)
         else:
-            alive_households.append(hh)
+            alive_households.append(household)
+
     return alive_households + new_households
 
+def update_companies(companies: list[Company], step: int, state: State) -> list[Company]:
+    """Update all companies and manage newly created or bankrupt companies."""
+    new_companies: list[Company] = []
+    surviving_companies: list[Company] = []
 
-def update_companies(companies, step, state):
-    """Führt den Simulationsschritt für Unternehmen aus und aktualisiert die Liste.
-       Gibt die aktualisierte Liste der überlebenden Unternehmen zurück."""
-    new_companies = []
-    surviving_companies = []
-    for comp in companies:
-        result = comp.step(step, state)
+    for company in companies:
+        result: AgentResult = company.step(step, state)
+
         if result == "DEAD":
-            log(f"Company {comp.unique_id} removed (bankrupt).", level="INFO")
-            continue  # Unternehmen wird entfernt
+            log(f"Company {company.unique_id} removed (bankrupt).", level="INFO")
+            continue
         elif result is not None:
             new_companies.append(result)
-            surviving_companies.append(comp)
+            surviving_companies.append(company)
         else:
-            surviving_companies.append(comp)
+            surviving_companies.append(company)
+
     return surviving_companies + new_companies
 
+def update_other_agents(step: int, agents_dict: AgentDict, state: State) -> None:
+    """Update all auxiliary agents in the simulation."""
+    warengeld_bank: WarengeldBank = agents_dict["warengeld_bank"]
+    savings_bank: SavingsBank = agents_dict["savings_bank"]
+    clearing_agent: ClearingAgent = agents_dict["clearing_agent"]
+    environmental_agency: EnvironmentalAgency = agents_dict["environmental_agency"]
+    recycling_company: RecyclingCompany = agents_dict["recycling_company"]
+    financial_market: FinancialMarket = agents_dict["financial_market"]
+    labor_market: LaborMarket = agents_dict["labor_market"]
+    companies: list[Company] = agents_dict["companies"]
+    households: list[Household] = agents_dict["households"]
+    all_agents: list[object] = agents_dict["all_agents"]
 
-def update_other_agents(step, agents_dict, state):
-    """Führt die step()-Methode aller übrigen Agenten aus."""
-    agents_dict["warengeld_bank"].step(step, agents_dict["companies"])
-    agents_dict["savings_bank"].step(step)
-    agents_dict["clearing_agent"].step(step, agents_dict["all_agents"])
-    agents_dict["environmental_agency"].step(step, agents_dict["companies"] + agents_dict["households"])
-    agents_dict["recycling_company"].step(step)
-    agents_dict["financial_market"].step(step, agents_dict["companies"] + agents_dict["households"])
-    agents_dict["labor_market"].step(step)
+    warengeld_bank.step(step, companies)
+    savings_bank.step(step)
+    clearing_agent.step(step, all_agents)
+    environmental_agency.step(step, companies + households)
+    recycling_company.step(step)
+    financial_market.step(step, companies + households)
+    labor_market.step(step)
 
-
-def update_all_agents(agents_dict):
-    """Aktualisiert die all_agents-Liste basierend auf den aktuellen Haushalts- und Firmenlisten."""
-    agents_dict["all_agents"] = agents_dict["households"] + agents_dict["companies"] + [agents_dict["state"],
-                                                                                        agents_dict["warengeld_bank"],
-                                                                                        agents_dict["savings_bank"]]
+def update_all_agents(agents_dict: AgentDict) -> AgentDict:
+    """Update the combined agents list after individual agent updates."""
+    agents_dict["all_agents"] = (
+        agents_dict["households"] +
+        agents_dict["companies"] +
+        [agents_dict["state"], agents_dict["warengeld_bank"], agents_dict["savings_bank"]]
+    )
     return agents_dict
 
-
-def summarize_simulation(agents_dict):
-    """Erstellt eine Zusammenfassung der Simulation und speichert sie in einer JSON-Datei."""
+def summarize_simulation(agents_dict: AgentDict) -> None:
+    """Generate and save simulation summary to a JSON file."""
     summary = {
         "State": {
             "infrastructure_budget": agents_dict["state"].infrastructure_budget,
@@ -164,37 +200,29 @@ def summarize_simulation(agents_dict):
         }
     }
 
-    with open("simulation_summary.json", "w") as f:
-        json.dump(summary, f, indent=4)
-    log("Simulation summary stored in simulation_summary.json", level="INFO")
+    with open(CONFIG["SUMMARY_FILE"], "w") as f:
+        json.dump(summary, f, indent=CONFIG["JSON_INDENT"])
 
+    log(f"Simulation summary stored in {CONFIG['SUMMARY_FILE']}", level="INFO")
 
-def main():
+def main() -> None:
+    """Main simulation execution function."""
     logger = setup_logger()
     log("Starting MAS simulation...", level="INFO")
-    num_steps = CONFIG.get("simulation_steps", 10)
+    num_steps: int = CONFIG["simulation_steps"]
 
-    agents = initialize_agents()
+    agents: AgentDict = initialize_agents()
 
     for step in range(1, num_steps + 1):
         log(f"---- Simulation Step {step} ----", level="INFO")
-
-        # Staat führt seine Schritte aus (Steuern erheben, etc.)
         agents["state"].step(agents["households"] + agents["companies"])
-
-        # Aktualisiere Haushalte und Firmen
         agents["households"] = update_households(agents["households"], step, agents["state"])
         agents["companies"] = update_companies(agents["companies"], step, agents["state"])
-
-        # Aktualisiere die Liste aller Agenten
         agents = update_all_agents(agents)
-
-        # Aktualisiere übrige Agenten (Banken, Clearing, Umwelt, Recycling, Finanzmarkt, Arbeitsmarkt)
         update_other_agents(step, agents, agents["state"])
 
     log("Simulation complete.", level="INFO")
     summarize_simulation(agents)
-
 
 if __name__ == "__main__":
     main()

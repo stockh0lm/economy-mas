@@ -1,99 +1,164 @@
+# state_agent.py
+from typing import Protocol, TypeAlias, Sequence, cast
 from .base_agent import BaseAgent
 from config import CONFIG
 from logger import log
+from .labor_market import LaborMarket
+
+
+class TaxableAgent(Protocol):
+    """Protocol defining agents that can be taxed by the state"""
+    unique_id: str
+    balance: float
+    land_area: float = 0.0
+    environment_impact: float = 0.0
+
+
+AgentCollection: TypeAlias = Sequence[TaxableAgent | BaseAgent]
+
 
 class State(BaseAgent):
-    def __init__(self, unique_id):
+    """
+    State agent responsible for tax collection, fund distribution, and wealth regulation.
+    Acts as the governance mechanism in the simulation economy.
+    """
+
+    def __init__(self, unique_id: str) -> None:
+        """
+        Initialize the State agent with default budgets and tax configurations.
+
+        Args:
+            unique_id: Unique identifier for the state
+        """
         super().__init__(unique_id)
-        # Initialisierung der finanziellen Felder
-        self.tax_revenue = 0.0
-        self.infrastructure_budget = 0.0
-        self.social_budget = 0.0
-        self.environment_budget = 0.0
 
-        # Steuerparameter aus der Konfiguration (Beispielwerte)
-        self.bodensteuer_rate = CONFIG.get("tax_rates", {}).get("bodensteuer", 0.05)
-        self.umweltsteuer_rate = CONFIG.get("tax_rates", {}).get("umweltsteuer", 0.02)
+        # Financial accounts
+        self.tax_revenue: float = 0.0
+        self.infrastructure_budget: float = 0.0
+        self.social_budget: float = 0.0
+        self.environment_budget: float = 0.0
 
-        # Beispielhafter Schwellenwert für Hypervermögen (Platzhalter)
-        self.hyperwealth_threshold = 1000000  # z. B. 1 Mio. Einheiten
+        # Tax parameters from configuration
+        self.bodensteuer_rate: float = CONFIG["tax_rates"]["bodensteuer"]
+        self.umweltsteuer_rate: float = CONFIG["tax_rates"]["umweltsteuer"]
 
-    def collect_taxes(self, agents):
+        # Hyperwealth control parameter
+        self.hyperwealth_threshold: float = CONFIG["hyperwealth_threshold"]
+
+        # Budget allocation percentages
+        self.infrastructure_allocation: float = CONFIG.get("state_budget_allocation", {}).get("infrastructure", 0.5)
+        self.social_allocation: float = CONFIG.get("state_budget_allocation", {}).get("social", 0.3)
+        self.environment_allocation: float = CONFIG.get("state_budget_allocation", {}).get("environment", 0.2)
+
+        # Reference to labor market (set after initialization)
+        self.labor_market: LaborMarket | None = None
+
+    def collect_taxes(self, agents: AgentCollection) -> None:
         """
-        Erhebt Steuern von Agenten (z. B. Haushalte, Unternehmen).
-        Es wird angenommen, dass Agenten Attribute wie 'land_area' (für die Bodensteuer)
-        und 'environment_impact' (für die Umweltsteuer) besitzen. Die Steuern werden
-        proportional zu diesen Attributen erhoben und vom Agenten abgezogen.
+        Collect land and environmental taxes from all applicable agents.
+
+        Taxes are calculated based on land area and environmental impact.
+        The collected taxes are added to the state's revenue.
+
+        Args:
+            agents: Collection of agents to tax
         """
-        total_tax = 0.0
+        total_tax: float = 0.0
+
         for agent in agents:
-            # Erhebung der Bodensteuer
-            if hasattr(agent, "land_area"):
-                tax = agent.land_area * self.bodensteuer_rate
-                total_tax += tax
-                if hasattr(agent, "balance"):
-                    agent.balance -= tax
-            # Erhebung der Umweltsteuer
-            if hasattr(agent, "environment_impact"):
-                tax = agent.environment_impact * self.umweltsteuer_rate
-                total_tax += tax
-                if hasattr(agent, "balance"):
-                    agent.balance -= tax
+            # Skip agents without balance attribute
+            if not hasattr(agent, "balance"):
+                continue
+
+            taxable_agent = cast(TaxableAgent, agent)
+            agent_taxes: float = 0.0
+
+            # Land tax collection
+            if hasattr(agent, "land_area") and agent.land_area > 0:
+                land_tax: float = agent.land_area * self.bodensteuer_rate
+                agent_taxes += land_tax
+
+            # Environmental tax collection
+            if hasattr(agent, "environment_impact") and agent.environment_impact > 0:
+                env_tax: float = agent.environment_impact * self.umweltsteuer_rate
+                agent_taxes += env_tax
+
+            # Apply total tax to agent
+            if agent_taxes > 0:
+                taxable_agent.balance -= agent_taxes
+                total_tax += agent_taxes
+                log(f"State {self.unique_id} collected {agent_taxes:.2f} taxes from {agent.unique_id}", level="DEBUG")
 
         self.tax_revenue += total_tax
-        log(f"State {self.unique_id} collected taxes: {total_tax:.2f}. Total revenue now: {self.tax_revenue:.2f}.", level="INFO")
+        log(f"State {self.unique_id} collected total taxes: {total_tax:.2f}. Revenue now: {self.tax_revenue:.2f}", level="INFO")
 
-    def distribute_funds(self):
+    def distribute_funds(self) -> None:
         """
-        Verteilt die gesammelten Steuereinnahmen auf verschiedene Bereiche:
-        Beispielsweise 50% für Infrastruktur, 30% für soziale Dienste und 20% für
-        Umweltmaßnahmen (Recycling, Schadstoffkontrolle etc.).
-        Nach der Verteilung wird das Steueraufkommen zurückgesetzt.
+        Distribute collected tax revenue to various budget categories.
+
+        Funds are allocated according to predefined percentages for:
+        - Infrastructure (default 50%)
+        - Social services (default 30%)
+        - Environmental initiatives (default 20%)
+
+        After distribution, tax revenue is reset to zero.
         """
         if self.tax_revenue <= 0:
-            log("No tax revenue available for distribution.", level="WARNING")
+            log(f"State {self.unique_id} has no tax revenue to distribute", level="WARNING")
             return
 
-        allocation = {
-            "infrastructure": 0.5,
-            "social": 0.3,
-            "environment": 0.2
-        }
-        self.infrastructure_budget += self.tax_revenue * allocation["infrastructure"]
-        self.social_budget += self.tax_revenue * allocation["social"]
-        self.environment_budget += self.tax_revenue * allocation["environment"]
+        # Distribute according to allocation percentages
+        self.infrastructure_budget += self.tax_revenue * self.infrastructure_allocation
+        self.social_budget += self.tax_revenue * self.social_allocation
+        self.environment_budget += self.tax_revenue * self.environment_allocation
 
         log(
-            f"Funds distributed - Infrastructure: {self.infrastructure_budget:.2f}, "
-            f"Social: {self.social_budget:.2f}, Environment: {self.environment_budget:.2f}.",
+            f"State {self.unique_id} distributed funds - Infrastructure: {self.infrastructure_budget:.2f}, "
+            f"Social: {self.social_budget:.2f}, Environment: {self.environment_budget:.2f}",
             level="INFO"
         )
-        # Nach der Verteilung wird das Steueraufkommen zurückgesetzt
+
+        # Reset tax revenue after distribution
         self.tax_revenue = 0.0
 
-    def oversee_hypervermoegen(self, agents):
+    def oversee_hyperwealth(self, agents: AgentCollection) -> None:
         """
-        Überprüft, ob Agenten (z. B. Unternehmen oder Haushalte) ein Vermögen
-        besitzen, das die definierte Schwelle überschreitet. Liegt das der Fall,
-        wird der Überschuss (als Beispiel) abgezogen und dem Staat als zusätzliche
-        Einnahme zuführt.
+        Monitor and regulate excessive wealth accumulation among agents.
+
+        Any balance exceeding the hyperwealth threshold is confiscated
+        and added to the state's tax revenue.
+
+        Args:
+            agents: Collection of agents to check for hyperwealth
         """
         for agent in agents:
-            if hasattr(agent, "balance") and agent.balance > self.hyperwealth_threshold:
-                excess = agent.balance - self.hyperwealth_threshold
-                agent.balance -= excess
-                self.tax_revenue += excess
-                log(f"State {self.unique_id} confiscated {excess:.2f} from agent {agent.unique_id} for hyper wealth control.", level="INFO")
+            if not hasattr(agent, "balance"):
+                continue
 
-    def step(self, agents):
+            taxable_agent = cast(TaxableAgent, agent)
+
+            if taxable_agent.balance > self.hyperwealth_threshold:
+                excess: float = taxable_agent.balance - self.hyperwealth_threshold
+                taxable_agent.balance -= excess
+                self.tax_revenue += excess
+                log(f"State {self.unique_id} confiscated {excess:.2f} from {agent.unique_id} (hyperwealth control)", level="INFO")
+
+    def step(self, agents: AgentCollection) -> None:
         """
-        Simulationsschritt des Staates:
-         1. Erhebt Steuern von den übergebenen Agenten.
-         2. Überwacht die Vermögensbildung (Hypervermögen) und führt ggf. Abschöpfungen durch.
-         3. Verteilt die gesammelten Mittel auf Infrastruktur, soziale Dienste und Umwelt.
+        Execute one simulation step for the state agent.
+
+        This includes:
+        1. Collecting taxes from all agents
+        2. Overseeing wealth distribution and applying wealth caps
+        3. Distributing collected funds to various budget categories
+
+        Args:
+            agents: Collection of agents under state jurisdiction
         """
-        log(f"State {self.unique_id} starting simulation step.", level="INFO")
+        log(f"State {self.unique_id} starting step", level="INFO")
+
         self.collect_taxes(agents)
-        self.oversee_hypervermoegen(agents)
+        self.oversee_hyperwealth(agents)
         self.distribute_funds()
-        log(f"State {self.unique_id} completed simulation step.", level="INFO")
+
+        log(f"State {self.unique_id} completed step", level="INFO")
