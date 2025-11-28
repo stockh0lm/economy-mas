@@ -63,6 +63,8 @@ class MetricsCollector:
     registered_banks: Set[str]
     metrics_config: Dict[MetricName, MetricConfig]
     export_path: Path
+    latest_labor_metrics: dict[str, float]
+    latest_global_metrics: dict[str, float]
 
     def __init__(self):
         """Initialize the metrics collector."""
@@ -77,6 +79,8 @@ class MetricsCollector:
         self.registered_banks: Set[str] = set()
         self.metrics_config: Dict[MetricName, MetricConfig] = {}
         self.export_path: Path = Path(CONFIG.get("metrics_export_path", "output/metrics"))
+        self.latest_labor_metrics = {}
+        self.latest_global_metrics = {}
         self.__post_init__()
 
     def __post_init__(self) -> None:
@@ -447,7 +451,12 @@ class MetricsCollector:
 
             employment_rate = employed_workers / num_registered_workers if num_registered_workers > 0 else 0
             self.add_metric(agent_id, "employment_rate", employment_rate, self.market_metrics, step)
-
+            self.latest_labor_metrics = {
+                "registered_workers": float(num_registered_workers),
+                "employed_workers": float(employed_workers),
+                "employment_rate": float(employment_rate),
+                "unemployment_rate": float(1 - employment_rate) if num_registered_workers > 0 else 0.0,
+            }
         # Financial market metrics
         if hasattr(market, "list_of_assets"):
             num_assets = len(market.list_of_assets)
@@ -612,9 +621,16 @@ class MetricsCollector:
 
             # Store global metrics for this step
             self.global_metrics[step] = metrics
+            self.latest_global_metrics = metrics
 
             # Check for critical thresholds
             self._check_critical_thresholds(metrics)
+
+    def get_latest_macro_snapshot(self) -> dict[str, float]:
+        snapshot = {}
+        snapshot.update(self.latest_global_metrics)
+        snapshot.update(self.latest_labor_metrics)
+        return snapshot
 
     def _count_bankruptcies_at_step(self, step: TimeStep) -> int:
         """

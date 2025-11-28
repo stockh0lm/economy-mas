@@ -1,8 +1,13 @@
 # clearing_agent.py
 from typing import Protocol, Sequence, TypeAlias, cast, runtime_checkable
+from typing import TYPE_CHECKING
+
 from .base_agent import BaseAgent
 from logger import log
 from config import CONFIG
+
+if TYPE_CHECKING:
+    from .state_agent import State
 
 
 @runtime_checkable
@@ -145,7 +150,12 @@ class ClearingAgent(BaseAgent):
 
         return collected_this_round
 
-    def step(self, current_step: int, all_agents: Sequence[FinancialAgent]) -> None:
+    def step(
+        self,
+        current_step: int,
+        all_agents: Sequence[FinancialAgent],
+        state: "State | None" = None,
+    ) -> None:
         """
         Execute one simulation step for the clearing agent.
 
@@ -163,6 +173,13 @@ class ClearingAgent(BaseAgent):
         self.balance_liquidity()
         self.check_money_supply(all_agents)
         collected: float = self.report_hyperwealth(all_agents)
+
+        if state is not None and collected > 0:
+            state.receive_hyperwealth(collected)
+            log(
+                f"ClearingAgent {self.unique_id}: forwarded {collected:.2f} of excess wealth to state.",
+                level="INFO",
+            )
 
         log(f"ClearingAgent {self.unique_id} completed step {current_step}. "
             f"Excess wealth collected this step: {collected:.2f}. "

@@ -8,6 +8,8 @@ from config import CONFIG
 from .household_agent import Household
 from .labor_market import LaborMarket
 from .state_agent import State
+from .bank import WarengeldBank
+from .savings_bank_agent import SavingsBank
 
 
 # Type aliases for improved readability
@@ -163,7 +165,7 @@ class Company(EconomicAgent):
                 self.pending_hires += new_positions
                 labor_market.register_job_offer(
                     self,
-                    wage=CONFIG.get("wage_rate", CONFIG.get("default_wage", 10.0)),
+                    wage=getattr(labor_market, "default_wage", CONFIG.get("wage_rate", CONFIG.get("default_wage", 10.0))),
                     positions=new_positions
                 )
                 log(
@@ -207,6 +209,40 @@ class Company(EconomicAgent):
             f"Company {self.unique_id} sold {sold_quantity:.2f} units at {sale_price_per_unit:.2f} each "
             f"for {revenue:.2f}. New balance: {self.balance:.2f}. Inventory left: {self.inventory:.2f}.",
             level="INFO"
+        )
+
+        return revenue
+
+    def sell_to_household(self, household: Household, budget: float) -> float:
+        """Sell goods directly to a household, constrained by inventory and their budget."""
+        if budget <= 0:
+            return 0.0
+
+        spending_capacity: float = min(budget, household.checking_account)
+        if spending_capacity <= 0 or self.inventory <= 0:
+            return 0.0
+
+        base_price: float = CONFIG.get("production_base_price", 10)
+        innovation_bonus_rate: float = CONFIG.get("production_innovation_bonus_rate", 0.02)
+        price_per_unit: float = base_price * (1 + innovation_bonus_rate * self.innovation_index)
+        if price_per_unit <= 0:
+            return 0.0
+
+        max_quantity: float = spending_capacity / price_per_unit
+        sold_quantity: float = min(self.inventory, max_quantity)
+        revenue: float = sold_quantity * price_per_unit
+        if sold_quantity <= 0 or revenue <= 0:
+            return 0.0
+
+        household.checking_account -= revenue
+        self.balance += revenue
+        self.inventory -= sold_quantity
+
+        log(
+            f"Household {household.unique_id} bought {sold_quantity:.2f} units from {self.unique_id} "
+            f"for {revenue:.2f}. Household checking: {household.checking_account:.2f}, "
+            f"company balance: {self.balance:.2f}, inventory: {self.inventory:.2f}.",
+            level="INFO",
         )
 
         return revenue
@@ -325,7 +361,13 @@ class Company(EconomicAgent):
             return True
         return False
 
-    def step(self, current_step: int, state: Optional[State] = None) -> CompanyResult:
+    def step(
+        self,
+        current_step: int,
+        state: Optional[State] = None,
+        warengeld_bank: Optional[WarengeldBank] = None,
+        savings_bank: Optional[SavingsBank] = None,
+    ) -> CompanyResult:
         """
         Execute one simulation step for the company.
 
@@ -351,6 +393,23 @@ class Company(EconomicAgent):
         """
         log(f"Company {self.unique_id} starting step {current_step}.", level="INFO")
 
+        if warengeld_bank is not None and self.employees:
+            default_wage = CONFIG.get("default_wage", 5)
+            planned_wage_bill = sum(
+                getattr(employee, "current_wage", default_wage) for employee in self.employees
+            )
+            buffer_ratio = CONFIG.get("company_liquidity_buffer_ratio", 0.2)
+            target_liquidity = planned_wage_bill * (1 + buffer_ratio)
+
+            if self.balance < target_liquidity:
+                credit_needed = target_liquidity - self.balance
+                granted = warengeld_bank.grant_credit(self, credit_needed)
+                if granted > 0:
+                    log(
+                        f"Company {self.unique_id} drew {granted:.2f} in Warengeld credit to cover wages.",
+                        level="INFO",
+                    )
+
         # Investment and production
         self.invest_in_rd()
         self.innovate()
@@ -363,13 +422,30 @@ class Company(EconomicAgent):
         # Sales and finances
         if self.employees:
             self.produce()
-        self.sell_goods()
         self.pay_wages()
 
         # Growth phase check
         if not self.growth_phase and self.balance >= self.growth_balance_trigger:
             self.growth_phase = True
             log(f"Company {self.unique_id} enters growth phase.", level="INFO")
+
+            if savings_bank is not None:
+                investment_factor = CONFIG.get("growth_investment_factor", 0.5)
+                invest_amount = self.production_capacity * investment_factor
+                if invest_amount > 0:
+                    granted = savings_bank.allocate_credit(self, invest_amount)
+                    if granted > 0:
+                        log(
+                            f"Company {self.unique_id} received investment credit {granted:.2f} "
+                            f"from SavingsBank for growth.",
+                            level="INFO",
+                        )
+                    else:
+                        log(
+                            f"Company {self.unique_id} could not secure investment credit of "
+                            f"{invest_amount:.2f} from SavingsBank.",
+                            level="WARNING",
+                        )
 
         if self.growth_phase:
             self.growth_counter += 1
@@ -383,6 +459,19 @@ class Company(EconomicAgent):
         if self.check_bankruptcy():
             log(f"Company {self.unique_id} is removed from simulation due to bankruptcy.", level="WARNING")
             return "DEAD"
+
+        if warengeld_bank is not None:
+            min_working_capital = CONFIG.get("min_working_capital_buffer", 0.0)
+            outstanding = warengeld_bank.credit_lines.get(self.unique_id, 0.0)
+            if outstanding > 0 and self.balance > min_working_capital:
+                repay_amount = min(self.balance - min_working_capital, outstanding)
+                if repay_amount > 0:
+                    self.balance -= repay_amount
+                    warengeld_bank.process_repayment(self, repay_amount)
+                    log(
+                        f"Company {self.unique_id} repaid {repay_amount:.2f} of Warengeld credit.",
+                        level="INFO",
+                    )
 
         log(f"Company {self.unique_id} completed step {current_step}.", level="INFO")
         return new_company

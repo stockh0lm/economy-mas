@@ -91,13 +91,13 @@ def initialize_agents() -> AgentDict:
         "all_agents": all_agents
     }
 
-def update_households(households: list[Household], step: int, state: State) -> list[Household]:
+def update_households(households: list[Household], step: int, state: State, savings_bank: SavingsBank, companies: list[Company]) -> list[Household]:
     """Update all households and manage newly created or dead households."""
     new_households: list[Household] = []
     alive_households: list[Household] = []
 
     for household in households:
-        result: AgentResult = household.step(step, state)
+        result: AgentResult = household.step(step, state, savings_bank, companies)
 
         if result == "DEAD":
             log(f"Household {household.unique_id} removed (dead).", level="INFO")
@@ -110,13 +110,19 @@ def update_households(households: list[Household], step: int, state: State) -> l
 
     return alive_households + new_households
 
-def update_companies(companies: list[Company], step: int, state: State) -> list[Company]:
+def update_companies(
+    companies: list[Company],
+    step: int,
+    state: State,
+    warengeld_bank: WarengeldBank,
+    savings_bank: SavingsBank,
+) -> list[Company]:
     """Update all companies and manage newly created or bankrupt companies."""
     new_companies: list[Company] = []
     surviving_companies: list[Company] = []
 
     for company in companies:
-        result: AgentResult = company.step(step, state)
+        result: AgentResult = company.step(step, state, warengeld_bank, savings_bank)
 
         if result == "DEAD":
             log(f"Company {company.unique_id} removed (bankrupt).", level="INFO")
@@ -144,7 +150,7 @@ def update_other_agents(step: int, agents_dict: AgentDict, state: State) -> None
 
     warengeld_bank.step(step, companies)
     savings_bank.step(step)
-    clearing_agent.step(step, all_agents)
+    clearing_agent.step(step, all_agents, state)
     environmental_agency.step(step, companies + households, state)
     recycling_company.step(step)
     financial_market.step(step, companies + households)
@@ -219,8 +225,20 @@ def main() -> None:
     for step in range(1, num_steps + 1):
         log(f"---- Simulation Step {step} ----", level="INFO")
         agents["state"].step(agents["households"] + agents["companies"])
-        agents["households"] = update_households(agents["households"], step, agents["state"])
-        agents["companies"] = update_companies(agents["companies"], step, agents["state"])
+        agents["households"] = update_households(
+            agents["households"],
+            step,
+            agents["state"],
+            agents["savings_bank"],
+            agents["companies"],
+        )
+        agents["companies"] = update_companies(
+            agents["companies"],
+            step,
+            agents["state"],
+            agents["warengeld_bank"],
+            agents["savings_bank"],
+        )
         agents = update_all_agents(agents)
         update_other_agents(step, agents, agents["state"])
         metrics.collect_state_metrics(

@@ -4,6 +4,8 @@ from typing import Literal, Optional
 from .economic_agent import EconomicAgent
 from logger import log
 from config import CONFIG
+from .savings_bank_agent import SavingsBank
+import random
 
 
 class Household(EconomicAgent):
@@ -148,40 +150,69 @@ class Household(EconomicAgent):
         log(f"Household {self.unique_id} offers labor.", level="DEBUG")
         return True
 
-    def consume(self, consumption_rate: float) -> float:
-        """
-        Consume goods by spending money from checking account.
+    def consume(self, consumption_rate: float, companies: Optional[list["Company"]] = None) -> float:
+        """Consume goods by purchasing from companies when possible."""
+        if not companies:
+            return self._consume_legacy(consumption_rate)
 
-        Args:
-            consumption_rate: Percentage of checking account to spend
+        consumption_budget: float = self.checking_account * consumption_rate
+        if consumption_budget <= 0:
+            return 0.0
 
-        Returns:
-            Amount consumed
-        """
+        supplier = random.choice(companies)
+        spent = supplier.sell_to_household(self, consumption_budget)
+
+        log(
+            f"Household {self.unique_id} consumed goods for {spent:.2f}. "
+            f"Checking account now: {self.checking_account:.2f}.",
+            level="INFO",
+        )
+        return spent
+
+    def _consume_legacy(self, consumption_rate: float) -> float:
         consumption_amount: float = self.checking_account * consumption_rate
         self.checking_account -= consumption_amount
         log(
             f"Household {self.unique_id} consumed goods worth: {consumption_amount:.2f}. "
             f"Checking account now: {self.checking_account:.2f}.",
-            level="INFO"
+            level="INFO",
         )
         return consumption_amount
 
-    def save(self) -> float:
+    def save(self, savings_bank: Optional[SavingsBank] = None) -> float:
         """
-        Move all remaining money from checking to savings account.
+        Move remaining checking balance into savings or deposit it at the savings bank.
 
         Returns:
             Amount saved
         """
         saved_amount: float = self.checking_account
-        self.savings += saved_amount
-        log(
-            f"Household {self.unique_id} saved: {saved_amount:.2f}. "
-            f"Total savings now: {self.savings:.2f}.",
-            level="INFO"
-        )
         self.checking_account = 0.0
+
+        if saved_amount <= 0:
+            return 0.0
+
+        if savings_bank is None:
+            self.savings += saved_amount
+            log(
+                f"Household {self.unique_id} saved: {saved_amount:.2f}. "
+                f"Total savings now: {self.savings:.2f}.",
+                level="INFO",
+            )
+            return saved_amount
+
+        deposited = savings_bank.deposit_savings(self, saved_amount)
+        overflow = saved_amount - deposited
+
+        if overflow > 0:
+            self.savings += overflow
+
+        log(
+            f"Household {self.unique_id} deposited {deposited:.2f} to SavingsBank "
+            f"and kept {overflow:.2f} as local savings. "
+            f"Total local savings now: {self.savings:.2f}.",
+            level="INFO",
+        )
         return saved_amount
 
     def split_household(self) -> "Household":
@@ -229,7 +260,13 @@ class Household(EconomicAgent):
 
         return new_household
 
-    def step(self, current_step: int, state: Optional[object] = None) -> Optional["Household"] | Literal["DEAD"]:
+    def step(
+        self,
+        current_step: int,
+        state: Optional[object] = None,
+        savings_bank: Optional[SavingsBank] = None,
+        companies: Optional[list["Company"]] = None,
+    ) -> Optional["Household"] | Literal["DEAD"]:
         """
         Execute one simulation step for the household agent.
 
@@ -269,8 +306,8 @@ class Household(EconomicAgent):
         else:
             rate: float = self.consumption_rate_normal
 
-        self.consume(rate)
-        self.save()
+        self.consume(rate, companies)
+        self.save(savings_bank)
         self.offer_labor()
 
         # Enter growth phase if savings exceed trigger threshold

@@ -116,6 +116,15 @@ class State(BaseAgent):
         # Reset tax revenue after distribution
         self.tax_revenue = 0.0
 
+    def receive_hyperwealth(self, amount: float) -> None:
+        """Add externally collected hyperwealth to tax revenue."""
+        self.tax_revenue += amount
+        log(
+            f"State {self.unique_id} received {amount:.2f} in forwarded hyperwealth. "
+            f"Tax revenue now: {self.tax_revenue:.2f}.",
+            level="INFO",
+        )
+
     def oversee_hyperwealth(self, agents: AgentCollection) -> None:
         """
         Monitor and regulate excessive wealth accumulation among agents.
@@ -126,17 +135,10 @@ class State(BaseAgent):
         Args:
             agents: Collection of agents to check for hyperwealth
         """
-        for agent in agents:
-            if not hasattr(agent, "balance"):
-                continue
-
-            taxable_agent = cast(TaxableAgent, agent)
-
-            if taxable_agent.balance > self.hyperwealth_threshold:
-                excess: float = taxable_agent.balance - self.hyperwealth_threshold
-                taxable_agent.balance -= excess
-                self.tax_revenue += excess
-                log(f"State {self.unique_id} confiscated {excess:.2f} from {agent.unique_id} (hyperwealth control)", level="INFO")
+        log(
+            f"State {self.unique_id} oversees hyperwealth passively; ClearingAgent performs confiscations.",
+            level="DEBUG",
+        )
 
     def step(self, agents: AgentCollection) -> None:
         """

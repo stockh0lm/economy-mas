@@ -26,6 +26,16 @@ CONFIG: dict[str, int | float | str | dict | list] = {
     # Arbeitsmarkt / Löhne
     "default_wage": 10,
     "wage_rate": 5,                      # Standardlohn für die Gehaltszahlung
+    "minimum_wage_floor": 8,
+    "wage_unemployment_sensitivity": 0.6,
+    "wage_price_index_sensitivity": 0.4,
+    "target_unemployment_rate": 0.05,
+    "target_inflation_rate": 0.02,
+
+    # Bank- und Kreditsteuerung via Makrodaten
+    "bank_base_credit_reserve_ratio": 0.1,
+    "bank_credit_unemployment_sensitivity": 0.5,
+    "bank_credit_inflation_sensitivity": 0.7,
 
     # Haushalt-Parameter
     "max_age": 80,

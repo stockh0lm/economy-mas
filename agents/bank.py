@@ -49,10 +49,38 @@ class WarengeldBank(BaseAgent):
         self.fee_rate: float = CONFIG.get("bank_fee_rate", 0.01)  # e.g., 1%
         self.inventory_check_interval: int = CONFIG.get("inventory_check_interval", 3)
         self.inventory_coverage_threshold: float = CONFIG.get("inventory_coverage_threshold", 0.8)
+        self.base_credit_reserve_ratio: float = CONFIG.get("bank_base_credit_reserve_ratio", 0.1)
+        self.credit_unemployment_sensitivity: float = CONFIG.get("bank_credit_unemployment_sensitivity", 0.4)
+        self.credit_inflation_sensitivity: float = CONFIG.get("bank_credit_inflation_sensitivity", 0.6)
+        self.target_unemployment_rate: float = CONFIG.get("target_unemployment_rate", 0.05)
+        self.target_inflation_rate: float = CONFIG.get("target_inflation_rate", 0.02)
+        self.macro_unemployment: float = 0.0
+        self.macro_inflation: float = 0.0
 
         # Financial tracking
         self.collected_fees: float = 0.0
         self.liquidity: float = CONFIG.get("initial_bank_liquidity", 1000.0)
+
+    def update_macro_signals(self, unemployment_rate: float | None, inflation_rate: float | None) -> None:
+        if unemployment_rate is not None:
+            self.macro_unemployment = max(0.0, unemployment_rate)
+        if inflation_rate is not None:
+            self.macro_inflation = inflation_rate
+
+    def _allowed_credit_ratio(self) -> float:
+        unemployment_gap = max(0.0, self.macro_unemployment - self.target_unemployment_rate)
+        inflation_gap = max(0.0, self.macro_inflation - self.target_inflation_rate)
+        ratio = self.base_credit_reserve_ratio
+        ratio += self.credit_unemployment_sensitivity * unemployment_gap
+        ratio += self.credit_inflation_sensitivity * inflation_gap
+        return max(0.01, ratio)
+
+    def _max_credit_for_request(self, amount: float) -> float:
+        total_credit = sum(self.credit_lines.values())
+        allowed_ratio = self._allowed_credit_ratio()
+        max_credit = self.liquidity / allowed_ratio if allowed_ratio > 0 else self.liquidity
+        available_capacity = max(0.0, max_credit - total_credit)
+        return min(amount, available_capacity)
 
     def grant_credit(self, merchant: MerchantProtocol, amount: float) -> float:
         """
@@ -73,6 +101,20 @@ class WarengeldBank(BaseAgent):
             log(f"WarengeldBank {self.unique_id}: Invalid credit request amount {amount:.2f}",
                 level="WARNING")
             return 0.0
+
+        allowed_amount = self._max_credit_for_request(amount)
+        if allowed_amount <= 0:
+            log(
+                f"WarengeldBank {self.unique_id}: Macro credit cap restricts lending. Requested {amount:.2f}, allowed 0.0.",
+                level="WARNING",
+            )
+            return 0.0
+        if allowed_amount < amount:
+            log(
+                f"WarengeldBank {self.unique_id}: Macro cap reduced credit from {amount:.2f} to {allowed_amount:.2f}.",
+                level="INFO",
+            )
+            amount = allowed_amount
 
         if self.liquidity < amount:
             log(f"WarengeldBank {self.unique_id}: Insufficient liquidity to grant credit of {amount:.2f}. "
@@ -138,11 +180,15 @@ class WarengeldBank(BaseAgent):
         backing for extended credit.
 
         If a merchant's inventory value falls significantly below their
-        credit amount, a warning is logged.
+        credit amount, enforce repayments tied to merchant balances
+        until coverage is restored.
 
         Args:
             merchants: List of merchants to check
         """
+        forced_repayments: float = 0.0
+        flagged_merchants: int = 0
+
         for merchant in merchants:
             merchant_id = merchant.unique_id
             credit: float = self.credit_lines.get(merchant_id, 0.0)
@@ -151,23 +197,58 @@ class WarengeldBank(BaseAgent):
                 continue  # Skip merchants with no outstanding credit
 
             if not hasattr(merchant, "inventory"):
-                log(f"WarengeldBank {self.unique_id}: Merchant {merchant_id} has no inventory attribute.",
-                    level="DEBUG")
+                log(
+                    f"WarengeldBank {self.unique_id}: Merchant {merchant_id} has credit but no inventory attribute.",
+                    level="WARNING",
+                )
                 continue
 
-            # Cast to InventoryMerchant to access inventory attribute
-            inventory_merchant = merchant  # type: InventoryMerchant
-            inventory: float = inventory_merchant.inventory
+            inventory = getattr(merchant, "inventory")
+            coverage_denominator = max(self.inventory_coverage_threshold, 1e-6)
+            min_covered_credit = inventory / coverage_denominator
 
-            # Check if inventory value is below threshold of credit
-            if inventory < self.inventory_coverage_threshold * credit:
-                log(f"WarengeldBank {self.unique_id}: WARNING - Merchant {merchant_id} has insufficient "
-                    f"inventory ({inventory:.2f}) to cover credit ({credit:.2f}).",
-                    level="WARNING")
+            if credit > min_covered_credit:
+                excess_credit = credit - min_covered_credit
+                flagged_merchants += 1
+                repayment_from_balance = 0.0
+
+                if hasattr(merchant, "balance"):
+                    merchant_balance = getattr(merchant, "balance")
+                    usable_balance = max(0.0, merchant_balance)
+                    repayment_from_balance = min(excess_credit, usable_balance)
+
+                    if repayment_from_balance > 0:
+                        setattr(merchant, "balance", merchant_balance - repayment_from_balance)
+                        repaid = self.process_repayment(merchant, repayment_from_balance)
+                        forced_repayments += repaid
+                        excess_credit = max(0.0, excess_credit - repaid)
+                else:
+                    log(
+                        f"WarengeldBank {self.unique_id}: Merchant {merchant_id} lacks balance attribute; cannot force repayment.",
+                        level="WARNING",
+                    )
+
+                log(
+                    f"WarengeldBank {self.unique_id}: Enforced repayment of {repayment_from_balance:.2f} from merchant {merchant_id} due to insufficient inventory "
+                    f"({inventory:.2f} vs credit {credit:.2f}). Remaining uncovered credit: {excess_credit:.2f}.",
+                    level="WARNING",
+                )
             else:
-                log(f"WarengeldBank {self.unique_id}: Merchant {merchant_id} has sufficient inventory "
-                    f"({inventory:.2f}) to cover credit ({credit:.2f}).",
-                    level="DEBUG")
+                log(
+                    f"WarengeldBank {self.unique_id}: Merchant {merchant_id} has sufficient inventory ({inventory:.2f}) to cover credit ({credit:.2f}).",
+                    level="DEBUG",
+                )
+
+        if flagged_merchants > 0 and forced_repayments > 0:
+            log(
+                f"WarengeldBank {self.unique_id}: Forced repayments totaled {forced_repayments:.2f} across {flagged_merchants} merchants during inventory check.",
+                level="INFO",
+            )
+        elif flagged_merchants > 0:
+            log(
+                f"WarengeldBank {self.unique_id}: {flagged_merchants} merchants lacked sufficient inventory but had no funds for repayment.",
+                level="WARNING",
+            )
 
     def calculate_fees(self, merchants: Sequence[MerchantProtocol]) -> float:
         """
@@ -206,7 +287,7 @@ class WarengeldBank(BaseAgent):
 
         return total_fees
 
-    def step(self, current_step: int, merchants: Sequence[MerchantProtocol]) -> None:
+    def step(self, current_step: int, merchants: Sequence[MerchantProtocol], unemployment_rate: float | None = None, inflation_rate: float | None = None) -> None:
         """
         Execute one simulation step for the bank.
 
@@ -227,6 +308,8 @@ class WarengeldBank(BaseAgent):
 
         # Collect fees
         fees_collected = self.calculate_fees(merchants)
+
+        self.update_macro_signals(unemployment_rate, inflation_rate)
 
         log(f"WarengeldBank {self.unique_id} completed step {current_step}. "
             f"Fees collected: {fees_collected:.2f}, Total fees: {self.collected_fees:.2f}, "

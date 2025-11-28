@@ -54,7 +54,15 @@ class LaborMarket(BaseAgent):
         self.registered_workers: List[WorkerProtocol] = []
 
         # Configuration parameters
-        self.default_wage: float = CONFIG.get("default_wage", 10)  # Default wage for unmatched workers
+        self.default_wage: float = CONFIG.get("default_wage", 10)
+        self.minimum_wage_floor: float = CONFIG.get("minimum_wage_floor", self.default_wage)
+        self.wage_unemployment_sensitivity: float = CONFIG.get("wage_unemployment_sensitivity", 0.5)
+        self.wage_price_index_sensitivity: float = CONFIG.get("wage_price_index_sensitivity", 0.3)
+        self.target_unemployment_rate: float = CONFIG.get("target_unemployment_rate", 0.05)
+        self.target_inflation_rate: float = CONFIG.get("target_inflation_rate", 0.02)
+        self.latest_unemployment_rate: float = 0.0
+        self.last_matches: int = 0
+        self.config_default_wage: float = self.default_wage
 
     def release_worker(self, worker: WorkerProtocol) -> None:
         """Mark a worker as unemployed so they can be matched again."""
@@ -91,6 +99,36 @@ class LaborMarket(BaseAgent):
             self.registered_workers.append(worker)
             log(f"LaborMarket {self.unique_id}: Registered worker {worker.unique_id}.", level="INFO")
 
+    def compute_unemployment_rate(self) -> float:
+        total_workers: int = len(self.registered_workers)
+        if total_workers == 0:
+            return 0.0
+        unemployed = sum(1 for worker in self.registered_workers if not getattr(worker, "employed", False))
+        return unemployed / total_workers
+
+    def apply_macro_wage_adjustment(self, price_index: float | None = None, unemployment_rate: float | None = None, wage_override: float | None = None) -> None:
+        if wage_override is not None:
+            self.default_wage = max(self.minimum_wage_floor, wage_override)
+            log(
+                f"LaborMarket {self.unique_id}: Default wage overridden to {self.default_wage:.2f} from external signal.",
+                level="INFO",
+            )
+            return
+        price_reference = price_index if price_index is not None else 100.0
+        unemployment = unemployment_rate if unemployment_rate is not None else self.latest_unemployment_rate
+        unemployment_gap = unemployment - self.target_unemployment_rate
+        if price_reference <= 0:
+            price_reference = 100.0
+        price_gap = (price_reference / 100.0) - (1 + self.target_inflation_rate)
+        adjustment = 1.0 - self.wage_unemployment_sensitivity * unemployment_gap
+        adjustment -= self.wage_price_index_sensitivity * price_gap
+        adjusted_wage = max(self.minimum_wage_floor, self.config_default_wage * adjustment)
+        self.default_wage = adjusted_wage
+        log(
+            f"LaborMarket {self.unique_id}: Adjusted default wage to {self.default_wage:.2f} (price_index={price_reference:.2f}, unemployment={unemployment:.2%}).",
+            level="INFO",
+        )
+
     def match_workers_to_jobs(self) -> List[WorkerMatchResult]:
         """
         Match registered workers to available job positions.
@@ -118,6 +156,7 @@ class LaborMarket(BaseAgent):
                     f"with employer {offer.employer.unique_id} at wage {offer.wage:.2f}.",
                     level="INFO")
 
+        self.last_matches = len(matches)
         # Clear job offers after matching
         self.job_offers = []
         return matches
@@ -135,7 +174,7 @@ class LaborMarket(BaseAgent):
                     f"for worker {worker.unique_id}.",
                     level="INFO")
 
-    def step(self, current_step: int) -> None:
+    def step(self, current_step: int, price_index: float | None = None, unemployment_rate: float | None = None, wage_override: float | None = None) -> None:
         """
         Execute one simulation step for the labor market.
 
@@ -150,8 +189,10 @@ class LaborMarket(BaseAgent):
         log(f"LaborMarket {self.unique_id} starting step {current_step}.", level="INFO")
 
         matches = self.match_workers_to_jobs()
+        self.latest_unemployment_rate = self.compute_unemployment_rate()
+        self.apply_macro_wage_adjustment(price_index, unemployment_rate, wage_override)
         self.set_wage_levels()
 
         log(f"LaborMarket {self.unique_id} completed step {current_step}. "
-            f"{len(matches)} job matches made.",
+            f"{len(matches)} job matches made (unemployment {self.latest_unemployment_rate:.2%}).",
             level="INFO")
