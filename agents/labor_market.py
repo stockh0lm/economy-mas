@@ -10,12 +10,14 @@ class EmployerProtocol(Protocol):
     """Protocol defining the requirements for employer agents"""
     unique_id: str
 
+    def add_employee_from_labor_market(self, worker: "WorkerProtocol", wage: float) -> None: ...
+
 
 class WorkerProtocol(Protocol):
     """Protocol defining the requirements for worker agents"""
     unique_id: str
     employed: bool
-    current_wage: float
+    current_wage: Optional[float]
 
 
 @dataclass
@@ -53,6 +55,15 @@ class LaborMarket(BaseAgent):
 
         # Configuration parameters
         self.default_wage: float = CONFIG.get("default_wage", 10)  # Default wage for unmatched workers
+
+    def release_worker(self, worker: WorkerProtocol) -> None:
+        """Mark a worker as unemployed so they can be matched again."""
+        worker.employed = False
+        worker.current_wage = None
+        log(
+            f"LaborMarket {self.unique_id}: Worker {worker.unique_id} released back to market.",
+            level="INFO"
+        )
 
     def register_job_offer(self, employer: EmployerProtocol, wage: float, positions: int = 1) -> None:
         """
@@ -101,6 +112,7 @@ class LaborMarket(BaseAgent):
                 worker = available_workers[i]
                 worker.employed = True
                 worker.current_wage = offer.wage
+                offer.employer.add_employee_from_labor_market(worker, offer.wage)
                 matches.append((worker, offer.employer, offer.wage))
                 log(f"LaborMarket {self.unique_id}: Matched worker {worker.unique_id} "
                     f"with employer {offer.employer.unique_id} at wage {offer.wage:.2f}.",
@@ -117,7 +129,7 @@ class LaborMarket(BaseAgent):
         Workers without a current wage are assigned the default wage from configuration.
         """
         for worker in self.registered_workers:
-            if not hasattr(worker, 'current_wage') or worker.current_wage is None:
+            if (not hasattr(worker, "current_wage") or worker.current_wage is None) and not worker.employed:
                 worker.current_wage = self.default_wage
                 log(f"LaborMarket {self.unique_id}: Set default wage {self.default_wage:.2f} "
                     f"for worker {worker.unique_id}.",

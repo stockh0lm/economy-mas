@@ -55,10 +55,9 @@ class State(BaseAgent):
 
     def collect_taxes(self, agents: AgentCollection) -> None:
         """
-        Collect land and environmental taxes from all applicable agents.
+        Collect land taxes from all applicable agents.
 
-        Taxes are calculated based on land area and environmental impact.
-        The collected taxes are added to the state's revenue.
+        Taxes are calculated based on land area, and the collected taxes are added to the state's revenue.
 
         Args:
             agents: Collection of agents to tax
@@ -78,10 +77,6 @@ class State(BaseAgent):
                 land_tax: float = agent.land_area * self.bodensteuer_rate
                 agent_taxes += land_tax
 
-            # Environmental tax collection
-            if hasattr(agent, "environment_impact") and agent.environment_impact > 0:
-                env_tax: float = agent.environment_impact * self.umweltsteuer_rate
-                agent_taxes += env_tax
 
             # Apply total tax to agent
             if agent_taxes > 0:

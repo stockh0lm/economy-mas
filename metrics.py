@@ -1,0 +1,867 @@
+# metrics.py
+"""
+Economic metrics collection and analysis system for the simulation.
+
+This module tracks key economic indicators across different agent types,
+calculates aggregate statistics, and provides data for visualization.
+"""
+
+from typing import Dict, List, Optional, Any, Set, TypedDict, TypeVar, Protocol, cast
+from dataclasses import dataclass, field
+import statistics
+from pathlib import Path
+import json
+import csv
+from datetime import datetime
+from collections import defaultdict
+
+from agents.company_agent import Company
+from agents.household_agent import Household
+from config import CONFIG
+from logger import log
+
+
+# Type definitions for improved readability
+AgentID = str
+TimeStep = int
+ValueType = float | int | bool | str
+MetricName = str
+MetricDict = Dict[MetricName, ValueType]
+TimeSeriesDict = Dict[TimeStep, MetricDict]
+AgentMetricsDict = Dict[AgentID, TimeSeriesDict]
+
+
+class EconomicAgent(Protocol):
+    """Protocol defining the minimum required attributes for tracked agents"""
+    unique_id: str
+
+
+class MetricConfig(TypedDict):
+    """Configuration settings for a single metric"""
+    enabled: bool  # Whether metric is enabled
+    display_name: str  # Human-readable name for plots/reports
+    unit: str  # Measurement unit (e.g., "$", "%", "units")
+    aggregation: str  # How to aggregate across agents ("sum", "mean", "median", "min", "max")
+    critical_threshold: Optional[float]  # Value that triggers alerts if crossed
+
+
+@dataclass
+class MetricsCollector:
+    """
+    Collects, aggregates, and exports economic metrics from simulation agents.
+
+    Tracks data for multiple agent types over time and provides analysis functions
+    to evaluate economic performance of the simulation.
+    """
+
+    def __init__(self):
+        """Initialize the metrics collector."""
+        self.bank_metrics = {}
+        self.household_metrics = {}
+        self.company_metrics = {}
+        self.state_metrics = {}
+        self.market_metrics = {}
+        self.global_metrics = {}
+        self.registered_households = set()
+        self.registered_companies = set()
+        self.registered_banks = set()
+        self.current_step = 0
+        self.metrics_config: Dict[MetricName, MetricConfig] = {}
+        self.export_path: Path = Path(CONFIG.get("metrics_export_path", "output/metrics"))
+        self.__post_init__()
+
+    # Core storage for all metrics data
+    household_metrics: AgentMetricsDict = field(default_factory=dict)
+    company_metrics: AgentMetricsDict = field(default_factory=dict)
+    state_metrics: AgentMetricsDict = field(default_factory=dict)
+    market_metrics: AgentMetricsDict = field(default_factory=dict)
+    global_metrics: TimeSeriesDict = field(default_factory=dict)
+
+    # Tracking registered agents by type
+    registered_households: Set[str] = field(default_factory=set)
+    registered_companies: Set[str] = field(default_factory=set)
+    registered_banks: Set[str] = field(default_factory=set)
+
+    # Configuration for metrics tracking and aggregation
+    metrics_config: dict[MetricName, MetricConfig] = field(default_factory=dict)
+    export_path: Path = field(default_factory=lambda: Path(CONFIG.get("metrics_export_path", "output/metrics")))
+
+    def __post_init__(self) -> None:
+        """Initialize with configuration from CONFIG"""
+        self.metrics_config = CONFIG.get("metrics_config", {})
+        self.setup_default_metrics_config()
+
+        # Create export directory if it doesn't exist
+        self.export_path.mkdir(parents=True, exist_ok=True)
+
+    def setup_default_metrics_config(self) -> None:
+        """Set up default configuration for tracked metrics if not specified in CONFIG"""
+        default_metrics = {
+            # Household metrics
+            "income": {
+                "enabled": True,
+                "display_name": "Household Income",
+                "unit": "$",
+                "aggregation": "mean",
+                "critical_threshold": None
+            },
+            "savings": {
+                "enabled": True,
+                "display_name": "Household Savings",
+                "unit": "$",
+                "aggregation": "sum",
+                "critical_threshold": None
+            },
+            "consumption": {
+                "enabled": True,
+                "display_name": "Consumption",
+                "unit": "$",
+                "aggregation": "sum",
+                "critical_threshold": None
+            },
+            "employed": {
+                "enabled": True,
+                "display_name": "Employment Rate",
+                "unit": "%",
+                "aggregation": "mean",
+                "critical_threshold": 0.6  # Alert if employment falls below 60%
+            },
+
+            # Company metrics
+            "production_capacity": {
+                "enabled": True,
+                "display_name": "Production Capacity",
+                "unit": "units",
+                "aggregation": "sum",
+                "critical_threshold": None
+            },
+            "balance": {
+                "enabled": True,
+                "display_name": "Company Balance",
+                "unit": "$",
+                "aggregation": "sum",
+                "critical_threshold": None
+            },
+            "employees": {
+                "enabled": True,
+                "display_name": "Total Employment",
+                "unit": "workers",
+                "aggregation": "sum",
+                "critical_threshold": None
+            },
+            "rd_investment": {
+                "enabled": True,
+                "display_name": "R&D Investment",
+                "unit": "$",
+                "aggregation": "sum",
+                "critical_threshold": None
+            },
+            "innovation_index": {
+                "enabled": True,
+                "display_name": "Innovation Index",
+                "unit": "",
+                "aggregation": "mean",
+                "critical_threshold": None
+            },
+            "bankruptcy_rate": {
+                "enabled": True,
+                "display_name": "Bankruptcy Rate",
+                "unit": "%",
+                "aggregation": "value",
+                "critical_threshold": 0.1  # Alert if bankruptcy exceeds 10%
+            },
+
+            # Bank metrics
+            "liquidity": {
+                "enabled": True,
+                "display_name": "Banking Liquidity",
+                "unit": "$",
+                "aggregation": "sum",
+                "critical_threshold": None
+            },
+            "total_credit": {
+                "enabled": True,
+                "display_name": "Outstanding Credit",
+                "unit": "$",
+                "aggregation": "sum",
+                "critical_threshold": None
+            },
+
+            # State metrics
+            "tax_revenue": {
+                "enabled": True,
+                "display_name": "Tax Revenue",
+                "unit": "$",
+                "aggregation": "value",
+                "critical_threshold": None
+            },
+            "infrastructure_budget": {
+                "enabled": True,
+                "display_name": "Infrastructure Budget",
+                "unit": "$",
+                "aggregation": "value",
+                "critical_threshold": None
+            },
+            "social_budget": {
+                "enabled": True,
+                "display_name": "Social Budget",
+                "unit": "$",
+                "aggregation": "value",
+                "critical_threshold": None
+            },
+            "environment_budget": {
+                "enabled": True,
+                "display_name": "Environment Budget",
+                "unit": "$",
+                "aggregation": "value",
+                "critical_threshold": None
+            },
+
+            # Global metrics
+            "gini_coefficient": {
+                "enabled": True,
+                "display_name": "Gini Coefficient",
+                "unit": "",
+                "aggregation": "value",
+                "critical_threshold": 0.5  # Alert if wealth inequality exceeds 0.5
+            },
+            "total_money_supply": {
+                "enabled": True,
+                "display_name": "Money Supply",
+                "unit": "$",
+                "aggregation": "value",
+                "critical_threshold": None
+            },
+            "total_environmental_impact": {
+                "enabled": True,
+                "display_name": "Environmental Impact",
+                "unit": "",
+                "aggregation": "value",
+                "critical_threshold": None
+            }
+        }
+
+        # Only add default configs for metrics not already defined in CONFIG
+        for metric_name, config in default_metrics.items():
+            if metric_name not in self.metrics_config:
+                self.metrics_config[metric_name] = config
+
+    def add_metric(self, agent_id: str, metric_name: str, value: float, metric_dict: dict) -> None:
+        """
+        Add a metric value for an agent.
+
+        Args:
+            agent_id: The unique ID of the agent
+            metric_name: Name of the metric
+            value: Value of the metric
+            metric_dict: The dictionary to store the metrics in
+        """
+        # Ensure the agent has an entry
+        if agent_id not in metric_dict:
+            metric_dict[agent_id] = {}
+
+        # Ensure the time step has an entry
+        if self.current_step not in metric_dict[agent_id]:
+            metric_dict[agent_id][self.current_step] = {}
+
+        metric_dict[agent_id][self.current_step][metric_name] = value
+        log(f"Added metric {metric_name}={value:.2f} for agent {agent_id}", level="DEBUG")
+
+    def register_household(self, household: EconomicAgent) -> None:
+        """
+        Register a household agent for metrics tracking.
+
+        Args:
+            household: Household agent to track
+        """
+        agent_id = household.unique_id
+        if agent_id not in self.registered_households:
+            self.registered_households.add(agent_id)
+            self.household_metrics[agent_id] = {}
+            log(f"MetricsCollector: Registered household {agent_id} for metrics tracking", level="DEBUG")
+
+    def register_company(self, company: EconomicAgent) -> None:
+        """
+        Register a company agent for metrics tracking.
+
+        Args:
+            company: Company agent to track
+        """
+        agent_id = company.unique_id
+        if agent_id not in self.registered_companies:
+            self.registered_companies.add(agent_id)
+            self.company_metrics[agent_id] = {}
+            log(f"MetricsCollector: Registered company {agent_id} for metrics tracking", level="DEBUG")
+
+    def register_bank(self, bank: EconomicAgent) -> None:
+        """
+        Register a bank agent for metrics tracking.
+
+        Args:
+            bank: Bank agent to track
+        """
+        agent_id = bank.unique_id
+        if agent_id not in self.registered_banks:
+            self.registered_banks.add(agent_id)
+            self.bank_metrics[agent_id] = {}
+            log(f"MetricsCollector: Registered bank {agent_id} for metrics tracking", level="DEBUG")
+
+    def register_market(self, market: EconomicAgent) -> None:
+        """
+        Register a market agent for metrics tracking.
+
+        Args:
+            market: Market agent to track
+        """
+        agent_id = market.unique_id
+        if agent_id not in self.market_metrics:
+            self.market_metrics[agent_id] = {}
+            log(f"MetricsCollector: Registered market {agent_id} for metrics tracking", level="DEBUG")
+
+    def collect_household_metrics(self, households: list[Household], step: TimeStep) -> None:
+
+        for household in households:
+            agent_id = household.unique_id
+            if agent_id not in self.household_metrics:
+                self.register_household(household)
+
+            # Collect metrics if they exist on the household object
+            for attr in ["checking_account", "savings", "income", "consumption", "age",
+                         "generation", "growth_phase", "employed", "environmental_impact"]:
+                if hasattr(household, attr):
+                    value = getattr(household, attr)
+                    self.add_metric(agent_id, attr, value, self.household_metrics)  # Pass the specific metric dict
+
+            # Calculate derived metrics
+            total_wealth = getattr(household, "checking_account", 0) + getattr(household, "savings", 0)
+            self.add_metric(agent_id, "total_wealth", total_wealth, self.household_metrics)
+
+    def collect_company_metrics(self, companies: list[Company], step: TimeStep) -> None:
+        """
+        Collect metrics from a company agent at the current time step.
+
+        Args:
+            company: Company agent to collect metrics from
+            step: Current simulation time step
+        """
+        for company in companies:
+            agent_id = company.unique_id
+            if agent_id not in self.company_metrics:
+                self.register_company(company)
+
+            # Collect metrics if they exist on the company object
+            for attr in ["balance", "production_capacity", "inventory", "environmental_impact",
+                        "rd_investment", "innovation_index", "growth_phase", "resource_usage"]:
+                if hasattr(company, attr):
+                    value = getattr(company, attr)
+                    self.add_metric(agent_id, attr, value, self.company_metrics)
+
+            # Count employees if available
+            if hasattr(company, "employees"):
+                num_employees = len(company.employees)
+                self.add_metric(agent_id, "employees", num_employees, self.company_metrics)
+
+    def collect_bank_metrics(self, banks: list, step: TimeStep) -> None:
+        """
+        Collect metrics from a bank agent at the current time step.
+
+        Args:
+            banks: List of bank agents to collect metrics from
+            step: Current simulation time step
+        """
+        for bank in banks:
+            agent_id = bank.unique_id
+            if agent_id not in self.bank_metrics:
+                self.register_bank(bank)
+
+            liquidity = bank.liquidity
+            self.add_metric(agent_id, "liquidity", liquidity, self.bank_metrics)
+
+            if hasattr(bank, "credit_lines"):
+                total_credit = sum(bank.credit_lines.values())
+                num_borrowers = len(bank.credit_lines)
+                self.add_metric(agent_id, "total_credit", total_credit, self.bank_metrics)
+                self.add_metric(agent_id, "num_borrowers", num_borrowers, self.bank_metrics)
+
+            if hasattr(bank, "total_savings"):
+                total_savings = bank.total_savings
+                self.add_metric(agent_id, "total_savings", total_savings, self.bank_metrics)
+                if hasattr(bank, "savings_accounts"):
+                    num_accounts = len(bank.savings_accounts)
+                    self.add_metric(agent_id, "num_accounts", num_accounts, self.bank_metrics)
+
+
+    def collect_state_metrics(self, state_id: str, state, households, companies):
+        """
+        Collect metrics related to the state agent.
+
+        Args:
+            state_id: Unique identifier of the state agent
+            state: State agent object
+            households: List of household agents
+            companies: List of company agents
+        """
+        # Collect basic state budget metrics
+        self.add_metric(state_id, "tax_revenue", state.tax_revenue, self.state_metrics)
+        self.add_metric(state_id, "infrastructure_budget", state.infrastructure_budget, self.state_metrics)
+        self.add_metric(state_id, "social_budget", state.social_budget, self.state_metrics)
+        self.add_metric(state_id, "environment_budget", state.environment_budget, self.state_metrics)
+
+        # Calculate aggregate economic metrics
+        total_household_savings = sum(household.savings for household in households)
+        total_company_balance = sum(company.balance for company in companies)
+        total_employment = sum(1 for household in households if hasattr(household, 'employed') and household.employed)
+        employment_rate = total_employment / len(households) if households else 0
+
+        # Add aggregate metrics
+        self.add_metric(state_id, "total_household_savings", total_household_savings, self.state_metrics)
+        self.add_metric(state_id, "total_company_balance", total_company_balance, self.state_metrics)
+        self.add_metric(state_id, "employment_rate", employment_rate, self.state_metrics)
+
+    def collect_market_metrics(self, market: Any, step: TimeStep) -> None:
+        """
+        Collect metrics from a market agent at the current time step.
+
+        Args:
+            market: Market agent to collect metrics from
+            step: Current simulation time step
+        """
+        agent_id = market.unique_id
+        if agent_id not in self.market_metrics:
+            self.market_metrics[agent_id] = {}
+
+        # Labor market metrics
+        if hasattr(market, "registered_workers"):
+            num_registered_workers = len(market.registered_workers)
+            self.add_metric(agent_id, "registered_workers", float(num_registered_workers))
+
+            employed_workers = sum(1 for w in market.registered_workers if hasattr(w, 'employed') and w.employed)
+            self.add_metric(agent_id, "employed_workers", float(employed_workers))
+
+            employment_rate = employed_workers / num_registered_workers if num_registered_workers > 0 else 0
+            self.add_metric(agent_id, "employment_rate", employment_rate)
+
+        # Financial market metrics
+        if hasattr(market, "list_of_assets"):
+            num_assets = len(market.list_of_assets)
+            self.add_metric(agent_id, "num_assets", float(num_assets))
+
+            if market.list_of_assets:
+                average_asset_price = statistics.mean(market.list_of_assets.values())
+                self.add_metric(agent_id, "average_asset_price", average_asset_price)
+
+    def calculate_global_metrics(self, step: TimeStep) -> None:
+            """Calculate global economic metrics aggregated across all agents."""
+            metrics: MetricDict = {}
+
+            # Money supply (sum of all balances plus checking accounts)
+            total_money = 0.0
+            # Add company balances
+            for company_id in self.company_metrics:
+                if step in self.company_metrics[company_id]:
+                    company_data = self.company_metrics[company_id][step]
+                    total_money += company_data.get("balance", 0.0)
+
+            # Add household checking accounts and savings
+            for household_id in self.household_metrics:
+                if step in self.household_metrics[household_id]:
+                    household_data = self.household_metrics[household_id][step]
+                    total_money += household_data.get("checking_account", 0.0) + household_data.get("savings", 0.0)
+
+            metrics["total_money_supply"] = total_money
+
+            # GDP calculation (sum of production/economic activity)
+            gdp = 0.0
+            # Company contribution (production)
+            for company_id in self.company_metrics:
+                if step in self.company_metrics[company_id]:
+                    company_data = self.company_metrics[company_id][step]
+                    gdp += company_data.get("production_capacity", 0.0)
+
+            # Household contribution (consumption)
+            household_consumption = 0.0
+            for household_id in self.household_metrics:
+                if step in self.household_metrics[household_id]:
+                    household_data = self.household_metrics[household_id][step]
+                    household_consumption += household_data.get("consumption", 0.0)
+
+            metrics["gdp"] = gdp
+            metrics["household_consumption"] = household_consumption
+            metrics["consumption_pct_gdp"] = (household_consumption / gdp if gdp > 0 else 0)
+
+            # Inflation calculation (if possible, based on price changes)
+            if step > 1 and step-1 in self.global_metrics and "price_index" in self.global_metrics[step-1]:
+                prev_price = self.global_metrics[step-1].get("price_index", 100)
+                current_price = prev_price * (1 + 0.01)  # Simplified model for now
+                metrics["price_index"] = current_price
+                metrics["inflation_rate"] = ((current_price - prev_price) / prev_price) if prev_price > 0 else 0
+            else:
+                metrics["price_index"] = 100  # Base value
+                metrics["inflation_rate"] = 0
+
+            # Calculate Gini coefficient for wealth inequality
+            wealth_values = []
+            for household_id in self.household_metrics:
+                if step in self.household_metrics[household_id]:
+                    household_data = self.household_metrics[household_id][step]
+                    wealth = household_data.get("total_wealth", 0.0)
+                    wealth_values.append(wealth)
+
+            if wealth_values:
+                metrics["gini_coefficient"] = self._calculate_gini_coefficient(wealth_values)
+
+            # Real wages (nominal wages adjusted for inflation)
+            nominal_wages = []
+            for household_id in self.household_metrics:
+                if step in self.household_metrics[household_id]:
+                    household_data = self.household_metrics[household_id][step]
+                    if household_data.get("employed", False):
+                        nominal_wages.append(household_data.get("income", 0.0))
+
+            avg_nominal_wage = statistics.mean(nominal_wages) if nominal_wages else 0
+            price_index = metrics["price_index"] / 100
+            metrics["average_nominal_wage"] = avg_nominal_wage
+            metrics["average_real_wage"] = avg_nominal_wage / price_index if price_index > 0 else 0
+
+            # Total environmental impact
+            total_impact = 0.0
+            for company_id in self.company_metrics:
+                if step in self.company_metrics[company_id]:
+                    company_data = self.company_metrics[company_id][step]
+                    total_impact += company_data.get("environmental_impact", 0.0)
+
+            for household_id in self.household_metrics:
+                if step in self.household_metrics[household_id]:
+                    household_data = self.household_metrics[household_id][step]
+                    total_impact += household_data.get("environmental_impact", 0.0)
+
+            metrics["total_environmental_impact"] = total_impact
+
+            # Employment metrics
+            employed_count = 0
+            total_households = 0
+            for household_id in self.household_metrics:
+                if step in self.household_metrics[household_id]:
+                    household_data = self.household_metrics[household_id][step]
+                    if "employed" in household_data:
+                        total_households += 1
+                        if household_data["employed"]:
+                            employed_count += 1
+
+            if total_households > 0:
+                metrics["employment_rate"] = employed_count / total_households
+                metrics["unemployment_rate"] = 1 - (employed_count / total_households)
+
+            # Investment metrics
+            total_rd_investment = 0.0
+            for company_id in self.company_metrics:
+                if step in self.company_metrics[company_id]:
+                    company_data = self.company_metrics[company_id][step]
+                    total_rd_investment += company_data.get("rd_investment", 0.0)
+
+            metrics["total_rd_investment"] = total_rd_investment
+            metrics["investment_pct_gdp"] = (total_rd_investment / gdp if gdp > 0 else 0)
+
+            # Bankruptcy rate
+            bankruptcy_count = self._count_bankruptcies_at_step(step)
+            total_companies = len(self.registered_companies)
+            if total_companies > 0:
+                metrics["bankruptcy_rate"] = bankruptcy_count / total_companies
+
+            # Government metrics - aggregate from state_metrics
+            tax_revenue = 0.0
+            govt_spending = 0.0
+            for state_id in self.state_metrics:
+                if step in self.state_metrics[state_id]:
+                    state_data = self.state_metrics[state_id][step]
+                    tax_revenue += state_data.get("tax_revenue", 0.0)
+                    govt_spending += (state_data.get("infrastructure_budget", 0.0) +
+                                    state_data.get("social_budget", 0.0) +
+                                    state_data.get("environment_budget", 0.0))
+
+            metrics["tax_revenue"] = tax_revenue
+            metrics["government_spending"] = govt_spending
+            metrics["govt_spending_pct_gdp"] = (govt_spending / gdp if gdp > 0 else 0)
+            metrics["budget_balance"] = tax_revenue - govt_spending
+
+            # Store global metrics for this step
+            self.global_metrics[step] = metrics
+
+            # Check for critical thresholds
+            self._check_critical_thresholds(metrics)
+
+    def _count_bankruptcies_at_step(self, step: TimeStep) -> int:
+        """
+        Count the number of companies that went bankrupt at a given step.
+
+        Args:
+            step: Time step to analyze
+
+        Returns:
+            Number of bankruptcies detected
+        """
+        # Count companies that were present in the previous step but not in this one
+        if step <= 1:
+            return 0
+
+        previous_step = step - 1
+        bankruptcy_count = 0
+
+        for company_id in self.registered_companies.copy():
+            has_prev_data = previous_step in self.company_metrics.get(company_id, {})
+            has_current_data = step in self.company_metrics.get(company_id, {})
+
+            if has_prev_data and not has_current_data:
+                bankruptcy_count += 1
+
+        return bankruptcy_count
+
+    def _calculate_gini_coefficient(self, values: List[float]) -> float:
+        """
+        Calculate Gini coefficient as a measure of inequality.
+
+        Args:
+            values: List of values (e.g., wealth distribution)
+
+        Returns:
+            Gini coefficient (0 = perfect equality, 1 = perfect inequality)
+        """
+        if not values or all(v == 0 for v in values):
+            return 0.0
+
+        sorted_values = sorted(values)
+        n = len(sorted_values)
+        cumsum = 0
+        for i, value in enumerate(sorted_values):
+            cumsum += (n - i) * value
+
+        return (2 * cumsum) / (n * sum(sorted_values)) - (n + 1) / n if sum(sorted_values) > 0 else 0.0
+
+    def _check_critical_thresholds(self, metrics: MetricDict) -> None:
+        """
+        Check if any metrics have crossed critical thresholds.
+
+        Args:
+            metrics: Dictionary of metrics to check
+        """
+        for metric_name, value in metrics.items():
+            if metric_name in self.metrics_config:
+                threshold = self.metrics_config[metric_name].get("critical_threshold")
+                if threshold is not None:
+                    if isinstance(value, (int, float)) and value >= threshold:
+                        log(f"CRITICAL: Metric {metric_name} value {value} has crossed threshold {threshold}",
+                            level="WARNING")
+
+    def aggregate_metrics(self, step: TimeStep) -> Dict[str, Dict[str, ValueType]]:
+        """
+        Aggregate metrics across agent types for a given time step.
+
+        Args:
+            step: Time step to aggregate metrics for
+
+        Returns:
+            Dictionary of aggregated metrics by category
+        """
+        result: Dict[str, Dict[str, ValueType]] = {
+            "household": {},
+            "company": {},
+            "bank": {},
+            "state": {},
+            "market": {},
+            "global": self.global_metrics.get(step, {})
+        }
+
+        # Aggregate household metrics
+        household_metrics_at_step = defaultdict(list)
+        for household_id, time_series in self.household_metrics.items():
+            if step in time_series and step in time_series[household_id]:  # Check if step exists
+                for metric, value in time_series[step].items():
+                    if isinstance(value, (int, float)):
+                        household_metrics_at_step[metric].append(value)
+
+        for metric, values in household_metrics_at_step.items():
+            if not values:
+                continue
+
+            aggregation = self.metrics_config.get(metric, {}).get("aggregation", "mean")
+            if aggregation == "sum":
+                result["household"][metric] = sum(values)
+            elif aggregation == "mean":
+                result["household"][metric] = statistics.mean(values)
+            elif aggregation == "median":
+                result["household"][metric] = statistics.median(values)
+            elif aggregation == "min":
+                result["household"][metric] = min(values)
+            elif aggregation == "max":
+                result["household"][metric] = max(values)
+
+        # Similar aggregation for other agent types
+        company_metrics_at_step = defaultdict(list)
+        for company_id, time_series in self.company_metrics.items():
+            if step in time_series:
+                for metric, value in time_series[step].items():
+                    if isinstance(value, (int, float)):
+                        company_metrics_at_step[metric].append(value)
+
+        for metric, values in company_metrics_at_step.items():
+            if not values:
+                continue
+
+            aggregation = self.metrics_config.get(metric, {}).get("aggregation", "mean")
+            if aggregation == "sum":
+                result["company"][metric] = sum(values)
+            elif aggregation == "mean":
+                result["company"][metric] = statistics.mean(values)
+            elif aggregation == "median":
+                result["company"][metric] = statistics.median(values)
+            elif aggregation == "min":
+                result["company"][metric] = min(values)
+            elif aggregation == "max":
+                result["company"][metric] = max(values)
+
+        # Bank metrics aggregation
+        bank_metrics_at_step = defaultdict(list)
+        for bank_id, time_series in self.bank_metrics.items():
+            if step in time_series:
+                for metric, value in time_series[step].items():
+                    if isinstance(value, (int, float)):
+                        bank_metrics_at_step[metric].append(value)
+
+        for metric, values in bank_metrics_at_step.items():
+            if not values:
+                continue
+
+            aggregation = self.metrics_config.get(metric, {}).get("aggregation", "sum")
+            if aggregation == "sum":
+                result["bank"][metric] = sum(values)
+            elif aggregation == "mean":
+                result["bank"][metric] = statistics.mean(values)
+            elif aggregation == "median":
+                result["bank"][metric] = statistics.median(values)
+            elif aggregation == "min":
+                result["bank"][metric] = min(values)
+            elif aggregation == "max":
+                result["bank"][metric] = max(values)
+
+        # For state metrics, usually there's only one state agent
+        for state_id, time_series in self.state_metrics.items():
+            if step in time_series:
+                result["state"] = time_series[step]
+                break
+
+        return result
+
+    def export_metrics_to_json(self) -> None:
+        """Export all collected metrics to JSON format"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_file = self.export_path / f"metrics_{timestamp}.json"
+
+        metrics_data = {
+            "household_metrics": self.household_metrics,
+            "company_metrics": self.company_metrics,
+            "bank_metrics": self.bank_metrics,
+            "state_metrics": self.state_metrics,
+            "market_metrics": self.market_metrics,
+            "global_metrics": self.global_metrics
+        }
+
+        with open(output_file, "w") as f:
+            json.dump(metrics_data, f, indent=2)
+
+        log(f"MetricsCollector: Exported metrics to {output_file}", level="INFO")
+
+    def export_time_series_to_csv(self) -> None:
+                """Export time series of key metrics to CSV format"""
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                output_file = self.export_path / f"time_series_{timestamp}.csv"
+
+                # Collect all time steps
+                all_steps = set()
+                for step_dict in [self.global_metrics]:
+                    all_steps.update(step_dict.keys())
+                all_steps = sorted(all_steps)
+
+                # Key economic indicators to track
+                key_indicators = [
+                    "gdp", "unemployment_rate", "inflation_rate", "gini_coefficient",
+                    "average_real_wage", "household_consumption", "consumption_pct_gdp",
+                    "total_rd_investment", "investment_pct_gdp", "bankruptcy_rate",
+                    "tax_revenue", "government_spending", "govt_spending_pct_gdp",
+                    "budget_balance", "total_money_supply", "total_environmental_impact"
+                ]
+
+                # For each time step, collect the metrics
+                rows = []
+                for step in all_steps:
+                    row = {"time_step": step}
+
+                    # Add global metrics
+                    for indicator in key_indicators:
+                        if step in self.global_metrics and indicator in self.global_metrics[step]:
+                            row[f"global_{indicator}"] = self.global_metrics[step][indicator]
+                        else:
+                            row[f"global_{indicator}"] = 0.0
+
+                    rows.append(row)
+
+                # Write to CSV
+                if rows:
+                    with open(output_file, "w", newline="") as f:
+                        writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+                        writer.writeheader()
+                        writer.writerows(rows)
+
+                    log(f"MetricsCollector: Exported time series to {output_file}", level="INFO")
+
+    def detect_economic_cycles(self) -> Optional[Dict[str, Any]]:
+        """
+        Detect economic cycles like booms and recessions.
+
+        Returns:
+            Dictionary with cycle information or None if insufficient data
+        """
+        # Need sufficient data points
+        if not self.global_metrics or len(self.global_metrics) < 10:
+            return None
+
+        steps = sorted(self.global_metrics.keys())
+        growth_values = []
+
+        # Calculate growth rate of total production
+        for i in range(1, len(steps)):
+            current_step = steps[i]
+            prev_step = steps[i-1]
+
+            if "total_money_supply" in self.global_metrics[current_step] and \
+               "total_money_supply" in self.global_metrics[prev_step]:
+
+                current = self.global_metrics[current_step]["total_money_supply"]
+                prev = self.global_metrics[prev_step]["total_money_supply"]
+
+                if prev > 0:
+                    growth_rate = (current - prev) / prev
+                    growth_values.append(growth_rate)
+
+        if not growth_values:
+            return None
+
+        # Identify potential cycles
+        recession_threshold = CONFIG.get("recession_threshold", -0.01)  # -1% growth
+        boom_threshold = CONFIG.get("boom_threshold", 0.03)  # 3% growth
+
+        is_recession = any(rate <= recession_threshold for rate in growth_values[-3:])
+        is_boom = any(rate >= boom_threshold for rate in growth_values[-3:])
+
+        avg_growth = statistics.mean(growth_values)
+
+        return {
+            "avg_growth_rate": avg_growth,
+            "is_recession": is_recession,
+            "is_boom": is_boom,
+            "latest_growth": growth_values[-1] if growth_values else 0,
+            "growth_volatility": statistics.stdev(growth_values) if len(growth_values) > 1 else 0
+        }
+
+
+# Create a singleton metrics collector instance
+metrics_collector = MetricsCollector()

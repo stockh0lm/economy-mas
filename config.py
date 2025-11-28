@@ -1,10 +1,13 @@
 # config.py
+output_dir = "output/"
+
 CONFIG: dict[str, int | float | str | dict | list] = {
     "simulation_steps": 100,
     "tax_rates": {
         "bodensteuer": 0.05,   # Bodensteuer (5%)
         "umweltsteuer": 0.02    # Umweltsteuer (2%)
     },
+    "environmental_tax_state_share": 0.5,  # Share of env tax revenue forwarded to state
     "credit_interest_rate": 0.0,  # zinsfreie Kredite
     "result_storage": "json",  # alternativ auch "csv" möglich
 
@@ -71,7 +74,7 @@ CONFIG: dict[str, int | float | str | dict | list] = {
 
     # Logging und Debugging
     "logging_level": "DEBUG",
-    "log_file": "simulation.log",
+    "log_file": output_dir + "simulation.log",
     "log_format": "%(asctime)s - %(levelname)s - %(message)s",
 
         # Agent identification
@@ -102,8 +105,9 @@ CONFIG: dict[str, int | float | str | dict | list] = {
     "INITIAL_JOB_POSITIONS_PER_COMPANY": 3,       # Number of job positions offered by each company
 
     # Output configuration
-    "SUMMARY_FILE": "simulation_summary.json",    # Filename for simulation summary output
+    "SUMMARY_FILE": output_dir + "simulation_summary.json",    # Filename for simulation summary output
     "JSON_INDENT": 4,                             # Indentation level for JSON output files
+    "metrics_export_path": output_dir + "metrics",  # Directory for metrics exports
 
     # State budget allocation percentages
     "state_budget_allocation": {

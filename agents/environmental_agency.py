@@ -1,5 +1,7 @@
 # environmental_agency.py
-from typing import Protocol, TypeAlias, cast, runtime_checkable
+from typing import Protocol, TypeAlias, cast, runtime_checkable, Optional
+
+from .state_agent import State
 from .base_agent import BaseAgent
 from logger import log
 from config import CONFIG
@@ -34,12 +36,17 @@ class EnvironmentalAgency(BaseAgent):
     Monitors environmental standards and collects environmental taxes.
     """
 
-    def __init__(self, unique_id: str) -> None:
+    def __init__(
+        self,
+        unique_id: str,
+        state: Optional["State"] = None
+    ) -> None:
         """
         Initialize an environmental agency with standard parameters.
 
         Args:
             unique_id: Unique identifier for this agency
+            state: Optional state agent to credit with environmental tax revenue
         """
         super().__init__(unique_id)
 
@@ -50,9 +57,17 @@ class EnvironmentalAgency(BaseAgent):
 
         # Accumulated environmental taxes
         self.collected_env_tax: float = 0.0
+        self.env_tax_state_share: float = CONFIG.get("environmental_tax_state_share", 1.0)
+        self.env_tax_transferred_to_state: float = 0.0
+        self.state: Optional["State"] = state
 
         # Penalty factor from configuration
         self.penalty_factor: float = CONFIG.get("penalty_factor_env_audit", 5.0)
+
+    def attach_state(self, state: "State") -> None:
+        """Link the environmental agency to the state for revenue transfers."""
+        self.state = state
+        log(f"EnvironmentalAgency {self.unique_id} attached to State {state.unique_id}.", level="DEBUG")
 
     def set_env_standards(self, standards_dict: dict[str, float]) -> None:
         """
@@ -65,12 +80,13 @@ class EnvironmentalAgency(BaseAgent):
         log(f"EnvironmentalAgency {self.unique_id} set new environmental standards: {self.env_standards}.",
             level="INFO")
 
-    def collect_env_tax(self, agents: list[AgentWithImpact]) -> float:
+    def collect_env_tax(self, agents: list[AgentWithImpact], state: Optional["State"] = None) -> float:
         """
         Collect environmental tax from agents based on their impact.
 
         Args:
             agents: Collection of agents with environmental impact
+            state: Optional state agent to credit with a share of the revenue
 
         Returns:
             Total environmental tax collected in this operation
@@ -92,6 +108,16 @@ class EnvironmentalAgency(BaseAgent):
                 level="INFO")
 
         self.collected_env_tax += total_tax
+        env_state: Optional["State"] = state or self.state
+        if env_state and self.env_tax_state_share > 0 and total_tax > 0:
+            share = min(max(self.env_tax_state_share, 0.0), 1.0)
+            transfer_amount = total_tax * share
+            env_state.environment_budget += transfer_amount
+            self.env_tax_transferred_to_state += transfer_amount
+            log(
+                f"EnvironmentalAgency {self.unique_id} transferred {transfer_amount:.2f} env tax to State {env_state.unique_id}.",
+                level="INFO"
+            )
         log(f"EnvironmentalAgency {self.unique_id} total collected env tax: {self.collected_env_tax:.2f}.",
             level="INFO")
 
@@ -130,18 +156,19 @@ class EnvironmentalAgency(BaseAgent):
 
             return 0.0
 
-    def step(self, current_step: int, agents: list[AgentWithImpact]) -> None:
+    def step(self, current_step: int, agents: list[AgentWithImpact], state: Optional["State"] = None) -> None:
         """
         Execute one simulation step for the environmental agency.
 
         Args:
             current_step: Current simulation step number
             agents: Collection of agents to monitor and tax
+            state: Optional state agent to credit with environmental tax revenue
         """
         log(f"EnvironmentalAgency {self.unique_id} starting step {current_step}.", level="INFO")
 
         # Collect environmental taxes
-        self.collect_env_tax(agents)
+        self.collect_env_tax(agents, state)
 
         # Audit all agents with environmental_impact attribute
         for agent in agents:

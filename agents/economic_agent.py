@@ -5,7 +5,7 @@ class EconomicAgent(BaseAgent):
     def __init__(self, unique_id):
         super().__init__(unique_id)
         # Zusätzliche Attribute für ökonomische Agenten
-        self.balance = 0
+        self.balance: float = 0.0
 
     def step(self, current_step):
         # Beispielhafte wirtschaftliche Aktion: Balance aktualisieren

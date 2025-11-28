@@ -1,4 +1,5 @@
 # household_agent.py
+from __future__ import annotations
 from typing import Literal, Optional
 from .economic_agent import EconomicAgent
 from logger import log
@@ -52,18 +53,73 @@ class Household(EconomicAgent):
         self.checking_account: float = 0.0
         self.savings: float = 0.0
 
-        # Consumption rates
-        self.consumption_rate_normal: float = CONFIG.get("household_consumption_rate_normal", 0.7)
-        self.consumption_rate_growth: float = CONFIG.get("household_consumption_rate_growth", 0.9)
+        self.consumption_rate_normal: float = self._resolve_consumption_rate(
+            "household_consumption_rate_normal", 0.7
+        )
+        self.consumption_rate_growth: float = self._resolve_consumption_rate(
+            "household_consumption_rate_growth", 0.9
+        )
 
-    def receive_income(self) -> None:
-        """Add regular income to checking account."""
-        self.checking_account += self.income
+    def _resolve_consumption_rate(self, config_key: str, default: float) -> float:
+        value = CONFIG.get(config_key, default)
+        if not isinstance(value, (int, float)):
+            log(
+                f"Household {self.unique_id} uses default consumption rate for {config_key} due to non-numeric value.",
+                level="WARNING"
+            )
+            return default
+
+        rate = float(value)
+        if 0.0 <= rate <= 1.0:
+            return rate
+
+        clamped = max(0.0, min(1.0, rate))
         log(
-            f"Household {self.unique_id} received income: {self.income}. "
-            f"Checking account now: {self.checking_account}.",
+            f"Household {self.unique_id} clamps consumption rate for {config_key} from {rate} to {clamped}.",
+            level="WARNING"
+        )
+        return clamped
+
+    @property
+    def balance(self) -> float:
+        """Expose combined deposits so external entities see realistic holdings."""
+        checking = getattr(self, "checking_account", 0.0)
+        savings = getattr(self, "savings", 0.0)
+        return checking + savings
+
+    @balance.setter
+    def balance(self, value: float) -> None:
+        """Ensure direct writes reduce checking first, then savings, or top up checking."""
+        checking = getattr(self, "checking_account", 0.0)
+        savings = getattr(self, "savings", 0.0)
+        delta = value - (checking + savings)
+
+        if delta >= 0:
+            self.checking_account = checking + delta
+            self.savings = savings
+            return
+
+        remaining = -delta
+        draw = min(checking, remaining)
+        checking -= draw
+        remaining -= draw
+
+        if remaining > 0:
+            savings -= remaining
+
+        self.checking_account = checking
+        self.savings = savings
+
+    def receive_income(self, amount: float | None = None) -> float:
+        """Credit incoming funds to the checking account."""
+        credited_amount: float = self.income if amount is None else amount
+        self.checking_account += credited_amount
+        log(
+            f"Household {self.unique_id} received income: {credited_amount:.2f}. "
+            f"Checking account now: {self.checking_account:.2f}.",
             level="INFO"
         )
+        return credited_amount
 
     def pay_taxes(self, state: object) -> None:
         """

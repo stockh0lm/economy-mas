@@ -14,6 +14,7 @@ from agents.clearing_agent import ClearingAgent
 from agents.environmental_agency import EnvironmentalAgency, RecyclingCompany
 from agents.financial_market import FinancialMarket
 from agents.labor_market import LaborMarket
+from metrics import MetricsCollector
 
 # Type aliases
 AgentResult: TypeAlias = None | Literal["DEAD"] | object
@@ -55,7 +56,7 @@ def initialize_agents() -> AgentDict:
     clearing_agent.monitored_banks.append(warengeld_bank)
     clearing_agent.monitored_savings_banks.append(savings_bank)
 
-    environmental_agency = EnvironmentalAgency(CONFIG["ENV_AGENCY_ID"])
+    environmental_agency = EnvironmentalAgency(CONFIG["ENV_AGENCY_ID"], state=state)
     recycling_company = RecyclingCompany(
         CONFIG["RECYCLING_COMPANY_ID"],
         recycling_efficiency=CONFIG["recycling_efficiency"]
@@ -144,7 +145,7 @@ def update_other_agents(step: int, agents_dict: AgentDict, state: State) -> None
     warengeld_bank.step(step, companies)
     savings_bank.step(step)
     clearing_agent.step(step, all_agents)
-    environmental_agency.step(step, companies + households)
+    environmental_agency.step(step, companies + households, state)
     recycling_company.step(step)
     financial_market.step(step, companies + households)
     labor_market.step(step)
@@ -209,6 +210,8 @@ def main() -> None:
     """Main simulation execution function."""
     logger = setup_logger()
     log("Starting MAS simulation...", level="INFO")
+    metrics = MetricsCollector()
+
     num_steps: int = CONFIG["simulation_steps"]
 
     agents: AgentDict = initialize_agents()
@@ -220,9 +223,18 @@ def main() -> None:
         agents["companies"] = update_companies(agents["companies"], step, agents["state"])
         agents = update_all_agents(agents)
         update_other_agents(step, agents, agents["state"])
+        metrics.collect_state_metrics(agents["state"].unique_id, agents["state"], agents["households"], agents["companies"])
+        metrics.collect_bank_metrics(
+            [agents["warengeld_bank"], agents["savings_bank"]], step
+        )
+        metrics.collect_company_metrics(agents["companies"], step)
+        metrics.collect_household_metrics(agents["households"], step)
+        metrics.calculate_global_metrics(step)
 
     log("Simulation complete.", level="INFO")
     summarize_simulation(agents)
+    metrics.export_metrics_to_json()
+    metrics.export_time_series_to_csv()
 
 if __name__ == "__main__":
     main()

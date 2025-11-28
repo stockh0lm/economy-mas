@@ -1,6 +1,6 @@
 # company_agent.py
 import random
-from typing import TypeAlias, Literal, Optional, cast
+from typing import TypeAlias, Literal, Optional
 
 from .economic_agent import EconomicAgent
 from logger import log
@@ -57,6 +57,7 @@ class Company(EconomicAgent):
         # Employee management
         self.max_employees: int = max_employees
         self.employees: list[Employee] = employees if employees is not None else []
+        self.pending_hires: int = 0
 
         # Financial attributes
         self.inventory: float = 0.0
@@ -119,16 +120,8 @@ class Company(EconomicAgent):
             # Reduce R&D investment after successful innovation
             self.rd_investment *= rd_decay_factor
 
-    def produce(self, labor_market: LaborMarket) -> float:
-        """
-        Produce goods based on capacity and available workforce.
-
-        Args:
-            labor_market: Labor market for hiring/firing employees
-
-        Returns:
-            Amount of goods produced
-        """
+    def produce(self) -> float:
+        """Produce goods based on capacity and available workforce."""
         if self.max_employees == 0:
             actual_production: float = 0.0
         else:
@@ -143,67 +136,50 @@ class Company(EconomicAgent):
             level="INFO"
         )
 
-        self.adjust_employees(labor_market)
         return actual_production
 
-    def adjust_employees(self, labor_market: LaborMarket) -> None:
-        """
-        Adjust employee count based on production capacity.
+    def add_employee_from_labor_market(self, worker: Employee, wage: float) -> None:
+        """Receive a worker assignment from the labor market."""
+        worker.employed = True  # type: ignore[attr-defined]
+        worker.current_wage = wage  # type: ignore[attr-defined]
+        self.employees.append(worker)
+        if self.pending_hires > 0:
+            self.pending_hires -= 1
+        log(
+            f"Company {self.unique_id} accepted worker {worker.unique_id} at wage {wage:.2f}. "
+            f"Total employees: {len(self.employees)}.",
+            level="INFO"
+        )
 
-        Args:
-            labor_market: Labor market for hiring/firing employees
-        """
+    def adjust_employees(self, labor_market: LaborMarket) -> None:
+        """Advertise labor demand and release surplus employees via labor market."""
         employee_capacity_ratio: float = CONFIG.get("employee_capacity_ratio", 10.0)
         required_employees: int = int(self.production_capacity / employee_capacity_ratio)
+        current_count = len(self.employees)
 
-        if required_employees > len(self.employees):
-            self.hire_employees(required_employees - len(self.employees), labor_market)
-        elif required_employees < len(self.employees):
-            self.fire_employees(len(self.employees) - required_employees)
-
-    def hire_employees(self, number: int, labor_market: LaborMarket) -> None:
-        """
-        Hire employees from labor market.
-
-        Args:
-            number: Number of employees to hire
-            labor_market: Labor market to hire from
-        """
-        for _ in range(number):
-            if len(self.employees) < self.max_employees:
-                available_workers = [
-                    worker for worker in labor_market.registered_workers
-                    if not hasattr(worker, 'employed') or not worker.employed
-                ]
-
-                if available_workers:
-                    new_employee = cast(Employee, available_workers.pop(0))
-                    new_employee.employed = True  # type: ignore
-                    self.employees.append(new_employee)
-
-                    log(
-                        f"Company {self.unique_id} hired a new employee. "
-                        f"Total employees: {len(self.employees)}.",
-                        level="INFO"
-                    )
-
-    def fire_employees(self, number: int) -> None:
-        """
-        Fire employees due to downsizing.
-
-        Args:
-            number: Number of employees to fire
-        """
-        for _ in range(number):
-            if self.employees:
-                employee = self.employees.pop()
-                employee.employed = False  # type: ignore
-
+        if required_employees > current_count:
+            new_positions = min(required_employees - current_count, self.max_employees - current_count)
+            if new_positions > 0:
+                self.pending_hires += new_positions
+                labor_market.register_job_offer(
+                    self,
+                    wage=CONFIG.get("wage_rate", CONFIG.get("default_wage", 10.0)),
+                    positions=new_positions
+                )
                 log(
-                    f"Company {self.unique_id} fired an employee. "
-                    f"Total employees: {len(self.employees)}.",
+                    f"Company {self.unique_id} requested {new_positions} workers via labor market.",
                     level="INFO"
                 )
+        elif required_employees < current_count:
+            to_release = current_count - required_employees
+            for _ in range(to_release):
+                if self.employees:
+                    employee = self.employees.pop()
+                    labor_market.release_worker(employee)
+                    log(
+                        f"Company {self.unique_id} released worker {employee.unique_id}.",
+                        level="INFO"
+                    )
 
     def sell_goods(self, demand: float | None = None) -> float:
         """
@@ -251,11 +227,13 @@ class Company(EconomicAgent):
             log(f"Company {self.unique_id} has no employees to pay wages.", level="WARNING")
             return 0.0
 
-        total_wages: float = actual_wage_rate * len(self.employees)
-        self.balance -= total_wages
-
+        total_wages: float = 0.0
         for employee in self.employees:
-            employee.receive_income()
+            rate = wage_rate if wage_rate is not None else getattr(employee, "current_wage", CONFIG.get("default_wage", 5))
+            total_wages += rate
+            employee.receive_income(rate)
+
+        self.balance -= total_wages
 
         log(
             f"Company {self.unique_id} paid wages totaling {total_wages:.2f}. "
@@ -264,34 +242,6 @@ class Company(EconomicAgent):
         )
 
         return total_wages
-
-    def pay_taxes(self, state: State) -> float:
-        """
-        Pay land and environmental taxes to the state.
-
-        Args:
-            state: State agent collecting taxes
-
-        Returns:
-            Total taxes paid
-        """
-        bodensteuer_rate: float = CONFIG.get("tax_rates", {}).get("bodensteuer", 0.05)
-        umweltsteuer_rate: float = CONFIG.get("tax_rates", {}).get("umweltsteuer", 0.02)
-
-        land_tax: float = self.land_area * bodensteuer_rate
-        env_tax: float = self.environmental_impact * umweltsteuer_rate
-        tax_due: float = land_tax + env_tax
-
-        self.balance -= tax_due
-
-        log(
-            f"Company {self.unique_id} paid taxes: {tax_due:.2f} "
-            f"(Land: {land_tax:.2f}, Env: {env_tax:.2f}). "
-            f"New balance: {self.balance:.2f}.",
-            level="INFO"
-        )
-
-        return tax_due
 
     def request_funds_from_bank(self, amount: float) -> float:
         """
@@ -406,16 +356,15 @@ class Company(EconomicAgent):
         self.innovate()
 
         if state and state.labor_market:
-            self.produce(state.labor_market)
+            self.adjust_employees(state.labor_market)
         else:
-            log(f"Company {self.unique_id} cannot produce: no labor market available.", level="WARNING")
+            log(f"Company {self.unique_id} cannot interact with labor market: unavailable.", level="WARNING")
 
         # Sales and finances
+        if self.employees:
+            self.produce()
         self.sell_goods()
         self.pay_wages()
-
-        if state:
-            self.pay_taxes(state)
 
         # Growth phase check
         if not self.growth_phase and self.balance >= self.growth_balance_trigger:
@@ -437,3 +386,7 @@ class Company(EconomicAgent):
 
         log(f"Company {self.unique_id} completed step {current_step}.", level="INFO")
         return new_company
+
+    def produce_output(self) -> None:
+        """Deprecated wrapper maintained for compatibility."""
+        self.produce()
