@@ -223,7 +223,13 @@ def main() -> None:
         agents["companies"] = update_companies(agents["companies"], step, agents["state"])
         agents = update_all_agents(agents)
         update_other_agents(step, agents, agents["state"])
-        metrics.collect_state_metrics(agents["state"].unique_id, agents["state"], agents["households"], agents["companies"])
+        metrics.collect_state_metrics(
+            agents["state"].unique_id,
+            agents["state"],
+            agents["households"],
+            agents["companies"],
+            step,
+        )
         metrics.collect_bank_metrics(
             [agents["warengeld_bank"], agents["savings_bank"]], step
         )
@@ -233,8 +239,7 @@ def main() -> None:
 
     log("Simulation complete.", level="INFO")
     summarize_simulation(agents)
-    metrics.export_metrics_to_json()
-    metrics.export_time_series_to_csv()
+    metrics.export_metrics()
 
 if __name__ == "__main__":
     main()

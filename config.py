@@ -9,7 +9,7 @@ CONFIG: dict[str, int | float | str | dict | list] = {
     },
     "environmental_tax_state_share": 0.5,  # Share of env tax revenue forwarded to state
     "credit_interest_rate": 0.0,  # zinsfreie Kredite
-    "result_storage": "json",  # alternativ auch "csv" möglich
+    "result_storage": "both",  # erlaubt: "json", "csv", "both" möglich
 
     # Bank-Parameter
     "bank_fee_rate": 0.01,               # Gebührensatz der WarengeldBank (1%)
@@ -108,6 +108,12 @@ CONFIG: dict[str, int | float | str | dict | list] = {
     "SUMMARY_FILE": output_dir + "simulation_summary.json",    # Filename for simulation summary output
     "JSON_INDENT": 4,                             # Indentation level for JSON output files
     "metrics_export_path": output_dir + "metrics",  # Directory for metrics exports
+
+    # Price index & inflation tuning
+    "price_index_base": 100.0,
+    "price_index_pressure_target": 1.0,
+    "price_index_sensitivity": 0.05,
+    "price_index_pressure_ratio": "money_supply_to_gdp",  # or "consumption_to_production" / "blended"
 
     # State budget allocation percentages
     "state_budget_allocation": {
