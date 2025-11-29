@@ -1,10 +1,9 @@
-from __future__ import annotations
 
 import copy
 from collections.abc import Iterator, Mapping, MutableMapping
 from typing import Literal, cast
 
-from pydantic import BaseModel, ConfigDict, Field, PositiveInt, RootModel, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, PositiveInt, ValidationError, field_validator
 
 # config.py
 output_dir = "output/"
@@ -13,61 +12,6 @@ output_dir = "output/"
 class TaxRates(BaseModel):
     bodensteuer: float = Field(0.05, ge=0, le=1)
     umweltsteuer: float = Field(0.02, ge=0, le=1)
-
-
-class AssetPriceMap(RootModel[dict[str, float]]):
-    """Dictionary-like wrapper for asset price mappings with convenience helpers."""
-
-    root: dict[str, float] = Field(default_factory=dict)
-
-    def __iter__(self) -> Iterator[str]:
-        return iter(self.root)
-
-    def __len__(self) -> int:
-        return len(self.root)
-
-    def __getitem__(self, item: str) -> float:
-        return self.root[item]
-
-    def get(self, item: str, default: float | None = None) -> float | None:
-        return self.root.get(item, default)
-
-    def items(self) -> Mapping[str, float].items:
-        return self.root.items()
-
-    def as_dict(self) -> dict[str, float]:
-        return dict(self.root)
-
-    @classmethod
-    def from_dict(cls, data: Mapping[str, float]) -> "AssetPriceMap":
-        return cls(root=dict(data))
-
-
-ConfigScalar = bool | int | float | str | None
-ConfigValue = ConfigScalar | list["ConfigValue"] | dict[str, "ConfigValue"]
-
-
-def _coerce_value(value: object) -> ConfigValue:
-    if isinstance(value, (bool, int, float, str)) or value is None:
-        return value
-    if isinstance(value, list):
-        return [_coerce_value(item) for item in value]
-    if isinstance(value, tuple):
-        return [_coerce_value(item) for item in value]
-    if isinstance(value, Mapping):
-        coerced: dict[str, ConfigValue] = {}
-        for key, item in value.items():
-            if not isinstance(key, str):
-                msg = "CONFIG keys must be strings"
-                raise TypeError(msg)
-            coerced[key] = _coerce_value(item)
-        return coerced
-    msg = f"Unsupported CONFIG value type: {type(value)!r}"
-    raise TypeError(msg)
-
-
-def _coerce_config_dict(data: Mapping[str, object]) -> dict[str, ConfigValue]:
-    return {key: _coerce_value(value) for key, value in data.items()}
 
 
 class InitialHousehold(BaseModel):
@@ -102,28 +46,68 @@ def _default_state_budget_allocation() -> dict[str, float]:
     return {"infrastructure": 0.5, "social": 0.3, "environment": 0.2}
 
 
-def _default_asset_initial_prices() -> AssetPriceMap:
-    return AssetPriceMap.from_dict({
-        "Aktie_A": 100.0,
-        "Aktie_B": 50.0,
-        "Anleihe_X": 1000.0,
-    })
-
-
-def _default_asset_bid_ask_spreads() -> AssetPriceMap:
-    return AssetPriceMap.from_dict({
-        "Aktie_A": 0.02,
-        "Aktie_B": 0.02,
-        "Anleihe_X": 0.01,
-    })
-
-
 class MetricConfigModel(BaseModel):
-    enabled: bool = True
+    enabled: bool = True  # noqa: F841 - false positive from static analyzers
     display_name: str = ""
     unit: str = ""
     aggregation: Literal["sum", "mean", "median", "min", "max", "value"] = "mean"
     critical_threshold: float | None = None
+
+
+class AssetPriceMap:
+    """Lightweight mapping wrapper retained for backward compatibility."""
+
+    def __init__(self, data: Mapping[str, float] | None = None) -> None:
+        self._data: dict[str, float] = dict(data or {})
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._data)
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def __getitem__(self, item: str) -> float:
+        return self._data[item]
+
+    def get(self, item: str, default: float | None = None) -> float | None:
+        return self._data.get(item, default)
+
+    def items(self) -> Mapping[str, float].items:
+        return self._data.items()
+
+    def as_dict(self) -> dict[str, float]:
+        return dict(self._data)
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, float]) -> "AssetPriceMap":
+        return cls(data)
+
+
+ConfigScalar = bool | int | float | str | None
+ConfigValue = ConfigScalar | list["ConfigValue"] | dict[str, "ConfigValue"]
+
+
+def _coerce_value(value: object) -> ConfigValue:
+    if isinstance(value, (bool, int, float, str)) or value is None:
+        return value
+    if isinstance(value, list):
+        return [_coerce_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_coerce_value(item) for item in value]
+    if isinstance(value, Mapping):
+        coerced: dict[str, ConfigValue] = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                msg = "CONFIG keys must be strings"
+                raise TypeError(msg)
+            coerced[key] = _coerce_value(item)
+        return coerced
+    msg = f"Unsupported CONFIG value type: {type(value)!r}"
+    raise TypeError(msg)
+
+
+def _coerce_config_dict(data: Mapping[str, object]) -> dict[str, ConfigValue]:
+    return {key: _coerce_value(value) for key, value in data.items()}
 
 
 class SimulationConfig(BaseModel):
@@ -156,6 +140,8 @@ class SimulationConfig(BaseModel):
     max_age: PositiveInt = 80
     max_generation: PositiveInt = 3
     savings_growth_trigger: float = Field(500.0, ge=0)
+    child_rearing_cost: float = Field(200.0, ge=0)
+    household_loan_repayment_rate: float = Field(0.25, ge=0, le=1)
     household_consumption_rate_normal: float = Field(0.7, ge=0, le=1)
     household_consumption_rate_growth: float = Field(0.9, ge=0, le=1)
     rd_investment_trigger_balance: float = Field(200, ge=0)
@@ -165,22 +151,25 @@ class SimulationConfig(BaseModel):
     employee_capacity_ratio: float = Field(11.0, gt=0)
     company_split_ratio: float = Field(0.5, ge=0, le=1)
     company_liquidity_buffer_ratio: float = Field(0.2, ge=0)
+    company_zero_staff_auto_liquidation: bool = True
+    company_zero_staff_grace_steps: PositiveInt = 3
+    company_zero_staff_liquidation_state_share: float = Field(1.0, ge=0, le=1)
     min_working_capital_buffer: float = Field(0.0, ge=0)
     production_base_price: float = Field(10, ge=0)
     production_innovation_bonus_rate: float = Field(0.02, ge=0)
     demand_default: float = Field(50, ge=0)
     recycling_efficiency: float = Field(0.8, ge=0, le=1)
+    waste_output_per_env_impact: float = Field(0.5, ge=0)
+    recycling_cost_per_unit: float = Field(0.25, ge=0)
     desired_bank_liquidity: float = Field(1000, ge=0)
     desired_sparkassen_liquidity: float = Field(500, ge=0)
     penalty_factor_env_audit: float = Field(5, ge=0)
     speculation_limit: float = Field(10_000, ge=0)
-    asset_initial_prices: AssetPriceMap = Field(default_factory=_default_asset_initial_prices)
-    asset_bid_ask_spreads: AssetPriceMap = Field(default_factory=_default_asset_bid_ask_spreads)
     max_savings_per_account: float = Field(10_000, ge=0)
     loan_interest_rate: float = Field(0.0)
-    logging_level: str = "DEBUG"
-    log_file: str = output_dir + "simulation.log"
-    log_format: str = "%(asctime)s - %(levelname)s - %(message)s"
+    logging_level: str = "DEBUG"  # noqa: F841 - referenced via CONFIG mapping
+    log_file: str = output_dir + "simulation.log"  # noqa: F841 - dynamic access
+    log_format: str = "%(asctime)s - %(levelname)s - %(message)s"  # noqa: F841
     STATE_ID: str = "state_1"
     BANK_ID: str = "bank_1"
     SAVINGS_BANK_ID: str = "savings_bank_1"
@@ -216,7 +205,7 @@ class SimulationConfig(BaseModel):
     @classmethod
     def _validate_budget_allocation(
         cls, value: dict[str, float]
-    ) -> dict[str, float]:
+    ) -> dict[str, float]:  # noqa: F841 - invoked via Pydantic validation hook
         if not value:
             return value
         total = sum(value.values())
@@ -274,7 +263,7 @@ class MutableConfigDict(MutableMapping[str, ConfigValue]):
 
     def update(  # type: ignore[override]
         self,
-        other: Mapping[str, ConfigValue] | None = None,
+        other: Mapping[str, ConfigValue] | None,
         **kwargs: ConfigValue,
     ) -> None:
         if other is not None:

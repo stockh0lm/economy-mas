@@ -1,5 +1,5 @@
 # financial_market.py
-from typing import Dict, List, Protocol, TypeAlias, Union
+from typing import Protocol, TypeAlias
 
 from config import CONFIG_MODEL, SimulationConfig
 from logger import log
@@ -11,7 +11,7 @@ class AssetPortfolioAgent(Protocol):
     """Protocol for agents that can hold financial assets"""
 
     unique_id: str
-    asset_portfolio: Dict[str, float]  # Maps asset name to quantity
+    asset_portfolio: dict[str, float]  # Maps asset name to quantity
 
 
 # Type aliases for improved readability
@@ -29,15 +29,15 @@ class FinancialMarket(BaseAgent):
         self.config: SimulationConfig = config or CONFIG_MODEL
 
         # Asset prices: name -> current price
-        self.list_of_assets: Dict[AssetName, Price] = {}
+        self.list_of_assets: dict[AssetName, Price] = {}
 
         # Bid-ask spread as percentage of price (e.g., 2%)
-        self.bid_ask_spreads: Dict[AssetName, float] = {}
+        self.bid_ask_spreads: dict[AssetName, float] = {}
 
         # Threshold for considering asset holdings as hyperwealth
         self.speculation_limit: float = self.config.speculation_limit
 
-    def check_for_hypervermoegen(self, agents: List[Union[AssetPortfolioAgent, BaseAgent]]) -> None:
+    def check_for_hypervermoegen(self, agents: list[AssetPortfolioAgent | BaseAgent]) -> None:
         """
         Check if agents have accumulated speculative assets (hyperwealth).
 
@@ -63,7 +63,7 @@ class FinancialMarket(BaseAgent):
                         level="WARNING",
                     )
 
-    def step(self, current_step: int, agents: List[BaseAgent]) -> None:
+    def step(self, current_step: int, agents: list[BaseAgent]) -> None:
         """Execute one simulation step for passive asset oversight."""
         log(
             f"FinancialMarket {self.unique_id} starting step {current_step} (monitoring only).",

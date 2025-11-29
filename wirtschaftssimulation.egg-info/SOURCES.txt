@@ -22,6 +22,8 @@ tests/test_company_basic.py
 tests/test_company_split_bankruptcy.py
 tests/test_company_step_regression.py
 tests/test_config_models.py
+tests/test_environmental_agency.py
+tests/test_household_savings_bank_flow.py
 tests/test_metrics_aggregate.py
 tests/test_metrics_global.py
 tests/test_sanity.py

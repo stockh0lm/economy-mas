@@ -1,8 +1,7 @@
 # household_agent.py
-from __future__ import annotations
 
 import random
-from typing import TYPE_CHECKING, Literal, Optional
+from typing import TYPE_CHECKING, Literal
 
 from config import CONFIG_MODEL, SimulationConfig
 from logger import log
@@ -150,7 +149,7 @@ class Household(EconomicAgent):
         )
         # Note: Actual tax payment is handled by the state agent
 
-    def offer_labor(self, labor_market: Optional[object] = None) -> bool:
+    def offer_labor(self, labor_market: object | None = None) -> bool:
         """
         Offer labor to the labor market.
 
@@ -164,7 +163,7 @@ class Household(EconomicAgent):
         return True
 
     def consume(
-        self, consumption_rate: float, companies: Optional[list["Company"]] = None
+        self, consumption_rate: float, companies: "Company" | None = None
     ) -> float:
         """Consume goods by purchasing from companies when possible."""
         if not companies:
@@ -194,7 +193,7 @@ class Household(EconomicAgent):
         )
         return consumption_amount
 
-    def save(self, savings_bank: Optional[SavingsBank] = None) -> float:
+    def save(self, savings_bank: SavingsBank | None = None) -> float:
         """
         Move remaining checking balance into savings or deposit it at the savings bank.
 
@@ -230,7 +229,7 @@ class Household(EconomicAgent):
         )
         return saved_amount
 
-    def split_household(self) -> "Household":
+    def split_household(self) -> Household:
         """
         Split household into two, creating a new child household.
 
@@ -313,10 +312,10 @@ class Household(EconomicAgent):
     def step(
         self,
         current_step: int,
-        state: Optional[object] = None,
-        savings_bank: Optional[SavingsBank] = None,
-        companies: Optional[list["Company"]] = None,
-    ) -> Optional["Household"] | Literal["DEAD"]:
+        state: object | None = None,
+        savings_bank: SavingsBank | None = None,
+        companies: "Company" | None = None,
+    ) -> Household | Literal["DEAD"] | None:
         """
         Execute one simulation step for the household agent.
 
@@ -367,7 +366,7 @@ class Household(EconomicAgent):
             self.growth_phase = True
             log(f"Household {self.unique_id} enters growth phase.", level="INFO")
 
-        new_household: Optional[Household] = None
+        new_household: Household | None = None
 
         # Split household if growth phase lasts long enough
         if self.growth_phase and self.growth_counter >= self.growth_threshold:

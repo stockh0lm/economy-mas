@@ -11,7 +11,7 @@ from agents.household_agent import Household
 from agents.labor_market import LaborMarket
 from agents.savings_bank_agent import SavingsBank
 from agents.state_agent import State
-from config import CONFIG, CONFIG_MODEL, SimulationConfig
+from config import CONFIG_MODEL, SimulationConfig
 from logger import log, setup_logger
 from metrics import MetricsCollector
 
@@ -75,6 +75,7 @@ def initialize_agents(config: SimulationConfig) -> AgentDict:
         recycling_efficiency=config.recycling_efficiency,
         config=config,
     )
+    environmental_agency.attach_recycling_company(recycling_company)
     financial_market = FinancialMarket(config.FINANCIAL_MARKET_ID, config)
     labor_market = LaborMarket(config.LABOR_MARKET_ID, config)
     state.labor_market = labor_market
@@ -144,8 +145,9 @@ def update_companies(
     for company in companies:
         result: AgentResult = company.step(step, state, warengeld_bank, savings_bank)
 
-        if result == "DEAD":
-            log(f"Company {company.unique_id} removed (bankrupt).", level="INFO")
+        if result == "DEAD" or result == "LIQUIDATED":
+            reason = "bankrupt" if result == "DEAD" else "liquidated"
+            log(f"Company {company.unique_id} removed ({reason}).", level="INFO")
             continue
         elif result is not None:
             new_companies.append(result)

@@ -1,8 +1,7 @@
 # household_agent.py
-from __future__ import annotations
 
 import random
-from typing import TYPE_CHECKING, Literal, Optional
+from typing import TYPE_CHECKING, Literal
 
 from config import CONFIG_MODEL, SimulationConfig
 from logger import log
@@ -71,6 +70,10 @@ class Household(EconomicAgent):
         self.consumption_rate_growth: float = self._resolve_consumption_rate(
             self.config.household_consumption_rate_growth
         )
+
+        # Child rearing and loan parameters
+        self.child_rearing_cost: float = self.config.child_rearing_cost
+        self.loan_repayment_rate: float = self.config.household_loan_repayment_rate
 
     def _resolve_consumption_rate(self, value: float) -> float:
         if not isinstance(value, (int, float)):
@@ -146,7 +149,7 @@ class Household(EconomicAgent):
         )
         # Note: Actual tax payment is handled by the state agent
 
-    def offer_labor(self, labor_market: Optional[object] = None) -> bool:
+    def offer_labor(self, labor_market: object | None = None) -> bool:
         """
         Offer labor to the labor market.
 
@@ -160,7 +163,7 @@ class Household(EconomicAgent):
         return True
 
     def consume(
-        self, consumption_rate: float, companies: Optional[list["Company"]] = None
+        self, consumption_rate: float, companies: "Company" | None = None
     ) -> float:
         """Consume goods by purchasing from companies when possible."""
         if not companies:
@@ -190,7 +193,7 @@ class Household(EconomicAgent):
         )
         return consumption_amount
 
-    def save(self, savings_bank: Optional[SavingsBank] = None) -> float:
+    def save(self, savings_bank: SavingsBank | None = None) -> float:
         """
         Move remaining checking balance into savings or deposit it at the savings bank.
 
@@ -226,7 +229,7 @@ class Household(EconomicAgent):
         )
         return saved_amount
 
-    def split_household(self) -> "Household":
+    def split_household(self) -> Household:
         """
         Split household into two, creating a new child household.
 
@@ -272,13 +275,47 @@ class Household(EconomicAgent):
 
         return new_household
 
+    def _handle_childrearing_costs(self, savings_bank: SavingsBank | None) -> float:
+        """Withdraw savings via the bank when raising children triggers large expenses."""
+        if self.growth_phase or self.savings <= 0:
+            return 0.0
+        required = self.child_rearing_cost
+        if savings_bank is None:
+            draw = min(required, self.savings)
+            self.savings -= draw
+            self.checking_account += draw
+            return draw
+        withdrawn = savings_bank.give_household_withdrawal(self, required)
+        if withdrawn <= 0:
+            fallback = min(required, self.savings)
+            self.savings -= fallback
+            self.checking_account += fallback
+            return fallback
+        self.checking_account += withdrawn
+        return withdrawn
+
+    def _repay_savings_loans(self, savings_bank: SavingsBank | None) -> float:
+        """Direct a share of deposits toward repayment of savings-bank loans."""
+        if savings_bank is None:
+            return 0.0
+        outstanding = savings_bank.active_loans.get(self.unique_id, 0.0)
+        if outstanding <= 0:
+            return 0.0
+        disposable = max(0.0, self.checking_account)
+        if disposable <= 0:
+            return 0.0
+        repay_budget = disposable * self.loan_repayment_rate
+        repaid = savings_bank.repayment(self, repay_budget)
+        self.checking_account -= repaid
+        return repaid
+
     def step(
         self,
         current_step: int,
-        state: Optional[object] = None,
-        savings_bank: Optional[SavingsBank] = None,
-        companies: Optional[list["Company"]] = None,
-    ) -> Optional["Household"] | Literal["DEAD"]:
+        state: object | None = None,
+        savings_bank: SavingsBank | None = None,
+        companies: "Company" | None = None,
+    ) -> Household | Literal["DEAD"] | None:
         """
         Execute one simulation step for the household agent.
 
@@ -319,7 +356,9 @@ class Household(EconomicAgent):
             rate: float = self.consumption_rate_normal
 
         self.consume(rate, companies)
+        self._handle_childrearing_costs(savings_bank)
         self.save(savings_bank)
+        self._repay_savings_loans(savings_bank)
         self.offer_labor()
 
         # Enter growth phase if savings exceed trigger threshold
@@ -327,7 +366,7 @@ class Household(EconomicAgent):
             self.growth_phase = True
             log(f"Household {self.unique_id} enters growth phase.", level="INFO")
 
-        new_household: Optional[Household] = None
+        new_household: Household | None = None
 
         # Split household if growth phase lasts long enough
         if self.growth_phase and self.growth_counter >= self.growth_threshold:

@@ -1,6 +1,6 @@
 # labor_market.py
 from dataclasses import dataclass
-from typing import List, Optional, Protocol, Tuple, TypeAlias
+from typing import Protocol, TypeAlias
 
 from config import CONFIG_MODEL, SimulationConfig
 from logger import log
@@ -21,7 +21,7 @@ class WorkerProtocol(Protocol):
 
     unique_id: str
     employed: bool
-    current_wage: Optional[float]
+    current_wage: float | None
 
 
 @dataclass
@@ -33,7 +33,7 @@ class JobOffer:
     positions: int
 
 
-WorkerMatchResult: TypeAlias = Tuple[WorkerProtocol, EmployerProtocol, float]
+WorkerMatchResult: TypeAlias = tuple[WorkerProtocol, EmployerProtocol, float]
 
 
 class LaborMarket(BaseAgent):
@@ -55,8 +55,8 @@ class LaborMarket(BaseAgent):
             unique_id: Unique identifier for this labor market
         """
         super().__init__(unique_id)
-        self.job_offers: List[JobOffer] = []
-        self.registered_workers: List[WorkerProtocol] = []
+        self.job_offers: list[JobOffer] = []
+        self.registered_workers: list[WorkerProtocol] = []
 
         self.config: SimulationConfig = config or CONFIG_MODEL
 
@@ -68,7 +68,6 @@ class LaborMarket(BaseAgent):
         self.target_unemployment_rate: float = self.config.target_unemployment_rate
         self.target_inflation_rate: float = self.config.target_inflation_rate
         self.latest_unemployment_rate: float = 0.0
-        self.last_matches: int = 0
         self.config_default_wage: float = self.default_wage
 
     def release_worker(self, worker: WorkerProtocol) -> None:
@@ -151,7 +150,7 @@ class LaborMarket(BaseAgent):
             level="INFO",
         )
 
-    def match_workers_to_jobs(self) -> List[WorkerMatchResult]:
+    def match_workers_to_jobs(self) -> list[WorkerMatchResult]:
         """
         Match registered workers to available job positions.
 
@@ -162,7 +161,7 @@ class LaborMarket(BaseAgent):
         Returns:
             List of successful matches as (worker, employer, wage) tuples
         """
-        matches: List[WorkerMatchResult] = []
+        matches: list[WorkerMatchResult] = []
 
         for offer in self.job_offers:
             available_workers = [
@@ -182,7 +181,6 @@ class LaborMarket(BaseAgent):
                     level="INFO",
                 )
 
-        self.last_matches = len(matches)
         # Clear job offers after matching
         self.job_offers = []
         return matches

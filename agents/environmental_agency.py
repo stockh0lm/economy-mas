@@ -1,5 +1,4 @@
-# environmental_agency.py
-from typing import Optional, Protocol, TypeAlias, cast, runtime_checkable
+from typing import Protocol, TypeAlias, cast, runtime_checkable
 
 from config import CONFIG_MODEL, SimulationConfig
 from logger import log
@@ -40,7 +39,12 @@ class EnvironmentalAgency(BaseAgent):
     Monitors environmental standards and collects environmental taxes.
     """
 
-    def __init__(self, unique_id: str, state: Optional["State"] = None, config: SimulationConfig | None = None) -> None:
+    def __init__(
+        self,
+        unique_id: str,
+        state: State | None = None,
+        config: SimulationConfig | None = None,
+    ) -> None:
         """
         Initialize an environmental agency with standard parameters.
 
@@ -59,15 +63,15 @@ class EnvironmentalAgency(BaseAgent):
         self.collected_env_tax: float = 0.0
         self.env_tax_state_share: float = self.config.environmental_tax_state_share
         self.env_tax_transferred_to_state: float = 0.0
-        self.state: Optional["State"] = state
+        self.state: State | None = state
 
         # Penalty factor from configuration
         self.penalty_factor: float = self.config.penalty_factor_env_audit
 
         # Recycling company attachment
-        self.recycling_company: Optional["RecyclingCompany"] = None
+        self.recycling_company: RecyclingCompany | None = None
 
-    def attach_state(self, state: "State") -> None:
+    def attach_state(self, state: State) -> None:
         """Link the environmental agency to the state for revenue transfers."""
         self.state = state
         log(
@@ -75,7 +79,7 @@ class EnvironmentalAgency(BaseAgent):
             level="DEBUG",
         )
 
-    def attach_recycling_company(self, recycler: "RecyclingCompany") -> None:
+    def attach_recycling_company(self, recycler: RecyclingCompany) -> None:
         """Link the environmental agency to a recycling company for waste processing."""
         self.recycling_company = recycler
         log(
@@ -96,9 +100,7 @@ class EnvironmentalAgency(BaseAgent):
             level="INFO",
         )
 
-    def collect_env_tax(
-        self, agents: list[AgentWithImpact], state: Optional["State"] = None
-    ) -> float:
+    def collect_env_tax(self, agents: list[AgentWithImpact], state: State | None = None) -> float:
         """
         Collect environmental tax from agents based on their impact.
 
@@ -134,7 +136,7 @@ class EnvironmentalAgency(BaseAgent):
             )
 
         self.collected_env_tax += total_tax
-        env_state: Optional["State"] = state or self.state
+        env_state: State | None = state or self.state
         if env_state and self.env_tax_state_share > 0 and total_tax > 0:
             share = min(max(self.env_tax_state_share, 0.0), 1.0)
             transfer_amount = total_tax * share
@@ -190,7 +192,7 @@ class EnvironmentalAgency(BaseAgent):
             return 0.0
 
     def step(
-        self, current_step: int, agents: list[AgentWithImpact], state: Optional["State"] = None
+        self, current_step: int, agents: list[AgentWithImpact], state: State | None = None
     ) -> None:
         """
         Execute one simulation step for the environmental agency.
@@ -217,7 +219,12 @@ class RecyclingCompany(BaseAgent):
     Collects and processes waste into recycled materials.
     """
 
-    def __init__(self, unique_id: str, recycling_efficiency: float | None = None, config: SimulationConfig | None = None) -> None:
+    def __init__(
+        self,
+        unique_id: str,
+        recycling_efficiency: float | None = None,
+        config: SimulationConfig | None = None,
+    ) -> None:
         """
         Initialize a recycling company with specified efficiency.
 

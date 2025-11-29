@@ -1,6 +1,7 @@
+
 # company_agent.py
 import random
-from typing import Literal, Optional, TypeAlias
+from typing import Literal, TypeAlias
 
 from agents.bank import WarengeldBank
 from agents.economic_agent import EconomicAgent
@@ -13,7 +14,6 @@ from config import CONFIG_MODEL, SimulationConfig
 from logger import log
 
 # Type aliases for improved readability
-CompanyResult: TypeAlias = Optional["Company"] | Literal["DEAD"]
 Employee: TypeAlias = Household  # Type of employees (currently Household)
 
 
@@ -33,7 +33,7 @@ class Company(EconomicAgent):
         land_area: float = 100.0,
         environmental_impact: float = 5.0,
         max_employees: int = 10,
-        employees: list[Employee] | None = None,
+        employees: Employee | None = None,
         config: SimulationConfig | None = None,
     ) -> None:
         """
@@ -77,6 +77,7 @@ class Company(EconomicAgent):
         # Research and development
         self.rd_investment: float = 0.0
         self.innovation_index: float = 0.0
+        self._zero_staff_steps: int = 0
 
     def invest_in_rd(self) -> None:
         """
@@ -379,7 +380,7 @@ class Company(EconomicAgent):
             return True
         return False
 
-    def _ensure_wage_liquidity(self, warengeld_bank: Optional[WarengeldBank]) -> None:
+    def _ensure_wage_liquidity(self, warengeld_bank: WarengeldBank | None) -> None:
         """Secure short-term credit to cover the upcoming wage bill."""
         if warengeld_bank is None or not self.employees:
             return
@@ -407,7 +408,7 @@ class Company(EconomicAgent):
         self.invest_in_rd()
         self.innovate()
 
-    def _sync_labor_market(self, state: Optional[State]) -> None:
+    def _sync_labor_market(self, state: State | None) -> None:
         """Ensure the company interacts with the labor market if available."""
         if state and state.labor_market:
             self.adjust_employees(state.labor_market)
@@ -423,7 +424,7 @@ class Company(EconomicAgent):
             self.produce()
         self.pay_wages()
 
-    def _trigger_growth_and_investment(self, savings_bank: Optional[SavingsBank]) -> None:
+    def _trigger_growth_and_investment(self, savings_bank: SavingsBank | None) -> None:
         """Toggle growth mode and request long-term financing if conditions are met."""
         if not self.growth_phase and self.balance >= self.growth_balance_trigger:
             self.growth_phase = True
@@ -450,13 +451,13 @@ class Company(EconomicAgent):
         if self.growth_phase:
             self.growth_counter += 1
 
-    def _handle_company_split(self) -> Optional["Company"]:
+    def _handle_company_split(self) -> Company | None:
         """Split the company if growth thresholds are satisfied."""
         if self.growth_phase and self.growth_counter >= self.growth_threshold:
             return self.split_company()
         return None
 
-    def _service_warengeld_credit(self, warengeld_bank: Optional[WarengeldBank]) -> None:
+    def _service_warengeld_credit(self, warengeld_bank: WarengeldBank | None) -> None:
         """Repay short-term credit while observing the working-capital buffer."""
         if warengeld_bank is None:
             return
@@ -477,13 +478,37 @@ class Company(EconomicAgent):
             level="INFO",
         )
 
+    def _should_liquidate_due_to_staffing(self) -> bool:
+        if not getattr(self.config, "company_zero_staff_auto_liquidation", False):
+            return False
+        grace = getattr(self.config, "company_zero_staff_grace_steps", 1)
+        return self._zero_staff_steps >= grace
+
+    def _handle_zero_staff_counter(self) -> None:
+        if self.employees:
+            self._zero_staff_steps = 0
+            return
+        self._zero_staff_steps += 1
+
+    def _liquidate_due_to_staff_loss(self, state: State | None) -> Literal["LIQUIDATED"]:
+        log(
+            f"Company {self.unique_id} forcibly liquidated after {self._zero_staff_steps} steps without employees.",
+            level="WARNING",
+        )
+        payout_share = getattr(self.config, "company_zero_staff_liquidation_state_share", 1.0)
+        payout = max(0.0, self.balance * payout_share)
+        if payout > 0 and state is not None:
+            state.tax_revenue += payout
+        self.balance = 0.0
+        return "LIQUIDATED"
+
     def step(
         self,
         current_step: int,
-        state: Optional[State] = None,
-        warengeld_bank: Optional[WarengeldBank] = None,
-        savings_bank: Optional[SavingsBank] = None,
-    ) -> CompanyResult:
+        state: State | None = None,
+        warengeld_bank: WarengeldBank | None = None,
+        savings_bank: SavingsBank | None = None,
+    ) -> Company | Literal["DEAD"] | None:
         """
         Execute one simulation step for the company.
 
@@ -511,6 +536,9 @@ class Company(EconomicAgent):
 
         self._ensure_wage_liquidity(warengeld_bank)
         self._handle_rd_cycle()
+        self._handle_zero_staff_counter()
+        if self._should_liquidate_due_to_staffing():
+            return self._liquidate_due_to_staff_loss(state)
         self._sync_labor_market(state)
         self._run_operations()
         self._trigger_growth_and_investment(savings_bank)
@@ -525,7 +553,7 @@ class Company(EconomicAgent):
 
         self._service_warengeld_credit(warengeld_bank)
         log(f"Company {self.unique_id} completed step {current_step}.", level="INFO")
-        return new_company
+        return new_company or None
 
     def produce_output(self) -> None:
         """Deprecated wrapper maintained for compatibility."""

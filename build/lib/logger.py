@@ -1,6 +1,6 @@
 # logger.py
 import logging
-from typing import Literal, Optional
+from typing import Literal
 
 from config import CONFIG
 
@@ -9,9 +9,9 @@ LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 
 
 def setup_logger(
-    level: Optional[str] = None,
-    log_file: Optional[str] = None,
-    log_format: Optional[str] = None,
+    level: str | None = None,
+    log_file: str | None = None,
+    log_format: str | None = None,
     file_mode: Literal["w", "a"] = "w",
 ) -> logging.Logger:
     """
@@ -73,5 +73,4 @@ def log(message: str, level: LogLevel = "DEBUG") -> None:
             logging.debug(message)
 
 
-# Initialize logger when module is imported
-logger = setup_logger()
+# Removed eager module-level initialization; call setup_logger() explicitly where needed.

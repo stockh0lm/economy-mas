@@ -1,5 +1,5 @@
 # bank.py
-from typing import Dict, Protocol, Sequence, TypeAlias
+from typing import Protocol, Sequence, TypeAlias
 
 from agents.base_agent import BaseAgent
 from config import CONFIG_MODEL, SimulationConfig
@@ -25,7 +25,7 @@ class InventoryMerchant(MerchantProtocol, Protocol):
 
 # Type aliases for improved readability
 MerchantID: TypeAlias = str
-CreditMap: TypeAlias = Dict[MerchantID, float]
+CreditMap: TypeAlias = dict[MerchantID, float]
 
 
 class WarengeldBank(BaseAgent):

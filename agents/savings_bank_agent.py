@@ -1,5 +1,5 @@
 # savings_bank_agent.py
-from typing import Dict, Protocol, TypeAlias
+from typing import Protocol, TypeAlias
 
 from config import CONFIG_MODEL, SimulationConfig
 from logger import log
@@ -23,8 +23,8 @@ class BorrowerAgent(HasUniqueID, Protocol):
 
 # Type aliases for improved readability
 AgentID: TypeAlias = str
-SavingsMap: TypeAlias = Dict[AgentID, float]
-LoanMap: TypeAlias = Dict[AgentID, float]
+SavingsMap: TypeAlias = dict[AgentID, float]
+LoanMap: TypeAlias = dict[AgentID, float]
 
 
 class SavingsBank(BaseAgent):
