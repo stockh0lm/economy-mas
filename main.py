@@ -11,7 +11,7 @@ from agents.household_agent import Household
 from agents.labor_market import LaborMarket
 from agents.savings_bank_agent import SavingsBank
 from agents.state_agent import State
-from config import CONFIG, CONFIG_MODEL, SimulationConfig
+from config import CONFIG_MODEL, SimulationConfig
 from logger import log, setup_logger
 from metrics import MetricsCollector
 

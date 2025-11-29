@@ -26,7 +26,7 @@ class State(BaseAgent):
     Acts as the governance mechanism in the simulation economy.
     """
 
-    def __init__(self, unique_id: str) -> None:
+    def __init__(self, unique_id: str, config: SimulationConfig | None = None) -> None:
         """
         Initialize the State agent with default budgets and tax configurations.
 
@@ -35,6 +35,8 @@ class State(BaseAgent):
         """
         super().__init__(unique_id)
 
+        self.config: SimulationConfig = config or CONFIG_MODEL
+
         # Financial accounts
         self.tax_revenue: float = 0.0
         self.infrastructure_budget: float = 0.0
@@ -42,20 +44,17 @@ class State(BaseAgent):
         self.environment_budget: float = 0.0
 
         # Tax parameters from configuration
-        self.bodensteuer_rate: float = CONFIG["tax_rates"]["bodensteuer"]
-        self.umweltsteuer_rate: float = CONFIG["tax_rates"]["umweltsteuer"]
+        self.bodensteuer_rate: float = self.config.tax_rates.bodensteuer
+        self.umweltsteuer_rate: float = self.config.tax_rates.umweltsteuer
 
         # Hyperwealth control parameter
-        self.hyperwealth_threshold: float = CONFIG["hyperwealth_threshold"]
+        self.hyperwealth_threshold: float = self.config.hyperwealth_threshold
 
         # Budget allocation percentages
-        self.infrastructure_allocation: float = CONFIG.get("state_budget_allocation", {}).get(
-            "infrastructure", 0.5
-        )
-        self.social_allocation: float = CONFIG.get("state_budget_allocation", {}).get("social", 0.3)
-        self.environment_allocation: float = CONFIG.get("state_budget_allocation", {}).get(
-            "environment", 0.2
-        )
+        allocation = self.config.state_budget_allocation or {}
+        self.infrastructure_allocation: float = allocation.get("infrastructure", 0.5)
+        self.social_allocation: float = allocation.get("social", 0.3)
+        self.environment_allocation: float = allocation.get("environment", 0.2)
 
         # Reference to labor market (set after initialization)
         self.labor_market: LaborMarket | None = None
