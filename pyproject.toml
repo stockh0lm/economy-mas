@@ -1,0 +1,62 @@
+[project]
+name = "wirtschaftssimulation"
+version = "0.1.0"
+description = "Multiagenten-Simulation des Geldsystems nach Kenawi"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "nox",
+    "pytest",
+    "mypy",
+    "ruff",
+    "black",
+    "isort",
+]
+
+[tool.black]
+line-length = 100
+target-version = ["py312"]
+
+[tool.isort]
+profile = "black"
+line_length = 100
+known_first_party = ["agents"]
+combine_as_imports = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "C90", "PL"]
+ignore = [
+    "E501",
+]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 15
+
+[tool.ruff.lint.pylint]
+max-args = 100
+max-statements = 1000
+
+[tool.mypy]
+python_version = "3.12"
+pretty = true
+show_error_codes = true
+strict_optional = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+warn_unused_ignores = true
+ignore_missing_imports = true
+
+[mypy-logger]
+ignore_errors = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-q"
+
