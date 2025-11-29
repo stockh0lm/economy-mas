@@ -361,3 +361,33 @@ def test_company_state_bank_integration_multi_step() -> None:
     finally:
         CONFIG.update(originals)
 
+
+def test_company_auto_liquidates_when_staffless() -> None:
+    overrides: dict[str, float | int | bool] = {
+        "company_zero_staff_auto_liquidation": True,
+        "company_zero_staff_grace_steps": 2,
+        "company_zero_staff_liquidation_state_share": 0.5,
+    }
+    originals = {key: CONFIG.get(key) for key in overrides}
+    CONFIG.update(overrides)
+    try:
+        company = Company("company_staffless", production_capacity=50.0)
+        company.balance = 100.0
+        company.employees = []
+
+        class StubStateWithRevenue(StubState):
+            def __init__(self) -> None:
+                super().__init__(labor_market=StubLaborMarket())
+                self.tax_revenue = 0.0
+
+        state = StubStateWithRevenue()
+
+        # Grace counter increments to threshold
+        company.step(1, state=state)
+        assert company._zero_staff_steps == 1
+        result = company.step(2, state=state)
+        assert result == "LIQUIDATED"
+        assert company.balance == 0.0
+        assert state.tax_revenue == 50.0
+    finally:
+        CONFIG.update(originals)

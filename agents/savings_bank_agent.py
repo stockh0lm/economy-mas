@@ -275,6 +275,10 @@ class SavingsBank(BaseAgent):
             )
             return 0.0
 
+    def give_household_withdrawal(self, agent: HasUniqueID, amount: float) -> float:
+        """Wrapper around withdraw_savings for household use."""
+        return self.withdraw_savings(agent, amount)
+
     def step(self, current_step: int) -> None:
         """
         Execute one simulation step for the savings bank.

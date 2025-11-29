@@ -77,6 +77,7 @@ class Company(EconomicAgent):
         # Research and development
         self.rd_investment: float = 0.0
         self.innovation_index: float = 0.0
+        self._zero_staff_steps: int = 0
 
     def invest_in_rd(self) -> None:
         """
@@ -477,6 +478,30 @@ class Company(EconomicAgent):
             level="INFO",
         )
 
+    def _should_liquidate_due_to_staffing(self) -> bool:
+        if not getattr(self.config, "company_zero_staff_auto_liquidation", False):
+            return False
+        grace = getattr(self.config, "company_zero_staff_grace_steps", 1)
+        return self._zero_staff_steps >= grace
+
+    def _handle_zero_staff_counter(self) -> None:
+        if self.employees:
+            self._zero_staff_steps = 0
+            return
+        self._zero_staff_steps += 1
+
+    def _liquidate_due_to_staff_loss(self, state: Optional[State]) -> Literal["LIQUIDATED"]:
+        log(
+            f"Company {self.unique_id} forcibly liquidated after {self._zero_staff_steps} steps without employees.",
+            level="WARNING",
+        )
+        payout_share = getattr(self.config, "company_zero_staff_liquidation_state_share", 1.0)
+        payout = max(0.0, self.balance * payout_share)
+        if payout > 0 and state is not None:
+            state.tax_revenue += payout
+        self.balance = 0.0
+        return "LIQUIDATED"
+
     def step(
         self,
         current_step: int,
@@ -511,6 +536,9 @@ class Company(EconomicAgent):
 
         self._ensure_wage_liquidity(warengeld_bank)
         self._handle_rd_cycle()
+        self._handle_zero_staff_counter()
+        if self._should_liquidate_due_to_staffing():
+            return self._liquidate_due_to_staff_loss(state)
         self._sync_labor_market(state)
         self._run_operations()
         self._trigger_growth_and_investment(savings_bank)
@@ -525,7 +553,7 @@ class Company(EconomicAgent):
 
         self._service_warengeld_credit(warengeld_bank)
         log(f"Company {self.unique_id} completed step {current_step}.", level="INFO")
-        return new_company
+        return new_company or None
 
     def produce_output(self) -> None:
         """Deprecated wrapper maintained for compatibility."""

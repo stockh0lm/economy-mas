@@ -73,5 +73,4 @@ def log(message: str, level: LogLevel = "DEBUG") -> None:
             logging.debug(message)
 
 
-# Initialize logger when module is imported
-logger = setup_logger()
+# Removed eager module-level initialization; call setup_logger() explicitly where needed.

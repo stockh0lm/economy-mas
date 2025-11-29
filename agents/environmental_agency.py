@@ -64,11 +64,22 @@ class EnvironmentalAgency(BaseAgent):
         # Penalty factor from configuration
         self.penalty_factor: float = self.config.penalty_factor_env_audit
 
+        # Recycling company attachment
+        self.recycling_company: Optional["RecyclingCompany"] = None
+
     def attach_state(self, state: "State") -> None:
         """Link the environmental agency to the state for revenue transfers."""
         self.state = state
         log(
             f"EnvironmentalAgency {self.unique_id} attached to State {state.unique_id}.",
+            level="DEBUG",
+        )
+
+    def attach_recycling_company(self, recycler: "RecyclingCompany") -> None:
+        """Link the environmental agency to a recycling company for waste processing."""
+        self.recycling_company = recycler
+        log(
+            f"EnvironmentalAgency {self.unique_id} attached to RecyclingCompany {recycler.unique_id}.",
             level="DEBUG",
         )
 
@@ -111,6 +122,12 @@ class EnvironmentalAgency(BaseAgent):
                 billing_agent = cast(BillingAgent, agent)
                 billing_agent.balance -= tax
 
+            # Route waste to recycling company if available
+            if self.recycling_company:
+                waste = agent.environmental_impact * self.config.waste_output_per_env_impact
+                if waste > 0:
+                    self.recycling_company.collect_waste(cast(BaseAgent, agent), waste)
+
             log(
                 f"EnvironmentalAgency {self.unique_id} collected {tax:.2f} env tax from agent {agent.unique_id}.",
                 level="INFO",
@@ -122,6 +139,7 @@ class EnvironmentalAgency(BaseAgent):
             share = min(max(self.env_tax_state_share, 0.0), 1.0)
             transfer_amount = total_tax * share
             env_state.environment_budget += transfer_amount
+            env_state.tax_revenue += total_tax - transfer_amount
             self.env_tax_transferred_to_state += transfer_amount
             log(
                 f"EnvironmentalAgency {self.unique_id} transferred {transfer_amount:.2f} env tax to State {env_state.unique_id}.",

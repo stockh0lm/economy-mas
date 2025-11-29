@@ -72,6 +72,10 @@ class Household(EconomicAgent):
             self.config.household_consumption_rate_growth
         )
 
+        # Child rearing and loan parameters
+        self.child_rearing_cost: float = self.config.child_rearing_cost
+        self.loan_repayment_rate: float = self.config.household_loan_repayment_rate
+
     def _resolve_consumption_rate(self, value: float) -> float:
         if not isinstance(value, (int, float)):
             log(
@@ -272,6 +276,40 @@ class Household(EconomicAgent):
 
         return new_household
 
+    def _handle_childrearing_costs(self, savings_bank: SavingsBank | None) -> float:
+        """Withdraw savings via the bank when raising children triggers large expenses."""
+        if self.growth_phase or self.savings <= 0:
+            return 0.0
+        required = self.child_rearing_cost
+        if savings_bank is None:
+            draw = min(required, self.savings)
+            self.savings -= draw
+            self.checking_account += draw
+            return draw
+        withdrawn = savings_bank.give_household_withdrawal(self, required)
+        if withdrawn <= 0:
+            fallback = min(required, self.savings)
+            self.savings -= fallback
+            self.checking_account += fallback
+            return fallback
+        self.checking_account += withdrawn
+        return withdrawn
+
+    def _repay_savings_loans(self, savings_bank: SavingsBank | None) -> float:
+        """Direct a share of deposits toward repayment of savings-bank loans."""
+        if savings_bank is None:
+            return 0.0
+        outstanding = savings_bank.active_loans.get(self.unique_id, 0.0)
+        if outstanding <= 0:
+            return 0.0
+        disposable = max(0.0, self.checking_account)
+        if disposable <= 0:
+            return 0.0
+        repay_budget = disposable * self.loan_repayment_rate
+        repaid = savings_bank.repayment(self, repay_budget)
+        self.checking_account -= repaid
+        return repaid
+
     def step(
         self,
         current_step: int,
@@ -319,7 +357,9 @@ class Household(EconomicAgent):
             rate: float = self.consumption_rate_normal
 
         self.consume(rate, companies)
+        self._handle_childrearing_costs(savings_bank)
         self.save(savings_bank)
+        self._repay_savings_loans(savings_bank)
         self.offer_labor()
 
         # Enter growth phase if savings exceed trigger threshold

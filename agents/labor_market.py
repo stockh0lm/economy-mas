@@ -68,7 +68,6 @@ class LaborMarket(BaseAgent):
         self.target_unemployment_rate: float = self.config.target_unemployment_rate
         self.target_inflation_rate: float = self.config.target_inflation_rate
         self.latest_unemployment_rate: float = 0.0
-        self.last_matches: int = 0
         self.config_default_wage: float = self.default_wage
 
     def release_worker(self, worker: WorkerProtocol) -> None:
@@ -182,7 +181,6 @@ class LaborMarket(BaseAgent):
                     level="INFO",
                 )
 
-        self.last_matches = len(matches)
         # Clear job offers after matching
         self.job_offers = []
         return matches
