@@ -4,7 +4,7 @@ from __future__ import annotations
 import random
 from typing import TYPE_CHECKING, Literal, Optional
 
-from config import CONFIG
+from config import CONFIG_MODEL, SimulationConfig
 from logger import log
 
 from .economic_agent import EconomicAgent
@@ -29,6 +29,7 @@ class Household(EconomicAgent):
         land_area: float = 50.0,
         environmental_impact: float = 1.0,
         generation: int = 1,
+        config: SimulationConfig | None = None,
     ) -> None:
         """
         Initialize a household agent with economic attributes.
@@ -41,6 +42,9 @@ class Household(EconomicAgent):
             generation: Current generation of the household
         """
         super().__init__(unique_id)
+
+        self.config: SimulationConfig = config or CONFIG_MODEL
+
         self.income: float = income
         self.land_area: float = land_area
         self.environmental_impact: float = environmental_impact
@@ -49,33 +53,32 @@ class Household(EconomicAgent):
         # Growth phase parameters
         self.growth_phase: bool = False
         self.growth_counter: int = 0
-        self.growth_threshold: int = CONFIG.get("growth_threshold", 5)
-        self.savings_growth_trigger: float = CONFIG.get("savings_growth_trigger", 500.0)
+        self.growth_threshold: int = self.config.growth_threshold
+        self.savings_growth_trigger: float = self.config.savings_growth_trigger
 
         # Age and generation tracking
         self.age: int = 0
-        self.max_age: int = CONFIG.get("max_age", 80)
-        self.max_generation: int = CONFIG.get("max_generation", 3)
+        self.max_age: int = self.config.max_age
+        self.max_generation: int = self.config.max_generation
 
         # Bank accounts
         self.checking_account: float = 0.0
         self.savings: float = 0.0
 
         self.consumption_rate_normal: float = self._resolve_consumption_rate(
-            "household_consumption_rate_normal", 0.7
+            self.config.household_consumption_rate_normal
         )
         self.consumption_rate_growth: float = self._resolve_consumption_rate(
-            "household_consumption_rate_growth", 0.9
+            self.config.household_consumption_rate_growth
         )
 
-    def _resolve_consumption_rate(self, config_key: str, default: float) -> float:
-        value = CONFIG.get(config_key, default)
+    def _resolve_consumption_rate(self, value: float) -> float:
         if not isinstance(value, (int, float)):
             log(
-                f"Household {self.unique_id} uses default consumption rate for {config_key} due to non-numeric value.",
+                f"Household {self.unique_id} uses default consumption rate due to non-numeric value.",
                 level="WARNING",
             )
-            return default
+            return 0.0
 
         rate = float(value)
         if 0.0 <= rate <= 1.0:
@@ -83,7 +86,7 @@ class Household(EconomicAgent):
 
         clamped = max(0.0, min(1.0, rate))
         log(
-            f"Household {self.unique_id} clamps consumption rate for {config_key} from {rate} to {clamped}.",
+            f"Household {self.unique_id} clamps consumption rate from {rate} to {clamped}.",
             level="WARNING",
         )
         return clamped
@@ -253,6 +256,7 @@ class Household(EconomicAgent):
             land_area=self.land_area,
             environmental_impact=self.environmental_impact,
             generation=new_generation,
+            config=self.config,
         )
         new_household.checking_account = split_consumption
 

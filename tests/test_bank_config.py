@@ -1,10 +1,17 @@
-import copy
+from copy import deepcopy
 from typing import Callable
 
 import pytest
 
 import config
 from agents.bank import MerchantProtocol, WarengeldBank
+
+
+def make_bank(unique_id: str, **overrides) -> WarengeldBank:
+    payload = deepcopy(config.CONFIG)
+    payload.update(overrides)
+    cfg = config.load_simulation_config(payload)
+    return WarengeldBank(unique_id, cfg)
 
 
 class MerchantDouble(MerchantProtocol):
@@ -22,26 +29,19 @@ class MerchantDouble(MerchantProtocol):
         return amount
 
 
-@pytest.fixture(autouse=True)
-def restore_config() -> None:
-    original = copy.deepcopy(config.CONFIG)
-    yield
-    config.CONFIG.clear()
-    config.CONFIG.update(original)
-
-
 def test_bank_reads_configuration_values() -> None:
-    config.CONFIG["bank_fee_rate"] = 0.125
-    config.CONFIG["inventory_check_interval"] = 4
-    config.CONFIG["inventory_coverage_threshold"] = 0.9
-    config.CONFIG["bank_base_credit_reserve_ratio"] = 0.2
-    config.CONFIG["bank_credit_unemployment_sensitivity"] = 0.55
-    config.CONFIG["bank_credit_inflation_sensitivity"] = 0.75
-    config.CONFIG["target_unemployment_rate"] = 0.045
-    config.CONFIG["target_inflation_rate"] = 0.015
-    config.CONFIG["initial_bank_liquidity"] = 2500.0
-
-    bank = WarengeldBank("bank_test")
+    bank = make_bank(
+        "bank_test",
+        bank_fee_rate=0.125,
+        inventory_check_interval=4,
+        inventory_coverage_threshold=0.9,
+        bank_base_credit_reserve_ratio=0.2,
+        bank_credit_unemployment_sensitivity=0.55,
+        bank_credit_inflation_sensitivity=0.75,
+        target_unemployment_rate=0.045,
+        target_inflation_rate=0.015,
+        initial_bank_liquidity=2500.0,
+    )
 
     assert bank.fee_rate == 0.125
     assert bank.inventory_check_interval == 4
@@ -55,11 +55,6 @@ def test_bank_reads_configuration_values() -> None:
 
 
 def test_bank_falls_back_to_defaults_for_missing_config() -> None:
-    config.CONFIG.pop("bank_fee_rate", None)
-    config.CONFIG.pop("inventory_check_interval", None)
-    config.CONFIG.pop("inventory_coverage_threshold", None)
-    config.CONFIG.pop("bank_base_credit_reserve_ratio", None)
-
     bank = WarengeldBank("bank_defaults")
 
     assert bank.fee_rate == pytest.approx(0.01)
@@ -69,10 +64,11 @@ def test_bank_falls_back_to_defaults_for_missing_config() -> None:
 
 
 def test_grant_credit_respects_macro_cap_and_liquidity() -> None:
-    config.CONFIG["initial_bank_liquidity"] = 100.0
-    config.CONFIG["bank_base_credit_reserve_ratio"] = 0.5
-
-    bank = WarengeldBank("bank_macro")
+    bank = make_bank(
+        "bank_macro",
+        initial_bank_liquidity=100.0,
+        bank_base_credit_reserve_ratio=0.5,
+    )
     bank.macro_unemployment = bank.target_unemployment_rate + 0.2
     bank.macro_inflation = bank.target_inflation_rate + 0.1
 

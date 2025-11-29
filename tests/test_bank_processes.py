@@ -1,4 +1,4 @@
-import copy
+from copy import deepcopy
 
 import pytest
 
@@ -23,12 +23,11 @@ def merchant(unique_id: str, inventory: float = 0.0, balance: float = 0.0) -> Me
     return MerchantStub(unique_id, inventory, balance)
 
 
-@pytest.fixture(autouse=True)
-def restore_config() -> None:
-    original = copy.deepcopy(config.CONFIG)
-    yield
-    config.CONFIG.clear()
-    config.CONFIG.update(original)
+def make_bank(unique_id: str, **overrides) -> WarengeldBank:
+    payload = deepcopy(config.CONFIG)
+    payload.update(overrides)
+    cfg = config.load_simulation_config(payload)
+    return WarengeldBank(unique_id, cfg)
 
 
 def test_process_repayment_limits_to_outstanding_credit() -> None:
@@ -53,16 +52,14 @@ def test_check_inventories_enforces_repayment_when_underwater() -> None:
 
     bank.check_inventories([borrower])
 
-    coverage_threshold = config.CONFIG.get("inventory_coverage_threshold", 0.8)
+    coverage_threshold = bank.inventory_coverage_threshold
     min_covered_credit = borrower.inventory / max(coverage_threshold, 1e-6)
     excess_credit = max(0.0, 30.0 - min_covered_credit)
     expected_repayment = min(excess_credit, 25.0)
 
     assert borrower.balance == pytest.approx(25.0 - expected_repayment)
     assert bank.credit_lines[borrower.unique_id] == pytest.approx(30.0 - expected_repayment)
-    assert bank.liquidity == pytest.approx(
-        config.CONFIG.get("initial_bank_liquidity", 1000.0) + expected_repayment
-    )
+    assert bank.liquidity == pytest.approx(bank.config.initial_bank_liquidity + expected_repayment)
 
 
 def test_check_inventories_skips_merchants_without_credit() -> None:
@@ -85,14 +82,13 @@ def test_calculate_fees_updates_liquidity_and_fee_pool() -> None:
     expected_fee = 200.0 * bank.fee_rate
     assert total_fees == pytest.approx(expected_fee)
     assert bank.collected_fees == pytest.approx(expected_fee)
-    assert bank.liquidity == pytest.approx(config.CONFIG.get("initial_bank_liquidity", 1000.0) + expected_fee)
+    assert bank.liquidity == pytest.approx(bank.config.initial_bank_liquidity + expected_fee)
     assert borrower.balance == pytest.approx(100.0 - expected_fee)
 
 
 def test_step_runs_inventory_check_and_fee_collection() -> None:
-    config.CONFIG["inventory_check_interval"] = 1
+    bank = make_bank("bank_step", inventory_check_interval=1)
 
-    bank = WarengeldBank("bank_step")
     borrower = merchant("merchant_step", inventory=0.0, balance=100.0)
     bank.credit_lines[borrower.unique_id] = 200.0
 

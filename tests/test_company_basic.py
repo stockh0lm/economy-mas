@@ -2,7 +2,7 @@ import math
 
 from agents.company_agent import Company
 from agents.household_agent import Household
-from config import CONFIG
+from config import CONFIG_MODEL
 
 
 def make_employee(uid: str) -> Household:
@@ -31,8 +31,7 @@ def test_sell_goods_reduces_inventory_and_increases_balance() -> None:
     assert math.isclose(company.inventory, 30.0)
     assert math.isclose(revenue, company.balance)
 
-    base_price = CONFIG.get("production_base_price", 10)
-    bonus_rate = CONFIG.get("production_innovation_bonus_rate", 0.02)
+    base_price = CONFIG_MODEL.production_base_price
+    bonus_rate = CONFIG_MODEL.production_innovation_bonus_rate
     expected_price_per_unit = base_price * (1 + bonus_rate * company.innovation_index)
     assert math.isclose(revenue, 50.0 * expected_price_per_unit)
-

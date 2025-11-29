@@ -1,7 +1,7 @@
 # financial_market.py
 from typing import Dict, List, Protocol, TypeAlias, Union
 
-from config import CONFIG
+from config import CONFIG_MODEL, SimulationConfig
 from logger import log
 
 from .base_agent import BaseAgent
@@ -29,7 +29,7 @@ class FinancialMarket(BaseAgent):
     for speculative asset accumulation (hyperwealth).
     """
 
-    def __init__(self, unique_id: str) -> None:
+    def __init__(self, unique_id: str, config: SimulationConfig | None = None) -> None:
         """
         Initialize a financial market.
 
@@ -38,22 +38,24 @@ class FinancialMarket(BaseAgent):
         """
         super().__init__(unique_id)
 
+        self.config: SimulationConfig = config or CONFIG_MODEL
+
         # Asset prices: name -> current price
         self.list_of_assets: Dict[AssetName, Price] = {
-            "Aktie_A": CONFIG.get("asset_initial_prices", {}).get("Aktie_A", 100.0),
-            "Aktie_B": CONFIG.get("asset_initial_prices", {}).get("Aktie_B", 50.0),
-            "Anleihe_X": CONFIG.get("asset_initial_prices", {}).get("Anleihe_X", 1000.0),
+            "Aktie_A": self.config.asset_initial_prices.get("Aktie_A", 100.0),
+            "Aktie_B": self.config.asset_initial_prices.get("Aktie_B", 50.0),
+            "Anleihe_X": self.config.asset_initial_prices.get("Anleihe_X", 1000.0),
         }
 
         # Bid-ask spread as percentage of price (e.g., 2%)
         self.bid_ask_spreads: Dict[AssetName, float] = {
-            "Aktie_A": CONFIG.get("asset_bid_ask_spreads", {}).get("Aktie_A", 0.02),
-            "Aktie_B": CONFIG.get("asset_bid_ask_spreads", {}).get("Aktie_B", 0.02),
-            "Anleihe_X": CONFIG.get("asset_bid_ask_spreads", {}).get("Anleihe_X", 0.01),
+            "Aktie_A": self.config.asset_bid_ask_spreads.get("Aktie_A", 0.02),
+            "Aktie_B": self.config.asset_bid_ask_spreads.get("Aktie_B", 0.02),
+            "Anleihe_X": self.config.asset_bid_ask_spreads.get("Anleihe_X", 0.01),
         }
 
         # Threshold for considering asset holdings as hyperwealth
-        self.speculation_limit: float = CONFIG.get("speculation_limit", 10000)
+        self.speculation_limit: float = self.config.speculation_limit
 
     def trade_assets(
         self,

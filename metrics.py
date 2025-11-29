@@ -12,11 +12,11 @@ import statistics
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Protocol, Set, TypedDict
+from typing import Dict, List, Optional, Protocol, Set, TypedDict, cast
 
 from agents.company_agent import Company
 from agents.household_agent import Household
-from config import CONFIG
+from config import CONFIG_MODEL, SimulationConfig
 from logger import log
 
 MIN_GLOBAL_METRICS_POINTS = 10  # Minimal steps required for cycle detection
@@ -47,6 +47,22 @@ class MetricConfig(TypedDict):
     critical_threshold: Optional[float]  # Value that triggers alerts if crossed
 
 
+class LaborMarketMetricsSource(Protocol):
+    registered_workers: List[object]
+
+
+class FinancialMarketMetricsSource(Protocol):
+    list_of_assets: Dict[str, float]
+
+
+class EconomicCycleSnapshot(TypedDict):
+    avg_growth_rate: float
+    is_recession: bool
+    is_boom: bool
+    latest_growth: float
+    growth_volatility: float
+
+
 class MetricsCollector:
     """
     Collects, aggregates, and exports economic metrics from simulation agents.
@@ -68,9 +84,11 @@ class MetricsCollector:
     export_path: Path
     latest_labor_metrics: dict[str, float]
     latest_global_metrics: dict[str, float]
+    config: SimulationConfig
 
-    def __init__(self):
+    def __init__(self, config: SimulationConfig | None = None):
         """Initialize the metrics collector."""
+        self.config: SimulationConfig = config or CONFIG_MODEL
         self.bank_metrics: AgentMetricsDict = {}
         self.household_metrics: AgentMetricsDict = {}
         self.company_metrics: AgentMetricsDict = {}
@@ -81,14 +99,14 @@ class MetricsCollector:
         self.registered_companies: Set[str] = set()
         self.registered_banks: Set[str] = set()
         self.metrics_config: Dict[MetricName, MetricConfig] = {}
-        self.export_path: Path = Path(CONFIG.get("metrics_export_path", "output/metrics"))
+        self.export_path: Path = Path(self.config.metrics_export_path)
         self.latest_labor_metrics = {}
         self.latest_global_metrics = {}
         self.__post_init__()
 
     def __post_init__(self) -> None:
-        """Initialize with configuration from CONFIG"""
-        self.metrics_config = CONFIG.get("metrics_config", {})
+        """Initialize with configuration from SimulationConfig"""
+        self.metrics_config = self.config.metrics_config
         self.setup_default_metrics_config()
 
         # Create export directory if it doesn't exist
@@ -467,13 +485,12 @@ class MetricsCollector:
         )
         self.add_metric(state_id, "employment_rate", employment_rate, self.state_metrics, step)
 
-    def collect_market_metrics(self, market: Any, step: TimeStep) -> None:
+    def collect_market_metrics(self, market: EconomicAgent, step: TimeStep) -> None:
         """
         Collect metrics from a market agent at the current time step.
 
         Args:
             market: Market agent to collect metrics from
-            step: Current simulation time step
         """
         agent_id = market.unique_id
         if agent_id not in self.market_metrics:
@@ -481,7 +498,8 @@ class MetricsCollector:
 
         # Labor market metrics
         if hasattr(market, "registered_workers"):
-            num_registered_workers = len(market.registered_workers)
+            labor_market = cast(LaborMarketMetricsSource, market)
+            num_registered_workers = len(labor_market.registered_workers)
             self.add_metric(
                 agent_id,
                 "registered_workers",
@@ -491,7 +509,9 @@ class MetricsCollector:
             )
 
             employed_workers = sum(
-                1 for w in market.registered_workers if hasattr(w, "employed") and w.employed
+                1
+                for w in labor_market.registered_workers
+                if hasattr(w, "employed") and getattr(w, "employed")
             )
             self.add_metric(
                 agent_id, "employed_workers", float(employed_workers), self.market_metrics, step
@@ -511,11 +531,12 @@ class MetricsCollector:
             }
         # Financial market metrics
         if hasattr(market, "list_of_assets"):
-            num_assets = len(market.list_of_assets)
+            financial_market = cast(FinancialMarketMetricsSource, market)
+            num_assets = len(financial_market.list_of_assets)
             self.add_metric(agent_id, "num_assets", float(num_assets), self.market_metrics, step)
 
-            if market.list_of_assets:
-                average_asset_price = statistics.mean(market.list_of_assets.values())
+            if financial_market.list_of_assets:
+                average_asset_price = statistics.mean(financial_market.list_of_assets.values())
                 self.add_metric(
                     agent_id, "average_asset_price", average_asset_price, self.market_metrics, step
                 )
@@ -695,7 +716,7 @@ class MetricsCollector:
 
     def export_metrics(self) -> None:
         """Persist metrics according to CONFIG['result_storage']."""
-        storage_mode = str(CONFIG.get("result_storage", "json")).lower()
+        storage_mode = str(self.config.result_storage).lower()
         allowed_modes = {"json", "csv", "both"}
         if storage_mode not in allowed_modes:
             log(
@@ -805,7 +826,7 @@ class MetricsCollector:
 
         return output_file
 
-    def detect_economic_cycles(self) -> Optional[Dict[str, Any]]:
+    def detect_economic_cycles(self) -> Optional[EconomicCycleSnapshot]:
         """
         Detect economic cycles like booms and recessions.
 
@@ -840,8 +861,8 @@ class MetricsCollector:
             return None
 
         # Identify potential cycles
-        recession_threshold = CONFIG.get("recession_threshold", -0.01)  # -1% growth
-        boom_threshold = CONFIG.get("boom_threshold", 0.03)  # 3% growth
+        recession_threshold = getattr(self.config, "recession_threshold", -0.01)  # -1% growth
+        boom_threshold = getattr(self.config, "boom_threshold", 0.03)  # 3% growth
 
         is_recession = any(rate <= recession_threshold for rate in growth_values[-3:])
         is_boom = any(rate >= boom_threshold for rate in growth_values[-3:])
@@ -852,8 +873,8 @@ class MetricsCollector:
             "avg_growth_rate": avg_growth,
             "is_recession": is_recession,
             "is_boom": is_boom,
-            "latest_growth": growth_values[-1] if growth_values else 0,
-            "growth_volatility": statistics.stdev(growth_values) if len(growth_values) > 1 else 0,
+            "latest_growth": growth_values[-1] if growth_values else 0.0,
+            "growth_volatility": statistics.stdev(growth_values) if len(growth_values) > 1 else 0.0,
         }
 
     def _global_money_metrics(self, step: TimeStep) -> MetricDict:
@@ -899,10 +920,10 @@ class MetricsCollector:
         household_consumption: float,
     ) -> MetricDict:
         metrics: MetricDict = {}
-        price_index_base = float(CONFIG.get("price_index_base", 100.0))
-        pressure_target = float(CONFIG.get("price_index_pressure_target", 1.0))
-        price_sensitivity = float(CONFIG.get("price_index_sensitivity", 0.05))
-        pressure_mode = str(CONFIG.get("price_index_pressure_ratio", "money_supply_to_gdp"))
+        price_index_base = float(self.config.price_index_base)
+        pressure_target = float(self.config.price_index_pressure_target)
+        price_sensitivity = float(self.config.price_index_sensitivity)
+        pressure_mode = str(self.config.price_index_pressure_ratio)
         eps = 1e-9
 
         money_supply_pressure = total_money / (gdp + eps) if gdp > 0 else pressure_target
