@@ -2,12 +2,12 @@
 import random
 from typing import Literal, Optional, TypeAlias
 
-from agents.bank import WarengeldBank
-from agents.economic_agent import EconomicAgent
-from agents.household_agent import Household
-from agents.labor_market import LaborMarket
-from agents.savings_bank_agent import SavingsBank
-from agents.state_agent import State
+from bank import WarengeldBank
+from economic_agent import EconomicAgent
+from household_agent import Household
+from labor_market import LaborMarket
+from savings_bank_agent import SavingsBank
+from state_agent import State
 
 from config import CONFIG
 from logger import log

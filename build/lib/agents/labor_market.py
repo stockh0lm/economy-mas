@@ -5,7 +5,7 @@ from typing import List, Optional, Protocol, Tuple, TypeAlias
 from config import CONFIG
 from logger import log
 
-from .base_agent import BaseAgent
+from base_agent import BaseAgent
 
 
 class EmployerProtocol(Protocol):
@@ -219,10 +219,6 @@ class LaborMarket(BaseAgent):
 
         Args:
             current_step: Current simulation step number
-            :param current_step:
-            :param wage_override:
-            :param unemployment_rate:
-            :param price_index:
         """
         log(f"LaborMarket {self.unique_id} starting step {current_step}.", level="INFO")
 

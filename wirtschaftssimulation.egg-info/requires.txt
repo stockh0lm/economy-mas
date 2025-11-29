@@ -1,0 +1,8 @@
+
+[dev]
+nox
+pytest
+mypy
+ruff
+black
+isort
