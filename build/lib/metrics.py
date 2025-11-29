@@ -524,164 +524,30 @@ class MetricsCollector:
         """Calculate global economic metrics aggregated across all agents."""
         metrics: MetricDict = {}
 
-        # Money supply (sum of all balances plus checking accounts)
-        total_money = 0.0
-        # Add company balances
-        for company_id in self.company_metrics:
-            if step in self.company_metrics[company_id]:
-                company_data = self.company_metrics[company_id][step]
-                total_money += company_data.get("balance", 0.0)
+        money_metrics = self._global_money_metrics(step)
+        metrics.update(money_metrics)
 
-        # Add household checking accounts and savings
-        for household_id in self.household_metrics:
-            if step in self.household_metrics[household_id]:
-                household_data = self.household_metrics[household_id][step]
-                total_money += household_data.get("checking_account", 0.0) + household_data.get(
-                    "savings", 0.0
-                )
+        activity_metrics = self._global_activity_metrics(step)
+        metrics.update(activity_metrics)
 
-        metrics["total_money_supply"] = total_money
+        price_metrics = self._price_dynamics(
+            step,
+            money_metrics["total_money_supply"],
+            activity_metrics["gdp"],
+            activity_metrics["household_consumption"],
+        )
+        metrics.update(price_metrics)
 
-        # GDP calculation (sum of production/economic activity)
-        gdp = 0.0
-        # Company contribution (production)
-        for company_id in self.company_metrics:
-            if step in self.company_metrics[company_id]:
-                company_data = self.company_metrics[company_id][step]
-                gdp += company_data.get("production_capacity", 0.0)
+        metrics.update(self._distribution_metrics(step))
+        metrics.update(self._wage_metrics(step, price_metrics["price_index"]))
+        metrics.update(self._environmental_metrics(step))
+        metrics.update(self._employment_metrics(step))
+        metrics.update(self._investment_metrics(step, activity_metrics["gdp"]))
+        metrics.update(self._bankruptcy_metrics(step))
+        metrics.update(self._government_metrics(step, activity_metrics["gdp"]))
 
-        # Household contribution (consumption)
-        household_consumption = 0.0
-        for household_id in self.household_metrics:
-            if step in self.household_metrics[household_id]:
-                household_data = self.household_metrics[household_id][step]
-                household_consumption += household_data.get("consumption", 0.0)
-
-        metrics["gdp"] = gdp
-        metrics["household_consumption"] = household_consumption
-        metrics["consumption_pct_gdp"] = household_consumption / gdp if gdp > 0 else 0
-
-        price_index_base = float(CONFIG.get("price_index_base", 100.0))
-        pressure_target = float(CONFIG.get("price_index_pressure_target", 1.0))
-        price_sensitivity = float(CONFIG.get("price_index_sensitivity", 0.05))
-        pressure_mode = str(CONFIG.get("price_index_pressure_ratio", "money_supply_to_gdp"))
-        eps = 1e-9
-
-        money_supply_pressure = total_money / (gdp + eps) if gdp > 0 else pressure_target
-        consumption_pressure = household_consumption / (gdp + eps) if gdp > 0 else pressure_target
-        if pressure_mode == "consumption_to_production":
-            price_pressure = consumption_pressure
-        elif pressure_mode == "blended":
-            price_pressure = statistics.mean([money_supply_pressure, consumption_pressure])
-        else:
-            price_pressure = money_supply_pressure
-
-        if step > 0 and (step - 1) in self.global_metrics:
-            prev_price = self.global_metrics[step - 1].get("price_index", price_index_base)
-        else:
-            prev_price = price_index_base
-
-        deviation = price_pressure - pressure_target
-        current_price = prev_price * (1 + price_sensitivity * deviation)
-        current_price = max(current_price, 0.01)
-        inflation_rate = ((current_price - prev_price) / prev_price) if prev_price > 0 else 0.0
-
-        metrics["price_index"] = current_price
-        metrics["inflation_rate"] = inflation_rate
-        metrics["price_pressure"] = price_pressure
-
-        # Calculate Gini coefficient for wealth inequality
-        wealth_values = []
-        for household_id in self.household_metrics:
-            if step in self.household_metrics[household_id]:
-                household_data = self.household_metrics[household_id][step]
-                wealth = household_data.get("total_wealth", 0.0)
-                wealth_values.append(wealth)
-
-        if wealth_values:
-            metrics["gini_coefficient"] = self._calculate_gini_coefficient(wealth_values)
-
-        # Real wages (nominal wages adjusted for inflation)
-        nominal_wages = []
-        for household_id in self.household_metrics:
-            if step in self.household_metrics[household_id]:
-                household_data = self.household_metrics[household_id][step]
-                if household_data.get("employed", False):
-                    nominal_wages.append(household_data.get("income", 0.0))
-
-        avg_nominal_wage = statistics.mean(nominal_wages) if nominal_wages else 0
-        price_index = metrics["price_index"] / 100
-        metrics["average_nominal_wage"] = avg_nominal_wage
-        metrics["average_real_wage"] = avg_nominal_wage / price_index if price_index > 0 else 0
-
-        # Total environmental impact
-        total_impact = 0.0
-        for company_id in self.company_metrics:
-            if step in self.company_metrics[company_id]:
-                company_data = self.company_metrics[company_id][step]
-                total_impact += company_data.get("environmental_impact", 0.0)
-
-        for household_id in self.household_metrics:
-            if step in self.household_metrics[household_id]:
-                household_data = self.household_metrics[household_id][step]
-                total_impact += household_data.get("environmental_impact", 0.0)
-
-        metrics["total_environmental_impact"] = total_impact
-
-        # Employment metrics
-        employed_count = 0
-        total_households = 0
-        for household_id in self.household_metrics:
-            if step in self.household_metrics[household_id]:
-                household_data = self.household_metrics[household_id][step]
-                if "employed" in household_data:
-                    total_households += 1
-                    if household_data["employed"]:
-                        employed_count += 1
-
-        if total_households > 0:
-            metrics["employment_rate"] = employed_count / total_households
-            metrics["unemployment_rate"] = 1 - (employed_count / total_households)
-
-        # Investment metrics
-        total_rd_investment = 0.0
-        for company_id in self.company_metrics:
-            if step in self.company_metrics[company_id]:
-                company_data = self.company_metrics[company_id][step]
-                total_rd_investment += company_data.get("rd_investment", 0.0)
-
-        metrics["total_rd_investment"] = total_rd_investment
-        metrics["investment_pct_gdp"] = total_rd_investment / gdp if gdp > 0 else 0
-
-        # Bankruptcy rate
-        bankruptcy_count = self._count_bankruptcies_at_step(step)
-        total_companies = len(self.registered_companies)
-        if total_companies > 0:
-            metrics["bankruptcy_rate"] = bankruptcy_count / total_companies
-
-        # Government metrics - aggregate from state_metrics
-        tax_revenue = 0.0
-        govt_spending = 0.0
-        for state_id in self.state_metrics:
-            if step in self.state_metrics[state_id]:
-                state_data = self.state_metrics[state_id][step]
-                tax_revenue += state_data.get("tax_revenue", 0.0)
-                govt_spending += (
-                    state_data.get("infrastructure_budget", 0.0)
-                    + state_data.get("social_budget", 0.0)
-                    + state_data.get("environment_budget", 0.0)
-                )
-
-        metrics["tax_revenue"] = tax_revenue
-        metrics["government_spending"] = govt_spending
-        metrics["govt_spending_pct_gdp"] = govt_spending / gdp if gdp > 0 else 0
-        metrics["budget_balance"] = tax_revenue - govt_spending
-
-        # Store global metrics for this step
         self.global_metrics[step] = metrics
         self.latest_global_metrics = metrics
-
-        # Check for critical thresholds
         self._check_critical_thresholds(metrics)
 
     def get_latest_macro_snapshot(self) -> dict[str, float]:
@@ -757,103 +623,75 @@ class MetricsCollector:
                         )
 
     def aggregate_metrics(self, step: TimeStep) -> Dict[str, Dict[str, ValueType]]:
-        """
-        Aggregate metrics across agent types for a given time step.
-
-        Args:
-            step: Time step to aggregate metrics for
-
-        Returns:
-            Dictionary of aggregated metrics by category
-        """
+        """Aggregate metrics across agent types for a given time step."""
         result: Dict[str, Dict[str, ValueType]] = {
-            "household": {},
-            "company": {},
-            "bank": {},
-            "state": {},
+            "household": self._aggregate_agent_metrics(self.household_metrics, step, default="mean"),
+            "company": self._aggregate_agent_metrics(self.company_metrics, step, default="mean"),
+            "bank": self._aggregate_agent_metrics(self.bank_metrics, step, default="sum"),
+            "state": self._first_state_snapshot(step),
             "market": {},
             "global": self.global_metrics.get(step, {}),
         }
-
-        # Aggregate household metrics
-        household_metrics_at_step = defaultdict(list)
-        for _household_id, time_series in self.household_metrics.items():
-            if step in time_series:
-                for metric, value in time_series[step].items():
-                    if isinstance(value, (int, float)):
-                        household_metrics_at_step[metric].append(value)
-
-        for metric, values in household_metrics_at_step.items():
-            if not values:
-                continue
-
-            aggregation = self.metrics_config.get(metric, {}).get("aggregation", "mean")
-            if aggregation == "sum":
-                result["household"][metric] = sum(values)
-            elif aggregation == "mean":
-                result["household"][metric] = statistics.mean(values)
-            elif aggregation == "median":
-                result["household"][metric] = statistics.median(values)
-            elif aggregation == "min":
-                result["household"][metric] = min(values)
-            elif aggregation == "max":
-                result["household"][metric] = max(values)
-
-        # Similar aggregation for other agent types
-        company_metrics_at_step = defaultdict(list)
-        for _company_id, time_series in self.company_metrics.items():
-            if step in time_series:
-                for metric, value in time_series[step].items():
-                    if isinstance(value, (int, float)):
-                        company_metrics_at_step[metric].append(value)
-
-        for metric, values in company_metrics_at_step.items():
-            if not values:
-                continue
-
-            aggregation = self.metrics_config.get(metric, {}).get("aggregation", "mean")
-            if aggregation == "sum":
-                result["company"][metric] = sum(values)
-            elif aggregation == "mean":
-                result["company"][metric] = statistics.mean(values)
-            elif aggregation == "median":
-                result["company"][metric] = statistics.median(values)
-            elif aggregation == "min":
-                result["company"][metric] = min(values)
-            elif aggregation == "max":
-                result["company"][metric] = max(values)
-
-        # Bank metrics aggregation
-        bank_metrics_at_step = defaultdict(list)
-        for _bank_id, time_series in self.bank_metrics.items():
-            if step in time_series:
-                for metric, value in time_series[step].items():
-                    if isinstance(value, (int, float)):
-                        bank_metrics_at_step[metric].append(value)
-
-        for metric, values in bank_metrics_at_step.items():
-            if not values:
-                continue
-
-            aggregation = self.metrics_config.get(metric, {}).get("aggregation", "sum")
-            if aggregation == "sum":
-                result["bank"][metric] = sum(values)
-            elif aggregation == "mean":
-                result["bank"][metric] = statistics.mean(values)
-            elif aggregation == "median":
-                result["bank"][metric] = statistics.median(values)
-            elif aggregation == "min":
-                result["bank"][metric] = min(values)
-            elif aggregation == "max":
-                result["bank"][metric] = max(values)
-
-        # For state metrics, usually there's only one state agent
-        for _state_id, time_series in self.state_metrics.items():
-            if step in time_series:
-                result["state"] = time_series[step]
-                break
-
         return result
+
+    def _first_state_snapshot(self, step: TimeStep) -> Dict[str, ValueType]:
+        for _state_id, time_series in self.state_metrics.items():
+            data = time_series.get(step)
+            if data:
+                return data
+        return {}
+
+    def _aggregate_agent_metrics(
+        self,
+        agent_metrics: AgentMetricsDict,
+        step: TimeStep,
+        default: str,
+    ) -> Dict[str, ValueType]:
+        aggregated: Dict[str, ValueType] = {}
+        values_by_metric = defaultdict(list)
+        for _agent_id, time_series in agent_metrics.items():
+            data = time_series.get(step)
+            if not data:
+                continue
+            for metric, value in data.items():
+                if isinstance(value, (int, float)):
+                    values_by_metric[metric].append(value)
+
+        for metric, values in values_by_metric.items():
+            if not values:
+                continue
+            aggregation = self.metrics_config.get(metric, {}).get("aggregation", default)
+            aggregated[metric] = self._apply_aggregation(values, aggregation)
+
+        return aggregated
+
+    def _apply_aggregation(self, values: List[float], aggregation: str) -> ValueType:
+        if aggregation == "sum":
+            return sum(values)
+        if aggregation == "mean":
+            return statistics.mean(values)
+        if aggregation == "median":
+            return statistics.median(values)
+        if aggregation == "min":
+            return min(values)
+        if aggregation == "max":
+            return max(values)
+        return statistics.mean(values)
+
+    def _state_snapshot(self, step: TimeStep) -> Dict[str, ValueType]:
+        for _state_id, time_series in self.state_metrics.items():
+            data = time_series.get(step)
+            if data:
+                return data
+        return {}
+
+    def _market_snapshot(self, step: TimeStep) -> Dict[str, ValueType]:
+        snapshot: Dict[str, ValueType] = {}
+        for market_id, time_series in self.market_metrics.items():
+            data = time_series.get(step)
+            if data:
+                snapshot.update({f"{market_id}.{metric}": value for metric, value in data.items()})
+        return snapshot
 
     def export_metrics(self) -> None:
         """Persist metrics according to CONFIG['result_storage']."""
@@ -1017,6 +855,182 @@ class MetricsCollector:
             "latest_growth": growth_values[-1] if growth_values else 0,
             "growth_volatility": statistics.stdev(growth_values) if len(growth_values) > 1 else 0,
         }
+
+    def _global_money_metrics(self, step: TimeStep) -> MetricDict:
+        metrics: MetricDict = {}
+        total_money = 0.0
+        for company_id, time_series in self.company_metrics.items():
+            data = time_series.get(step)
+            if data:
+                total_money += data.get("balance", 0.0)
+
+        for household_id, time_series in self.household_metrics.items():
+            data = time_series.get(step)
+            if data:
+                total_money += data.get("checking_account", 0.0) + data.get("savings", 0.0)
+
+        metrics["total_money_supply"] = total_money
+        return metrics
+
+    def _global_activity_metrics(self, step: TimeStep) -> MetricDict:
+        metrics: MetricDict = {}
+        gdp = 0.0
+        for company_id, time_series in self.company_metrics.items():
+            data = time_series.get(step)
+            if data:
+                gdp += data.get("production_capacity", 0.0)
+
+        household_consumption = 0.0
+        for household_id, time_series in self.household_metrics.items():
+            data = time_series.get(step)
+            if data:
+                household_consumption += data.get("consumption", 0.0)
+
+        metrics["gdp"] = gdp
+        metrics["household_consumption"] = household_consumption
+        metrics["consumption_pct_gdp"] = household_consumption / gdp if gdp > 0 else 0
+        return metrics
+
+    def _price_dynamics(
+        self,
+        step: TimeStep,
+        total_money: float,
+        gdp: float,
+        household_consumption: float,
+    ) -> MetricDict:
+        metrics: MetricDict = {}
+        price_index_base = float(CONFIG.get("price_index_base", 100.0))
+        pressure_target = float(CONFIG.get("price_index_pressure_target", 1.0))
+        price_sensitivity = float(CONFIG.get("price_index_sensitivity", 0.05))
+        pressure_mode = str(CONFIG.get("price_index_pressure_ratio", "money_supply_to_gdp"))
+        eps = 1e-9
+
+        money_supply_pressure = total_money / (gdp + eps) if gdp > 0 else pressure_target
+        consumption_pressure = (
+            household_consumption / (gdp + eps) if gdp > 0 else pressure_target
+        )
+        if pressure_mode == "consumption_to_production":
+            price_pressure = consumption_pressure
+        elif pressure_mode == "blended":
+            price_pressure = statistics.mean([money_supply_pressure, consumption_pressure])
+        else:
+            price_pressure = money_supply_pressure
+
+        if step > 0 and (step - 1) in self.global_metrics:
+            prev_price = self.global_metrics[step - 1].get("price_index", price_index_base)
+        else:
+            prev_price = price_index_base
+
+        deviation = price_pressure - pressure_target
+        current_price = prev_price * (1 + price_sensitivity * deviation)
+        current_price = max(current_price, 0.01)
+        inflation_rate = ((current_price - prev_price) / prev_price) if prev_price > 0 else 0.0
+
+        metrics["price_index"] = current_price
+        metrics["inflation_rate"] = inflation_rate
+        metrics["price_pressure"] = price_pressure
+        return metrics
+
+    def _distribution_metrics(self, step: TimeStep) -> MetricDict:
+        metrics: MetricDict = {}
+        wealth_values = []
+        for household_id, time_series in self.household_metrics.items():
+            data = time_series.get(step)
+            if data:
+                wealth_values.append(data.get("total_wealth", 0.0))
+
+        if wealth_values:
+            metrics["gini_coefficient"] = self._calculate_gini_coefficient(wealth_values)
+        return metrics
+
+    def _wage_metrics(self, step: TimeStep, price_index: float) -> MetricDict:
+        metrics: MetricDict = {}
+        nominal_wages = []
+        for household_id, time_series in self.household_metrics.items():
+            data = time_series.get(step)
+            if data and data.get("employed"):
+                nominal_wages.append(data.get("income", 0.0))
+
+        avg_nominal_wage = statistics.mean(nominal_wages) if nominal_wages else 0
+        price_index_pct = price_index / 100
+        metrics["average_nominal_wage"] = avg_nominal_wage
+        metrics["average_real_wage"] = (
+            avg_nominal_wage / price_index_pct if price_index_pct > 0 else 0
+        )
+        return metrics
+
+    def _environmental_metrics(self, step: TimeStep) -> MetricDict:
+        metrics: MetricDict = {}
+        total_impact = 0.0
+        for company_id, time_series in self.company_metrics.items():
+            data = time_series.get(step)
+            if data:
+                total_impact += data.get("environmental_impact", 0.0)
+
+        for household_id, time_series in self.household_metrics.items():
+            data = time_series.get(step)
+            if data:
+                total_impact += data.get("environmental_impact", 0.0)
+
+        metrics["total_environmental_impact"] = total_impact
+        return metrics
+
+    def _employment_metrics(self, step: TimeStep) -> MetricDict:
+        metrics: MetricDict = {}
+        employed_count = 0
+        total_households = 0
+        for household_id, time_series in self.household_metrics.items():
+            data = time_series.get(step)
+            if data and "employed" in data:
+                total_households += 1
+                if data["employed"]:
+                    employed_count += 1
+
+        if total_households > 0:
+            metrics["employment_rate"] = employed_count / total_households
+            metrics["unemployment_rate"] = 1 - (employed_count / total_households)
+        return metrics
+
+    def _investment_metrics(self, step: TimeStep, gdp: float) -> MetricDict:
+        metrics: MetricDict = {}
+        total_rd_investment = 0.0
+        for company_id, time_series in self.company_metrics.items():
+            data = time_series.get(step)
+            if data:
+                total_rd_investment += data.get("rd_investment", 0.0)
+
+        metrics["total_rd_investment"] = total_rd_investment
+        metrics["investment_pct_gdp"] = total_rd_investment / gdp if gdp > 0 else 0
+        return metrics
+
+    def _bankruptcy_metrics(self, step: TimeStep) -> MetricDict:
+        metrics: MetricDict = {}
+        bankruptcy_count = self._count_bankruptcies_at_step(step)
+        total_companies = len(self.registered_companies)
+        if total_companies > 0:
+            metrics["bankruptcy_rate"] = bankruptcy_count / total_companies
+        return metrics
+
+    def _government_metrics(self, step: TimeStep, gdp: float) -> MetricDict:
+        metrics: MetricDict = {}
+        tax_revenue = 0.0
+        govt_spending = 0.0
+        for state_id, time_series in self.state_metrics.items():
+            data = time_series.get(step)
+            if not data:
+                continue
+            tax_revenue += data.get("tax_revenue", 0.0)
+            govt_spending += (
+                data.get("infrastructure_budget", 0.0)
+                + data.get("social_budget", 0.0)
+                + data.get("environment_budget", 0.0)
+            )
+
+        metrics["tax_revenue"] = tax_revenue
+        metrics["government_spending"] = govt_spending
+        metrics["govt_spending_pct_gdp"] = govt_spending / gdp if gdp > 0 else 0
+        metrics["budget_balance"] = tax_revenue - govt_spending
+        return metrics
 
 
 # Create a singleton metrics collector instance

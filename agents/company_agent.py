@@ -376,6 +376,104 @@ class Company(EconomicAgent):
             return True
         return False
 
+    def _ensure_wage_liquidity(self, warengeld_bank: Optional[WarengeldBank]) -> None:
+        """Secure short-term credit to cover the upcoming wage bill."""
+        if warengeld_bank is None or not self.employees:
+            return
+
+        default_wage = CONFIG.get("default_wage", 5)
+        planned_wage_bill = sum(
+            getattr(employee, "current_wage", default_wage) for employee in self.employees
+        )
+        buffer_ratio = CONFIG.get("company_liquidity_buffer_ratio", 0.2)
+        target_liquidity = planned_wage_bill * (1 + buffer_ratio)
+
+        if self.balance >= target_liquidity:
+            return
+
+        credit_needed = target_liquidity - self.balance
+        granted = warengeld_bank.grant_credit(self, credit_needed)
+        if granted > 0:
+            log(
+                f"Company {self.unique_id} drew {granted:.2f} in Warengeld credit to cover wages.",
+                level="INFO",
+            )
+
+    def _handle_rd_cycle(self) -> None:
+        """Process the invest -> innovate cycle."""
+        self.invest_in_rd()
+        self.innovate()
+
+    def _sync_labor_market(self, state: Optional[State]) -> None:
+        """Ensure the company interacts with the labor market if available."""
+        if state and state.labor_market:
+            self.adjust_employees(state.labor_market)
+            return
+        log(
+            f"Company {self.unique_id} cannot interact with labor market: unavailable.",
+            level="WARNING",
+        )
+
+    def _run_operations(self) -> None:
+        """Produce goods (if staffed) and pay wages."""
+        if self.employees:
+            self.produce()
+        self.pay_wages()
+
+    def _trigger_growth_and_investment(self, savings_bank: Optional[SavingsBank]) -> None:
+        """Toggle growth mode and request long-term financing if conditions are met."""
+        if not self.growth_phase and self.balance >= self.growth_balance_trigger:
+            self.growth_phase = True
+            log(f"Company {self.unique_id} enters growth phase.", level="INFO")
+
+            if savings_bank is not None:
+                investment_factor = CONFIG.get("growth_investment_factor", 0.5)
+                invest_amount = self.production_capacity * investment_factor
+                if invest_amount > 0:
+                    granted = savings_bank.allocate_credit(self, invest_amount)
+                    if granted > 0:
+                        log(
+                            f"Company {self.unique_id} received investment credit {granted:.2f} "
+                            f"from SavingsBank for growth.",
+                            level="INFO",
+                        )
+                    else:
+                        log(
+                            f"Company {self.unique_id} could not secure investment credit of "
+                            f"{invest_amount:.2f} from SavingsBank.",
+                            level="WARNING",
+                        )
+
+        if self.growth_phase:
+            self.growth_counter += 1
+
+    def _handle_company_split(self) -> Optional["Company"]:
+        """Split the company if growth thresholds are satisfied."""
+        if self.growth_phase and self.growth_counter >= self.growth_threshold:
+            return self.split_company()
+        return None
+
+    def _service_warengeld_credit(self, warengeld_bank: Optional[WarengeldBank]) -> None:
+        """Repay short-term credit while observing the working-capital buffer."""
+        if warengeld_bank is None:
+            return
+
+        min_working_capital = CONFIG.get("min_working_capital_buffer", 0.0)
+        outstanding = warengeld_bank.credit_lines.get(self.unique_id, 0.0)
+        if outstanding <= 0 or self.balance <= min_working_capital:
+            return
+
+        repay_amount = min(self.balance - min_working_capital, outstanding)
+        if repay_amount <= 0:
+            return
+
+        self.balance -= repay_amount
+        warengeld_bank.process_repayment(self, repay_amount)
+        log(
+            f"Company {self.unique_id} repaid {repay_amount:.2f} of Warengeld credit.",
+            level="INFO",
+        )
+
     def step(
         self,
         current_step: int,
@@ -408,72 +506,13 @@ class Company(EconomicAgent):
         """
         log(f"Company {self.unique_id} starting step {current_step}.", level="INFO")
 
-        if warengeld_bank is not None and self.employees:
-            default_wage = CONFIG.get("default_wage", 5)
-            planned_wage_bill = sum(
-                getattr(employee, "current_wage", default_wage) for employee in self.employees
-            )
-            buffer_ratio = CONFIG.get("company_liquidity_buffer_ratio", 0.2)
-            target_liquidity = planned_wage_bill * (1 + buffer_ratio)
+        self._ensure_wage_liquidity(warengeld_bank)
+        self._handle_rd_cycle()
+        self._sync_labor_market(state)
+        self._run_operations()
+        self._trigger_growth_and_investment(savings_bank)
+        new_company = self._handle_company_split()
 
-            if self.balance < target_liquidity:
-                credit_needed = target_liquidity - self.balance
-                granted = warengeld_bank.grant_credit(self, credit_needed)
-                if granted > 0:
-                    log(
-                        f"Company {self.unique_id} drew {granted:.2f} in Warengeld credit to cover wages.",
-                        level="INFO",
-                    )
-
-        # Investment and production
-        self.invest_in_rd()
-        self.innovate()
-
-        if state and state.labor_market:
-            self.adjust_employees(state.labor_market)
-        else:
-            log(
-                f"Company {self.unique_id} cannot interact with labor market: unavailable.",
-                level="WARNING",
-            )
-
-        # Sales and finances
-        if self.employees:
-            self.produce()
-        self.pay_wages()
-
-        # Growth phase check
-        if not self.growth_phase and self.balance >= self.growth_balance_trigger:
-            self.growth_phase = True
-            log(f"Company {self.unique_id} enters growth phase.", level="INFO")
-
-            if savings_bank is not None:
-                investment_factor = CONFIG.get("growth_investment_factor", 0.5)
-                invest_amount = self.production_capacity * investment_factor
-                if invest_amount > 0:
-                    granted = savings_bank.allocate_credit(self, invest_amount)
-                    if granted > 0:
-                        log(
-                            f"Company {self.unique_id} received investment credit {granted:.2f} "
-                            f"from SavingsBank for growth.",
-                            level="INFO",
-                        )
-                    else:
-                        log(
-                            f"Company {self.unique_id} could not secure investment credit of "
-                            f"{invest_amount:.2f} from SavingsBank.",
-                            level="WARNING",
-                        )
-
-        if self.growth_phase:
-            self.growth_counter += 1
-
-        # Company splitting if growth threshold reached
-        new_company: Optional[Company] = None
-        if self.growth_phase and self.growth_counter >= self.growth_threshold:
-            new_company = self.split_company()
-
-        # Bankruptcy check
         if self.check_bankruptcy():
             log(
                 f"Company {self.unique_id} is removed from simulation due to bankruptcy.",
@@ -481,19 +520,7 @@ class Company(EconomicAgent):
             )
             return "DEAD"
 
-        if warengeld_bank is not None:
-            min_working_capital = CONFIG.get("min_working_capital_buffer", 0.0)
-            outstanding = warengeld_bank.credit_lines.get(self.unique_id, 0.0)
-            if outstanding > 0 and self.balance > min_working_capital:
-                repay_amount = min(self.balance - min_working_capital, outstanding)
-                if repay_amount > 0:
-                    self.balance -= repay_amount
-                    warengeld_bank.process_repayment(self, repay_amount)
-                    log(
-                        f"Company {self.unique_id} repaid {repay_amount:.2f} of Warengeld credit.",
-                        level="INFO",
-                    )
-
+        self._service_warengeld_credit(warengeld_bank)
         log(f"Company {self.unique_id} completed step {current_step}.", level="INFO")
         return new_company
 

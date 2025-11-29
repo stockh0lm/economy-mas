@@ -3,6 +3,7 @@ logger.py
 main.py
 metrics.py
 pyproject.toml
+agents/__init__.py
 agents/bank.py
 agents/base_agent.py
 agents/clearing_agent.py
@@ -14,6 +15,12 @@ agents/household_agent.py
 agents/labor_market.py
 agents/savings_bank_agent.py
 agents/state_agent.py
+tests/test_clearing_agent.py
+tests/test_company_basic.py
+tests/test_company_split_bankruptcy.py
+tests/test_company_step_regression.py
+tests/test_metrics_aggregate.py
+tests/test_metrics_global.py
 tests/test_sanity.py
 wirtschaftssimulation.egg-info/PKG-INFO
 wirtschaftssimulation.egg-info/SOURCES.txt
