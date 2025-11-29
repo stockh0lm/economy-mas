@@ -1,7 +1,7 @@
 # state_agent.py
 from typing import Protocol, Sequence, TypeAlias, cast
 
-from config import CONFIG
+from config import CONFIG_MODEL, SimulationConfig
 from logger import log
 
 from .base_agent import BaseAgent

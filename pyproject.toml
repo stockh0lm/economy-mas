@@ -23,6 +23,8 @@ dev = [
     "ruff",
     "black",
     "isort",
+    "vulture",
+    "lizard",
 ]
 
 [tool.black]

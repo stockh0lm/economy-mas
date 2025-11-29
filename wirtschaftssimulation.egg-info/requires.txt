@@ -1,3 +1,4 @@
+pydantic>=2.7.4
 
 [dev]
 nox
@@ -6,3 +7,5 @@ mypy
 ruff
 black
 isort
+vulture
+lizard

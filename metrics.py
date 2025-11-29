@@ -12,7 +12,7 @@ import statistics
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Protocol, Set, TypedDict, cast
+from typing import Protocol, TypedDict, cast
 
 from agents.company_agent import Company
 from agents.household_agent import Household
@@ -26,9 +26,9 @@ AgentID = str
 TimeStep = int
 ValueType = float | int | bool | str
 MetricName = str
-MetricDict = Dict[MetricName, ValueType]
-TimeSeriesDict = Dict[TimeStep, MetricDict]
-AgentMetricsDict = Dict[AgentID, TimeSeriesDict]
+MetricDict = dict[MetricName, ValueType]
+TimeSeriesDict = dict[TimeStep, MetricDict]
+AgentMetricsDict = dict[AgentID, TimeSeriesDict]
 
 
 class EconomicAgent(Protocol):
@@ -44,15 +44,15 @@ class MetricConfig(TypedDict):
     display_name: str  # Human-readable name for plots/reports
     unit: str  # Measurement unit (e.g., "$", "%", "units")
     aggregation: str  # How to aggregate across agents ("sum", "mean", "median", "min", "max")
-    critical_threshold: Optional[float]  # Value that triggers alerts if crossed
+    critical_threshold: float | None  # Value that triggers alerts if crossed
 
 
 class LaborMarketMetricsSource(Protocol):
-    registered_workers: List[object]
+    registered_workers: list[object]
 
 
 class FinancialMarketMetricsSource(Protocol):
-    list_of_assets: Dict[str, float]
+    list_of_assets: dict[str, float]
 
 
 class EconomicCycleSnapshot(TypedDict):
@@ -77,10 +77,10 @@ class MetricsCollector:
     state_metrics: AgentMetricsDict
     market_metrics: AgentMetricsDict
     global_metrics: TimeSeriesDict
-    registered_households: Set[str]
-    registered_companies: Set[str]
-    registered_banks: Set[str]
-    metrics_config: Dict[MetricName, MetricConfig]
+    registered_households: set[str]
+    registered_companies: set[str]
+    registered_banks: set[str]
+    metrics_config: dict[MetricName, MetricConfig]
     export_path: Path
     latest_labor_metrics: dict[str, float]
     latest_global_metrics: dict[str, float]
@@ -95,10 +95,10 @@ class MetricsCollector:
         self.state_metrics: AgentMetricsDict = {}
         self.market_metrics: AgentMetricsDict = {}
         self.global_metrics: TimeSeriesDict = {}
-        self.registered_households: Set[str] = set()
-        self.registered_companies: Set[str] = set()
-        self.registered_banks: Set[str] = set()
-        self.metrics_config: Dict[MetricName, MetricConfig] = {}
+        self.registered_households: set[str] = set()
+        self.registered_companies: set[str] = set()
+        self.registered_banks: set[str] = set()
+        self.metrics_config: dict[MetricName, MetricConfig] = {}
         self.export_path: Path = Path(self.config.metrics_export_path)
         self.latest_labor_metrics = {}
         self.latest_global_metrics = {}
@@ -603,7 +603,7 @@ class MetricsCollector:
 
         return bankruptcy_count
 
-    def _calculate_gini_coefficient(self, values: List[float]) -> float:
+    def _calculate_gini_coefficient(self, values: list[float]) -> float:
         """
         Calculate Gini coefficient as a measure of inequality.
 
@@ -643,9 +643,9 @@ class MetricsCollector:
                             level="WARNING",
                         )
 
-    def aggregate_metrics(self, step: TimeStep) -> Dict[str, Dict[str, ValueType]]:
+    def aggregate_metrics(self, step: TimeStep) -> dict[str, dict[str, ValueType]]:
         """Aggregate metrics across agent types for a given time step."""
-        result: Dict[str, Dict[str, ValueType]] = {
+        result: dict[str, dict[str, ValueType]] = {
             "household": self._aggregate_agent_metrics(self.household_metrics, step, default="mean"),
             "company": self._aggregate_agent_metrics(self.company_metrics, step, default="mean"),
             "bank": self._aggregate_agent_metrics(self.bank_metrics, step, default="sum"),
@@ -655,7 +655,7 @@ class MetricsCollector:
         }
         return result
 
-    def _first_state_snapshot(self, step: TimeStep) -> Dict[str, ValueType]:
+    def _first_state_snapshot(self, step: TimeStep) -> dict[str, ValueType]:
         for _state_id, time_series in self.state_metrics.items():
             data = time_series.get(step)
             if data:
@@ -667,8 +667,8 @@ class MetricsCollector:
         agent_metrics: AgentMetricsDict,
         step: TimeStep,
         default: str,
-    ) -> Dict[str, ValueType]:
-        aggregated: Dict[str, ValueType] = {}
+    ) -> dict[str, ValueType]:
+        aggregated: dict[str, ValueType] = {}
         values_by_metric = defaultdict(list)
         for _agent_id, time_series in agent_metrics.items():
             data = time_series.get(step)
@@ -686,7 +686,7 @@ class MetricsCollector:
 
         return aggregated
 
-    def _apply_aggregation(self, values: List[float], aggregation: str) -> ValueType:
+    def _apply_aggregation(self, values: list[float], aggregation: str) -> ValueType:
         if aggregation == "sum":
             return sum(values)
         if aggregation == "mean":
@@ -699,15 +699,15 @@ class MetricsCollector:
             return max(values)
         return statistics.mean(values)
 
-    def _state_snapshot(self, step: TimeStep) -> Dict[str, ValueType]:
+    def _state_snapshot(self, step: TimeStep) -> dict[str, ValueType]:
         for _state_id, time_series in self.state_metrics.items():
             data = time_series.get(step)
             if data:
                 return data
         return {}
 
-    def _market_snapshot(self, step: TimeStep) -> Dict[str, ValueType]:
-        snapshot: Dict[str, ValueType] = {}
+    def _market_snapshot(self, step: TimeStep) -> dict[str, ValueType]:
+        snapshot: dict[str, ValueType] = {}
         for market_id, time_series in self.market_metrics.items():
             data = time_series.get(step)
             if data:
@@ -771,11 +771,11 @@ class MetricsCollector:
         else:
             log("MetricsCollector: No metrics available for CSV export", level="WARNING")
 
-    def _export_global_metrics_csv(self, timestamp: str) -> Optional[Path]:
+    def _export_global_metrics_csv(self, timestamp: str) -> Path | None:
         if not self.global_metrics:
             return None
 
-        metric_names: Set[str] = set()
+        metric_names: set[str] = set()
         for data in self.global_metrics.values():
             metric_names.update(data.keys())
 
@@ -797,11 +797,11 @@ class MetricsCollector:
         agent_metrics: AgentMetricsDict,
         filename_prefix: str,
         timestamp: str,
-    ) -> Optional[Path]:
+    ) -> Path | None:
         if not agent_metrics:
             return None
 
-        metric_names: Set[str] = set()
+        metric_names: set[str] = set()
         has_rows = False
         for time_series in agent_metrics.values():
             if time_series:
@@ -826,7 +826,7 @@ class MetricsCollector:
 
         return output_file
 
-    def detect_economic_cycles(self) -> Optional[EconomicCycleSnapshot]:
+    def detect_economic_cycles(self) -> EconomicCycleSnapshot | None:
         """
         Detect economic cycles like booms and recessions.
 

@@ -1,7 +1,7 @@
 # savings_bank_agent.py
 from typing import Dict, Protocol, TypeAlias
 
-from config import CONFIG
+from config import CONFIG_MODEL, SimulationConfig
 from logger import log
 
 from .base_agent import BaseAgent
@@ -34,7 +34,7 @@ class SavingsBank(BaseAgent):
     Enforces savings limits and manages liquidity for the overall economy.
     """
 
-    def __init__(self, unique_id: str) -> None:
+    def __init__(self, unique_id: str, config: SimulationConfig | None = None) -> None:
         """
         Initialize a savings bank with default parameters.
 
@@ -48,10 +48,12 @@ class SavingsBank(BaseAgent):
         self.total_savings: float = 0.0
         self.active_loans: LoanMap = {}  # Maps borrower_id to their outstanding loan amount
 
-        # Configuration parameters from CONFIG
-        self.loan_interest_rate: float = CONFIG.get("loan_interest_rate", 0.0)
-        self.max_savings_per_account: float = CONFIG.get("max_savings_per_account", 10000.0)
-        self.liquidity: float = 0.0  # Initially zero until deposits are made
+        self.config: SimulationConfig = config or CONFIG_MODEL
+
+        # Configuration parameters
+        self.loan_interest_rate: float = self.config.loan_interest_rate
+        self.max_savings_per_account: float = self.config.max_savings_per_account
+        self.liquidity: float = self.config.initial_bank_liquidity
 
     def deposit_savings(self, agent: HasUniqueID, amount: float) -> float:
         """

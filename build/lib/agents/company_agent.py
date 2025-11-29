@@ -9,7 +9,7 @@ from agents.labor_market import LaborMarket
 from agents.savings_bank_agent import SavingsBank
 from agents.state_agent import State
 
-from config import CONFIG
+from config import CONFIG_MODEL, SimulationConfig
 from logger import log
 
 # Type aliases for improved readability
@@ -34,6 +34,7 @@ class Company(EconomicAgent):
         environmental_impact: float = 5.0,
         max_employees: int = 10,
         employees: list[Employee] | None = None,
+        config: SimulationConfig | None = None,
     ) -> None:
         """
         Initialize a company with economic attributes.
@@ -68,9 +69,10 @@ class Company(EconomicAgent):
         # Growth parameters
         self.growth_phase: bool = False
         self.growth_counter: int = 0
-        self.growth_threshold: int = CONFIG.get("growth_threshold", 5)
-        self.growth_balance_trigger: float = CONFIG.get("growth_balance_trigger", 1000)
-        self.bankruptcy_threshold: float = CONFIG.get("bankruptcy_threshold", -100)
+        self.config: SimulationConfig = config or CONFIG_MODEL
+        self.growth_threshold: int = self.config.growth_threshold
+        self.growth_balance_trigger: float = self.config.growth_balance_trigger
+        self.bankruptcy_threshold: float = self.config.bankruptcy_threshold
 
         # Research and development
         self.rd_investment: float = 0.0
@@ -82,8 +84,8 @@ class Company(EconomicAgent):
 
         A percentage of excess balance is allocated to R&D investment.
         """
-        rd_trigger: float = CONFIG.get("rd_investment_trigger_balance", 200)
-        rd_rate: float = CONFIG.get("rd_investment_rate", 0.1)
+        rd_trigger: float = self.config.rd_investment_trigger_balance
+        rd_rate: float = self.config.rd_investment_rate
 
         if self.balance > rd_trigger:
             investment: float = (self.balance - rd_trigger) * rd_rate
@@ -104,8 +106,8 @@ class Company(EconomicAgent):
         """
         # Probability of innovation success increases with R&D investment
         probability: float = min(self.rd_investment / 1000, 0.5)
-        innovation_bonus_rate: float = CONFIG.get("innovation_production_bonus", 0.1)
-        rd_decay_factor: float = CONFIG.get("rd_investment_decay_factor", 0.5)
+        innovation_bonus_rate: float = self.config.innovation_production_bonus
+        rd_decay_factor: float = self.config.rd_investment_decay_factor
 
         if random.random() < probability:
             bonus: float = self.production_capacity * innovation_bonus_rate
@@ -155,7 +157,7 @@ class Company(EconomicAgent):
 
     def adjust_employees(self, labor_market: LaborMarket) -> None:
         """Advertise labor demand and release surplus employees via labor market."""
-        employee_capacity_ratio: float = CONFIG.get("employee_capacity_ratio", 10.0)
+        employee_capacity_ratio: float = self.config.employee_capacity_ratio
         required_employees: int = int(self.production_capacity / employee_capacity_ratio)
         current_count = len(self.employees)
 
@@ -170,7 +172,7 @@ class Company(EconomicAgent):
                     wage=getattr(
                         labor_market,
                         "default_wage",
-                        CONFIG.get("wage_rate", CONFIG.get("default_wage", 10.0)),
+                        self.config.wage_rate,
                     ),
                     positions=new_positions,
                 )
@@ -199,10 +201,10 @@ class Company(EconomicAgent):
         Returns:
             Revenue from sales
         """
-        actual_demand: float = demand if demand is not None else CONFIG.get("demand_default", 50)
+        actual_demand: float = demand if demand is not None else self.config.demand_default
         sold_quantity: float = min(self.inventory, actual_demand)
-        base_price: float = CONFIG.get("production_base_price", 10)
-        innovation_bonus_rate: float = CONFIG.get("production_innovation_bonus_rate", 0.02)
+        base_price: float = self.config.production_base_price
+        innovation_bonus_rate: float = self.config.production_innovation_bonus_rate
 
         # Calculate price with innovation bonus
         sale_price_per_unit: float = base_price * (
@@ -230,8 +232,8 @@ class Company(EconomicAgent):
         if spending_capacity <= 0 or self.inventory <= 0:
             return 0.0
 
-        base_price: float = CONFIG.get("production_base_price", 10)
-        innovation_bonus_rate: float = CONFIG.get("production_innovation_bonus_rate", 0.02)
+        base_price: float = self.config.production_base_price
+        innovation_bonus_rate: float = self.config.production_innovation_bonus_rate
         price_per_unit: float = base_price * (1 + innovation_bonus_rate * self.innovation_index)
         if price_per_unit <= 0:
             return 0.0
@@ -265,7 +267,7 @@ class Company(EconomicAgent):
         Returns:
             Total wages paid
         """
-        wage_rate = wage_rate if wage_rate is not None else CONFIG.get("wage_rate", 5)
+        wage_rate = wage_rate if wage_rate is not None else self.config.wage_rate
 
         if not self.employees:
             log(f"Company {self.unique_id} has no employees to pay wages.", level="WARNING")
@@ -279,7 +281,7 @@ class Company(EconomicAgent):
                 else getattr(
                     employee,
                     "current_wage",
-                    CONFIG.get("default_wage", 5),
+                    self.config.default_wage,
                 )
             )
             total_wages += rate
@@ -328,7 +330,7 @@ class Company(EconomicAgent):
             Newly created spinoff company
         """
         # Split assets for new company
-        split_ratio: float = CONFIG.get("company_split_ratio", 0.5)
+        split_ratio: float = self.config.company_split_ratio
         split_balance: float = self.balance * split_ratio
         self.balance -= split_balance
 
@@ -344,6 +346,7 @@ class Company(EconomicAgent):
             land_area=self.land_area,
             environmental_impact=self.environmental_impact,
             max_employees=self.max_employees,
+            config=self.config,
         )
 
         new_company.balance = split_balance
@@ -381,11 +384,11 @@ class Company(EconomicAgent):
         if warengeld_bank is None or not self.employees:
             return
 
-        default_wage = CONFIG.get("default_wage", 5)
+        default_wage = self.config.default_wage
         planned_wage_bill = sum(
             getattr(employee, "current_wage", default_wage) for employee in self.employees
         )
-        buffer_ratio = CONFIG.get("company_liquidity_buffer_ratio", 0.2)
+        buffer_ratio = getattr(self.config, "company_liquidity_buffer_ratio", 0.2)
         target_liquidity = planned_wage_bill * (1 + buffer_ratio)
 
         if self.balance >= target_liquidity:
@@ -427,7 +430,7 @@ class Company(EconomicAgent):
             log(f"Company {self.unique_id} enters growth phase.", level="INFO")
 
             if savings_bank is not None:
-                investment_factor = CONFIG.get("growth_investment_factor", 0.5)
+                investment_factor = getattr(self.config, "growth_investment_factor", 0.5)
                 invest_amount = self.production_capacity * investment_factor
                 if invest_amount > 0:
                     granted = savings_bank.allocate_credit(self, invest_amount)
@@ -458,7 +461,7 @@ class Company(EconomicAgent):
         if warengeld_bank is None:
             return
 
-        min_working_capital = CONFIG.get("min_working_capital_buffer", 0.0)
+        min_working_capital = getattr(self.config, "min_working_capital_buffer", 0.0)
         outstanding = warengeld_bank.credit_lines.get(self.unique_id, 0.0)
         if outstanding <= 0 or self.balance <= min_working_capital:
             return

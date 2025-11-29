@@ -11,7 +11,7 @@ from agents.household_agent import Household
 from agents.labor_market import LaborMarket
 from agents.savings_bank_agent import SavingsBank
 from agents.state_agent import State
-from config import CONFIG
+from config import CONFIG, CONFIG_MODEL, SimulationConfig
 from logger import log, setup_logger
 from metrics import MetricsCollector
 
@@ -32,47 +32,51 @@ AgentDict: TypeAlias = dict[
 ]
 
 
-def initialize_agents() -> AgentDict:
+def initialize_agents(config: SimulationConfig) -> AgentDict:
     """Initialize all simulation agents and their relationships."""
-    state: State = State(CONFIG["STATE_ID"])
+    state: State = State(config.STATE_ID, config)
 
     # Create initial households based on configuration
     households: list[Household] = []
-    for i, params in enumerate(CONFIG["INITIAL_HOUSEHOLDS"]):
+    for i, params in enumerate(config.initial_households):
         households.append(
             Household(
-                f"{CONFIG['HOUSEHOLD_ID_PREFIX']}{i+1}",
-                income=params["income"],
-                land_area=params["land_area"],
-                environmental_impact=params["environmental_impact"],
+                f"{config.HOUSEHOLD_ID_PREFIX}{i+1}",
+                income=params.income,
+                land_area=params.land_area,
+                environmental_impact=params.environmental_impact,
+                config=config,
             )
         )
 
     # Create initial companies based on configuration
     companies: list[Company] = []
-    for i, params in enumerate(CONFIG["INITIAL_COMPANIES"]):
+    for i, params in enumerate(config.initial_companies):
         companies.append(
             Company(
-                f"{CONFIG['COMPANY_ID_PREFIX']}{i+1}",
-                production_capacity=params["production_capacity"],
-                land_area=params["land_area"],
-                environmental_impact=params["environmental_impact"],
+                f"{config.COMPANY_ID_PREFIX}{i+1}",
+                production_capacity=params.production_capacity,
+                land_area=params.land_area,
+                environmental_impact=params.environmental_impact,
+                config=config,
             )
         )
 
-    warengeld_bank = WarengeldBank(CONFIG["BANK_ID"])
-    savings_bank = SavingsBank(CONFIG["SAVINGS_BANK_ID"])
+    warengeld_bank = WarengeldBank(config.BANK_ID, config)
+    savings_bank = SavingsBank(config.SAVINGS_BANK_ID, config)
 
-    clearing_agent = ClearingAgent(CONFIG["CLEARING_AGENT_ID"])
+    clearing_agent = ClearingAgent(config.CLEARING_AGENT_ID, config)
     clearing_agent.monitored_banks.append(warengeld_bank)
     clearing_agent.monitored_savings_banks.append(savings_bank)
 
-    environmental_agency = EnvironmentalAgency(CONFIG["ENV_AGENCY_ID"], state=state)
+    environmental_agency = EnvironmentalAgency(config.ENV_AGENCY_ID, state=state, config=config)
     recycling_company = RecyclingCompany(
-        CONFIG["RECYCLING_COMPANY_ID"], recycling_efficiency=CONFIG["recycling_efficiency"]
+        config.RECYCLING_COMPANY_ID,
+        recycling_efficiency=config.recycling_efficiency,
+        config=config,
     )
-    financial_market = FinancialMarket(CONFIG["FINANCIAL_MARKET_ID"])
-    labor_market = LaborMarket(CONFIG["LABOR_MARKET_ID"])
+    financial_market = FinancialMarket(config.FINANCIAL_MARKET_ID, config)
+    labor_market = LaborMarket(config.LABOR_MARKET_ID, config)
     state.labor_market = labor_market
 
     # Register workers and job offers in labor market
@@ -80,7 +84,7 @@ def initialize_agents() -> AgentDict:
         labor_market.register_worker(hh)
     for comp in companies:
         labor_market.register_job_offer(
-            comp, wage=CONFIG["default_wage"], positions=CONFIG["INITIAL_JOB_POSITIONS_PER_COMPANY"]
+            comp, wage=config.default_wage, positions=config.INITIAL_JOB_POSITIONS_PER_COMPANY
         )
 
     all_agents: list[object] = households + companies + [state, warengeld_bank, savings_bank]
@@ -225,10 +229,10 @@ def summarize_simulation(agents_dict: AgentDict) -> None:
         },
     }
 
-    with open(CONFIG["SUMMARY_FILE"], "w") as f:
-        json.dump(summary, f, indent=CONFIG["JSON_INDENT"])
+    with open(CONFIG_MODEL.SUMMARY_FILE, "w") as f:
+        json.dump(summary, f, indent=CONFIG_MODEL.JSON_INDENT)
 
-    log(f"Simulation summary stored in {CONFIG['SUMMARY_FILE']}", level="INFO")
+    log(f"Simulation summary stored in {CONFIG_MODEL.SUMMARY_FILE}", level="INFO")
 
 
 def main() -> None:
@@ -237,9 +241,10 @@ def main() -> None:
     log("Starting MAS simulation...", level="INFO")
     metrics = MetricsCollector()
 
-    num_steps: int = CONFIG["simulation_steps"]
+    config = CONFIG_MODEL
+    num_steps: int = config.simulation_steps
 
-    agents: AgentDict = initialize_agents()
+    agents: AgentDict = initialize_agents(config)
 
     for step in range(1, num_steps + 1):
         log(f"---- Simulation Step {step} ----", level="INFO")

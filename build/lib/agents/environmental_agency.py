@@ -1,7 +1,7 @@
 # environmental_agency.py
 from typing import Optional, Protocol, TypeAlias, cast, runtime_checkable
 
-from config import CONFIG
+from config import CONFIG_MODEL, SimulationConfig
 from logger import log
 
 from .base_agent import BaseAgent
@@ -40,7 +40,7 @@ class EnvironmentalAgency(BaseAgent):
     Monitors environmental standards and collects environmental taxes.
     """
 
-    def __init__(self, unique_id: str, state: Optional["State"] = None) -> None:
+    def __init__(self, unique_id: str, state: Optional["State"] = None, config: SimulationConfig | None = None) -> None:
         """
         Initialize an environmental agency with standard parameters.
 
@@ -50,19 +50,21 @@ class EnvironmentalAgency(BaseAgent):
         """
         super().__init__(unique_id)
 
+        self.config: SimulationConfig = config or CONFIG_MODEL
+
         # Environmental standards from configuration
         self.env_standards: dict[str, float] = {
-            "max_environmental_impact": CONFIG.get("max_environmental_impact", 10.0)
+            "max_environmental_impact": self.config.max_environmental_impact
         }
 
         # Accumulated environmental taxes
         self.collected_env_tax: float = 0.0
-        self.env_tax_state_share: float = CONFIG.get("environmental_tax_state_share", 1.0)
+        self.env_tax_state_share: float = self.config.environmental_tax_state_share
         self.env_tax_transferred_to_state: float = 0.0
         self.state: Optional["State"] = state
 
         # Penalty factor from configuration
-        self.penalty_factor: float = CONFIG.get("penalty_factor_env_audit", 5.0)
+        self.penalty_factor: float = self.config.penalty_factor_env_audit
 
     def attach_state(self, state: "State") -> None:
         """Link the environmental agency to the state for revenue transfers."""
@@ -98,7 +100,7 @@ class EnvironmentalAgency(BaseAgent):
         Returns:
             Total environmental tax collected in this operation
         """
-        tax_rate: float = CONFIG.get("tax_rates", {}).get("umweltsteuer", 0.02)
+        tax_rate: float = self.config.tax_rates.umweltsteuer
         total_tax: float = 0.0
 
         for agent in agents:
@@ -199,7 +201,7 @@ class RecyclingCompany(BaseAgent):
     Collects and processes waste into recycled materials.
     """
 
-    def __init__(self, unique_id: str, recycling_efficiency: float | None = None) -> None:
+    def __init__(self, unique_id: str, recycling_efficiency: float | None = None, config: SimulationConfig | None = None) -> None:
         """
         Initialize a recycling company with specified efficiency.
 
@@ -209,11 +211,11 @@ class RecyclingCompany(BaseAgent):
         """
         super().__init__(unique_id)
 
-        # Set recycling efficiency from config or parameter
+        self.config: SimulationConfig = config or CONFIG_MODEL
         self.recycling_efficiency: float = (
             recycling_efficiency
             if recycling_efficiency is not None
-            else CONFIG.get("recycling_efficiency", 0.8)
+            else self.config.recycling_efficiency
         )
 
         # Operating metrics

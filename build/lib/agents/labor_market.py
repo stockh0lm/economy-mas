@@ -2,10 +2,10 @@
 from dataclasses import dataclass
 from typing import List, Optional, Protocol, Tuple, TypeAlias
 
-from config import CONFIG
+from config import CONFIG_MODEL, SimulationConfig
 from logger import log
 
-from base_agent import BaseAgent
+from .base_agent import BaseAgent
 
 
 class EmployerProtocol(Protocol):
@@ -47,7 +47,7 @@ class LaborMarket(BaseAgent):
     - Setting default wage levels for unmatched workers
     """
 
-    def __init__(self, unique_id: str) -> None:
+    def __init__(self, unique_id: str, config: SimulationConfig | None = None) -> None:
         """
         Initialize a labor market.
 
@@ -58,13 +58,15 @@ class LaborMarket(BaseAgent):
         self.job_offers: List[JobOffer] = []
         self.registered_workers: List[WorkerProtocol] = []
 
+        self.config: SimulationConfig = config or CONFIG_MODEL
+
         # Configuration parameters
-        self.default_wage: float = CONFIG.get("default_wage", 10)
-        self.minimum_wage_floor: float = CONFIG.get("minimum_wage_floor", self.default_wage)
-        self.wage_unemployment_sensitivity: float = CONFIG.get("wage_unemployment_sensitivity", 0.5)
-        self.wage_price_index_sensitivity: float = CONFIG.get("wage_price_index_sensitivity", 0.3)
-        self.target_unemployment_rate: float = CONFIG.get("target_unemployment_rate", 0.05)
-        self.target_inflation_rate: float = CONFIG.get("target_inflation_rate", 0.02)
+        self.default_wage: float = self.config.default_wage
+        self.minimum_wage_floor: float = self.config.minimum_wage_floor
+        self.wage_unemployment_sensitivity: float = self.config.wage_unemployment_sensitivity
+        self.wage_price_index_sensitivity: float = self.config.wage_price_index_sensitivity
+        self.target_unemployment_rate: float = self.config.target_unemployment_rate
+        self.target_inflation_rate: float = self.config.target_inflation_rate
         self.latest_unemployment_rate: float = 0.0
         self.last_matches: int = 0
         self.config_default_wage: float = self.default_wage
@@ -219,6 +221,10 @@ class LaborMarket(BaseAgent):
 
         Args:
             current_step: Current simulation step number
+            :param current_step:
+            :param wage_override:
+            :param unemployment_rate:
+            :param price_index:
         """
         log(f"LaborMarket {self.unique_id} starting step {current_step}.", level="INFO")
 

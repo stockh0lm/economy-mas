@@ -4,7 +4,7 @@ import copy
 from collections.abc import Iterator, Mapping, MutableMapping
 from typing import Literal, cast
 
-from pydantic import BaseModel, ConfigDict, Field, PositiveInt, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, PositiveInt, RootModel, ValidationError, field_validator
 
 # config.py
 output_dir = "output/"
@@ -15,20 +15,32 @@ class TaxRates(BaseModel):
     umweltsteuer: float = Field(0.02, ge=0, le=1)
 
 
-class AssetPriceMap(BaseModel):
-    model_config = ConfigDict(extra="allow")
+class AssetPriceMap(RootModel[dict[str, float]]):
+    """Dictionary-like wrapper for asset price mappings with convenience helpers."""
 
+    root: dict[str, float] = Field(default_factory=dict)
 
-class InitialHousehold(BaseModel):
-    income: float = Field(ge=0)
-    land_area: float = Field(ge=0)
-    environmental_impact: float = Field(ge=0)
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.root)
 
+    def __len__(self) -> int:
+        return len(self.root)
 
-class InitialCompany(BaseModel):
-    production_capacity: float = Field(ge=0)
-    land_area: float = Field(ge=0)
-    environmental_impact: float = Field(ge=0)
+    def __getitem__(self, item: str) -> float:
+        return self.root[item]
+
+    def get(self, item: str, default: float | None = None) -> float | None:
+        return self.root.get(item, default)
+
+    def items(self) -> Mapping[str, float].items:
+        return self.root.items()
+
+    def as_dict(self) -> dict[str, float]:
+        return dict(self.root)
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, float]) -> "AssetPriceMap":
+        return cls(root=dict(data))
 
 
 ConfigScalar = bool | int | float | str | None
@@ -58,6 +70,18 @@ def _coerce_config_dict(data: Mapping[str, object]) -> dict[str, ConfigValue]:
     return {key: _coerce_value(value) for key, value in data.items()}
 
 
+class InitialHousehold(BaseModel):
+    income: float = Field(ge=0)
+    land_area: float = Field(ge=0)
+    environmental_impact: float = Field(ge=0)
+
+
+class InitialCompany(BaseModel):
+    production_capacity: float = Field(ge=0)
+    land_area: float = Field(ge=0)
+    environmental_impact: float = Field(ge=0)
+
+
 def _default_households() -> list[dict[str, float]]:
     return [
         {"income": 100, "land_area": 50, "environmental_impact": 1},
@@ -76,6 +100,22 @@ def _default_companies() -> list[dict[str, float]]:
 
 def _default_state_budget_allocation() -> dict[str, float]:
     return {"infrastructure": 0.5, "social": 0.3, "environment": 0.2}
+
+
+def _default_asset_initial_prices() -> AssetPriceMap:
+    return AssetPriceMap.from_dict({
+        "Aktie_A": 100.0,
+        "Aktie_B": 50.0,
+        "Anleihe_X": 1000.0,
+    })
+
+
+def _default_asset_bid_ask_spreads() -> AssetPriceMap:
+    return AssetPriceMap.from_dict({
+        "Aktie_A": 0.02,
+        "Aktie_B": 0.02,
+        "Anleihe_X": 0.01,
+    })
 
 
 class MetricConfigModel(BaseModel):
@@ -134,8 +174,8 @@ class SimulationConfig(BaseModel):
     desired_sparkassen_liquidity: float = Field(500, ge=0)
     penalty_factor_env_audit: float = Field(5, ge=0)
     speculation_limit: float = Field(10_000, ge=0)
-    asset_initial_prices: AssetPriceMap = Field(default_factory=AssetPriceMap)
-    asset_bid_ask_spreads: AssetPriceMap = Field(default_factory=AssetPriceMap)
+    asset_initial_prices: AssetPriceMap = Field(default_factory=_default_asset_initial_prices)
+    asset_bid_ask_spreads: AssetPriceMap = Field(default_factory=_default_asset_bid_ask_spreads)
     max_savings_per_account: float = Field(10_000, ge=0)
     loan_interest_rate: float = Field(0.0)
     logging_level: str = "DEBUG"

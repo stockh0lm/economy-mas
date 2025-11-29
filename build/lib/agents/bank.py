@@ -1,9 +1,9 @@
 # bank.py
 from typing import Dict, Protocol, Sequence, TypeAlias
 
-from base_agent import BaseAgent
+from agents.base_agent import BaseAgent
+from config import CONFIG_MODEL, SimulationConfig
 
-from config import CONFIG
 from logger import log
 
 
@@ -37,7 +37,7 @@ class WarengeldBank(BaseAgent):
     to ensure adequate backing for extended credit.
     """
 
-    def __init__(self, unique_id: str) -> None:
+    def __init__(self, unique_id: str, config: SimulationConfig | None = None) -> None:
         """
         Initialize a Warengeld bank with default parameters.
 
@@ -49,25 +49,23 @@ class WarengeldBank(BaseAgent):
         # Credit management
         self.credit_lines: CreditMap = {}  # Maps merchant_id to outstanding credit amount
 
+        self.config: SimulationConfig = config or CONFIG_MODEL
+
         # Bank parameters from configuration
-        self.fee_rate: float = CONFIG.get("bank_fee_rate", 0.01)  # e.g., 1%
-        self.inventory_check_interval: int = CONFIG.get("inventory_check_interval", 3)
-        self.inventory_coverage_threshold: float = CONFIG.get("inventory_coverage_threshold", 0.8)
-        self.base_credit_reserve_ratio: float = CONFIG.get("bank_base_credit_reserve_ratio", 0.1)
-        self.credit_unemployment_sensitivity: float = CONFIG.get(
-            "bank_credit_unemployment_sensitivity", 0.4
-        )
-        self.credit_inflation_sensitivity: float = CONFIG.get(
-            "bank_credit_inflation_sensitivity", 0.6
-        )
-        self.target_unemployment_rate: float = CONFIG.get("target_unemployment_rate", 0.05)
-        self.target_inflation_rate: float = CONFIG.get("target_inflation_rate", 0.02)
+        self.fee_rate: float = self.config.bank_fee_rate
+        self.inventory_check_interval: int = self.config.inventory_check_interval
+        self.inventory_coverage_threshold: float = self.config.inventory_coverage_threshold
+        self.base_credit_reserve_ratio: float = self.config.bank_base_credit_reserve_ratio
+        self.credit_unemployment_sensitivity: float = self.config.bank_credit_unemployment_sensitivity
+        self.credit_inflation_sensitivity: float = self.config.bank_credit_inflation_sensitivity
+        self.target_unemployment_rate: float = self.config.target_unemployment_rate
+        self.target_inflation_rate: float = self.config.target_inflation_rate
         self.macro_unemployment: float = 0.0
         self.macro_inflation: float = 0.0
 
         # Financial tracking
         self.collected_fees: float = 0.0
-        self.liquidity: float = CONFIG.get("initial_bank_liquidity", 1000.0)
+        self.liquidity: float = self.config.initial_bank_liquidity
 
     def update_macro_signals(
         self, unemployment_rate: float | None, inflation_rate: float | None

@@ -53,9 +53,7 @@ class EnvironmentalAgency(BaseAgent):
         self.config: SimulationConfig = config or CONFIG_MODEL
 
         # Environmental standards from configuration
-        self.env_standards: dict[str, float] = {
-            "max_environmental_impact": self.config.max_environmental_impact
-        }
+        self.env_standards: dict[str, float] = {"max_environmental_impact": 10.0}
 
         # Accumulated environmental taxes
         self.collected_env_tax: float = 0.0

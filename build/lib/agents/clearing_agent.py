@@ -1,7 +1,7 @@
 # clearing_agent.py
 from typing import TYPE_CHECKING, Protocol, Sequence, TypeAlias, cast, runtime_checkable
 
-from config import CONFIG
+from config import CONFIG_MODEL, SimulationConfig
 from logger import log
 
 from .base_agent import BaseAgent
@@ -41,7 +41,7 @@ class ClearingAgent(BaseAgent):
     3. Implement wealth caps by collecting excess wealth above thresholds
     """
 
-    def __init__(self, unique_id: str) -> None:
+    def __init__(self, unique_id: str, config: SimulationConfig | None = None) -> None:
         """
         Initialize a clearing agent with oversight responsibilities.
 
@@ -54,15 +54,15 @@ class ClearingAgent(BaseAgent):
         self.monitored_banks: list[LiquidityAgent] = []
         self.monitored_savings_banks: list[LiquidityAgent] = []
 
+        self.config: SimulationConfig = config or CONFIG_MODEL
+
         # Accumulated wealth from hyperwealth collection
         self.excess_wealth_collected: float = 0.0
 
         # Configuration parameters
-        self.hyperwealth_threshold: float = CONFIG.get("hyperwealth_threshold", 1000000)
-        self.desired_bank_liquidity: float = CONFIG.get("desired_bank_liquidity", 1000.0)
-        self.desired_savings_bank_liquidity: float = CONFIG.get(
-            "desired_sparkassen_liquidity", 500.0
-        )
+        self.hyperwealth_threshold: float = self.config.hyperwealth_threshold
+        self.desired_bank_liquidity: float = self.config.desired_bank_liquidity
+        self.desired_savings_bank_liquidity: float = self.config.desired_sparkassen_liquidity
 
     def balance_liquidity(self) -> None:
         """

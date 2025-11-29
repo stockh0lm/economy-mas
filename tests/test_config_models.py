@@ -38,3 +38,11 @@ def test_config_model_exposed_via_module_singleton() -> None:
     assert cfg.tax_rates.bodensteuer == config.CONFIG["tax_rates"]["bodensteuer"]
     assert len(cfg.initial_households) == len(config.CONFIG["INITIAL_HOUSEHOLDS"])
 
+
+def test_asset_price_map_behaves_like_mapping() -> None:
+    price_map = config.AssetPriceMap.from_dict({"foo": 1.5, "bar": 2.5})
+
+    assert price_map.get("foo") == pytest.approx(1.5)
+    assert price_map.get("missing", 3.3) == pytest.approx(3.3)
+    assert dict(price_map.as_dict()) == {"foo": 1.5, "bar": 2.5}
+    assert list(iter(price_map)) == ["foo", "bar"]
