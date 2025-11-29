@@ -3,6 +3,7 @@ import nox
 PYTHON_VERSION = "3.12"
 TARGETS = ["agents", "metrics.py", "main.py", "config.py", "logger.py"]
 EXCLUDES = ["build", ".nox", "__pycache__", "*.egg-info", "output", "results", "tests/__pycache__"]
+RADON_ARGS = ["cc", "-s", "-a", "-o", "SCORE"]
 DEV_DEPS = [
     "pytest",
     "mypy",
@@ -10,7 +11,7 @@ DEV_DEPS = [
     "black",
     "isort",
     "vulture",
-    "lizard",
+    "radon",
 ]
 
 
@@ -29,7 +30,13 @@ def lint(session: nox.Session) -> None:
         ",".join(EXCLUDES),
         success_codes=[0, 3],
     )
-    session.run("lizard", *TARGETS, "--exclude", ",".join(EXCLUDES))
+    session.run(
+        "radon",
+        *RADON_ARGS,
+        "-e",
+        ",".join(EXCLUDES),
+        *TARGETS,
+    )
 
 
 @nox.session(python=PYTHON_VERSION)
@@ -61,7 +68,13 @@ def vulture(session: nox.Session) -> None:
 
 
 @nox.session(python=PYTHON_VERSION)
-def lizard(session: nox.Session) -> None:
-    """Run lizard for code complexity analysis."""
+def radon_cc(session: nox.Session) -> None:
+    """Report the most complex classes and functions with Radon."""
     session.install(".[dev]")
-    session.run("lizard", *TARGETS, "--exclude", ",".join(EXCLUDES))
+    session.run(
+        "radon",
+        *RADON_ARGS,
+        "-e",
+        ",".join(EXCLUDES),
+        *TARGETS,
+    )
