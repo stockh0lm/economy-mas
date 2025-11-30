@@ -161,7 +161,7 @@ class Company(EconomicAgent):
         current_count = len(self.employees)
 
         if required_employees > current_count:
-git             open_positions = required_employees - current_count
+            open_positions = required_employees - current_count
             unadvertised = max(0, open_positions - self.pending_hires)
             if unadvertised > 0:
                 new_positions = min(unadvertised, self.max_employees - current_count)
