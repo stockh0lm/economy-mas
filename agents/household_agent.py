@@ -2,19 +2,22 @@ from __future__ import annotations
 
 # household_agent.py
 import random
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, ClassVar, Literal
 
 from config import CONFIG_MODEL, SimulationConfig
 from logger import log
 
 from .economic_agent import EconomicAgent
+from .lineage_mixin import LineageMixin
 from .savings_bank_agent import SavingsBank
 
 if TYPE_CHECKING:
     from agents.company_agent import Company
 
 
-class Household(EconomicAgent):
+class Household(EconomicAgent, LineageMixin):
+    _lineage_counters: ClassVar[dict[str, int]] = {}
+
     """
     Represents a household economic agent in the simulation.
 
@@ -42,6 +45,7 @@ class Household(EconomicAgent):
             generation: Current generation of the household
         """
         super().__init__(unique_id)
+        self._init_lineage(unique_id)
 
         self.config: SimulationConfig = config or CONFIG_MODEL
 
@@ -258,7 +262,10 @@ class Household(EconomicAgent):
             level="INFO",
         )
 
-        new_unique_id: str = f"{self.unique_id}_child"
+        # Generate new household ID via lineage counter
+        next_suffix = self._reserve_lineage_suffix()
+        base_id = self._lineage_root_id
+        new_unique_id: str = f"{base_id}_g{next_suffix}"
         new_generation: int = self.generation + 1
 
         new_household = Household(

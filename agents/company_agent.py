@@ -1,11 +1,12 @@
 # company_agent.py
 import random
-from typing import Literal
+from typing import ClassVar, Literal
 
 from agents.bank import WarengeldBank
 from agents.economic_agent import EconomicAgent
 from agents.household_agent import Household
 from agents.labor_market import LaborMarket
+from agents.lineage_mixin import LineageMixin
 from agents.savings_bank_agent import SavingsBank
 from agents.state_agent import State
 from config import CONFIG_MODEL, SimulationConfig
@@ -15,7 +16,9 @@ from logger import log
 Employee = Household  # Type of employees (currently Household)
 
 
-class Company(EconomicAgent):
+class Company(EconomicAgent, LineageMixin):
+    _lineage_counters: ClassVar[dict[str, int]] = {}
+
     """
     Represents a company economic agent in the simulation.
 
@@ -47,6 +50,7 @@ class Company(EconomicAgent):
             employees: Initial list of employees
         """
         super().__init__(unique_id)
+        self._init_lineage(unique_id)
 
         # Basic attributes
         self.generation: int = 0
@@ -327,10 +331,11 @@ class Company(EconomicAgent):
         split_balance: float = self.balance * split_ratio
         self.balance -= split_balance
 
-        # Generate new company ID with generation suffix
-        base_id: str = self.unique_id.split("_g")[0]
+        # Generate new company ID using lineage-wide counter
+        next_suffix = self._reserve_lineage_suffix()
+        base_id: str = self._lineage_root_id
+        new_unique_id: str = f"{base_id}_g{next_suffix}"
         new_generation: int = self.generation + 1
-        new_unique_id: str = f"{base_id}_g{new_generation}"
 
         # Create new company
         new_company = Company(
@@ -552,3 +557,26 @@ class Company(EconomicAgent):
     def produce_output(self) -> None:
         """Deprecated wrapper maintained for compatibility."""
         self.produce()
+
+    @staticmethod
+    def _parse_unique_id(unique_id: str) -> tuple[str, int]:
+        if "_g" not in unique_id:
+            return unique_id, 0
+        base_id, _, suffix_str = unique_id.partition("_g")
+        try:
+            return base_id, int(suffix_str)
+        except ValueError:
+            return base_id, 0
+
+    @classmethod
+    def _ensure_lineage_counter(cls, base_id: str, suffix: int) -> None:
+        current = cls._lineage_counters.get(base_id)
+        if current is None or suffix > current:
+            cls._lineage_counters[base_id] = suffix
+
+    def _reserve_lineage_suffix(self) -> int:
+        base_id = self._lineage_root_id
+        next_suffix = self._lineage_counters.get(base_id, 0) + 1
+        self._lineage_counters[base_id] = next_suffix
+        return next_suffix
+
