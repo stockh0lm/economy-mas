@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 # household_agent.py
 
 import random
@@ -74,6 +76,7 @@ class Household(EconomicAgent):
         # Child rearing and loan parameters
         self.child_rearing_cost: float = self.config.child_rearing_cost
         self.loan_repayment_rate: float = self.config.household_loan_repayment_rate
+        self.child_cost_covered: bool = False
 
     def _resolve_consumption_rate(self, value: float) -> float:
         if not isinstance(value, (int, float)):
@@ -163,7 +166,7 @@ class Household(EconomicAgent):
         return True
 
     def consume(
-        self, consumption_rate: float, companies: "Company" | None = None
+        self, consumption_rate: float, companies: Company | None = None
     ) -> float:
         """Consume goods by purchasing from companies when possible."""
         if not companies:
@@ -229,6 +232,12 @@ class Household(EconomicAgent):
         )
         return saved_amount
 
+    def _total_savings(self, savings_bank: SavingsBank | None) -> float:
+        bank_holdings = 0.0
+        if savings_bank is not None:
+            bank_holdings = savings_bank.savings_accounts.get(self.unique_id, 0.0)
+        return self.savings + bank_holdings
+
     def split_household(self) -> Household:
         """
         Split household into two, creating a new child household.
@@ -272,26 +281,36 @@ class Household(EconomicAgent):
         # Reset growth phase of parent household
         self.growth_phase = False
         self.growth_counter = 0
+        self.child_cost_covered = False
 
         return new_household
 
     def _handle_childrearing_costs(self, savings_bank: SavingsBank | None) -> float:
-        """Withdraw savings via the bank when raising children triggers large expenses."""
-        if self.growth_phase or self.savings <= 0:
+        """Withdraw savings when growth demands upfront child-rearing funds."""
+        if not self.growth_phase or self.child_cost_covered:
             return 0.0
+
         required = self.child_rearing_cost
-        if savings_bank is None:
-            draw = min(required, self.savings)
+        remaining = required
+        withdrawn = 0.0
+
+        if savings_bank is not None and remaining > 0:
+            from_bank = savings_bank.give_household_withdrawal(self, remaining)
+            withdrawn += from_bank
+            remaining -= from_bank
+
+        if remaining > 0 and self.savings > 0:
+            draw = min(remaining, self.savings)
             self.savings -= draw
-            self.checking_account += draw
-            return draw
-        withdrawn = savings_bank.give_household_withdrawal(self, required)
-        if withdrawn <= 0:
-            fallback = min(required, self.savings)
-            self.savings -= fallback
-            self.checking_account += fallback
-            return fallback
-        self.checking_account += withdrawn
+            withdrawn += draw
+            remaining -= draw
+
+        if withdrawn > 0:
+            self.checking_account += withdrawn
+
+        if remaining <= 0:
+            self.child_cost_covered = True
+
         return withdrawn
 
     def _repay_savings_loans(self, savings_bank: SavingsBank | None) -> float:
@@ -314,7 +333,7 @@ class Household(EconomicAgent):
         current_step: int,
         state: object | None = None,
         savings_bank: SavingsBank | None = None,
-        companies: "Company" | None = None,
+        companies: Company | None = None,
     ) -> Household | Literal["DEAD"] | None:
         """
         Execute one simulation step for the household agent.
@@ -356,15 +375,20 @@ class Household(EconomicAgent):
             rate: float = self.consumption_rate_normal
 
         self.consume(rate, companies)
-        self._handle_childrearing_costs(savings_bank)
         self.save(savings_bank)
         self._repay_savings_loans(savings_bank)
         self.offer_labor()
 
+        total_savings = self._total_savings(savings_bank)
+
         # Enter growth phase if savings exceed trigger threshold
-        if not self.growth_phase and self.savings >= self.savings_growth_trigger:
+        if not self.growth_phase and total_savings >= self.savings_growth_trigger:
             self.growth_phase = True
+            self.child_cost_covered = False
             log(f"Household {self.unique_id} enters growth phase.", level="INFO")
+
+        if self.growth_phase:
+            self._handle_childrearing_costs(savings_bank)
 
         new_household: Household | None = None
 

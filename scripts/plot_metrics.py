@@ -333,32 +333,33 @@ def main() -> None:
     }
 
     figures: list[plt.Figure] = []
+    axes: list[plt.Axes] = []
     for scope, plot_func in PLOT_SPECS:
         fig, filename = plot_func(data_by_scope[scope])
         figures.append(fig)
+        axes.extend(fig.axes)
         save_figure(fig, filename, run_dir, latest_dir)
 
     if args.show:
         if args.link_cursor:
-            on_move = add_linked_cursor(figures)
+            on_move = add_linked_cursor(axes)
             for fig in figures:
                 fig.canvas.mpl_connect("motion_notify_event", on_move)
-        plt.show()
+        plt.show(block=True)
 
 
-def add_linked_cursor(figures: list[plt.Figure]) -> Callable[[object], None]:
-    axes = [ax for fig in figures for ax in fig.axes]
-    lines = [ax.axvline(color="gray", lw=0.8, alpha=0.5) for ax in axes]
+def add_linked_cursor(axes: list[plt.Axes]) -> Callable[[object], None]:
+    lines = [ax.axvline(color="gray", lw=0.8, alpha=0.5, visible=False) for ax in axes]
 
     def on_move(event):
         if event.inaxes is None or event.xdata is None:
             for line in lines:
                 line.set_visible(False)
-            plt.draw()
+            event.canvas.draw_idle()
             return
         for line in lines:
             line.set_xdata(event.xdata)
             line.set_visible(True)
-        plt.draw()
+        event.canvas.draw_idle()
 
     return on_move
