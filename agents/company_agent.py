@@ -1,7 +1,6 @@
-
 # company_agent.py
 import random
-from typing import Literal, TypeAlias
+from typing import Literal
 
 from agents.bank import WarengeldBank
 from agents.economic_agent import EconomicAgent
@@ -14,7 +13,7 @@ from config import CONFIG_MODEL, SimulationConfig
 from logger import log
 
 # Type aliases for improved readability
-Employee: TypeAlias = Household  # Type of employees (currently Household)
+Employee = Household  # Type of employees (currently Household)
 
 
 class Company(EconomicAgent):
@@ -508,7 +507,7 @@ class Company(EconomicAgent):
         state: State | None = None,
         warengeld_bank: WarengeldBank | None = None,
         savings_bank: SavingsBank | None = None,
-    ) -> Company | Literal["DEAD"] | None:
+    ) -> Company | Literal["DEAD"] | Literal["LIQUIDATED"] | None:
         """
         Execute one simulation step for the company.
 
@@ -553,7 +552,9 @@ class Company(EconomicAgent):
 
         self._service_warengeld_credit(warengeld_bank)
         log(f"Company {self.unique_id} completed step {current_step}.", level="INFO")
-        return new_company or None
+        if new_company is not None:
+            return new_company
+        return None
 
     def produce_output(self) -> None:
         """Deprecated wrapper maintained for compatibility."""

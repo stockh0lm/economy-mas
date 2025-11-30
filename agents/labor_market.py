@@ -1,6 +1,6 @@
 # labor_market.py
 from dataclasses import dataclass
-from typing import Protocol, TypeAlias
+from typing import Protocol
 
 from config import CONFIG_MODEL, SimulationConfig
 from logger import log
@@ -33,7 +33,7 @@ class JobOffer:
     positions: int
 
 
-WorkerMatchResult: TypeAlias = tuple[WorkerProtocol, EmployerProtocol, float]
+WorkerMatchResult = tuple[WorkerProtocol, EmployerProtocol, float]
 
 
 class LaborMarket(BaseAgent):

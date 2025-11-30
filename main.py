@@ -1,6 +1,6 @@
 # main.py
 import json
-from typing import Literal, TypeAlias
+from typing import Literal
 
 from agents.bank import WarengeldBank
 from agents.clearing_agent import ClearingAgent
@@ -16,8 +16,8 @@ from logger import log, setup_logger
 from metrics import MetricsCollector
 
 # Type aliases
-AgentResult: TypeAlias = None | Literal["DEAD"] | object
-AgentDict: TypeAlias = dict[
+type AgentResult = None | Literal["DEAD"] | object
+type AgentDict = dict[
     str,
     State
     | list[Household | Company]
@@ -121,6 +121,14 @@ def update_households(
 
         if result == "DEAD":
             log(f"Household {household.unique_id} removed (dead).", level="INFO")
+            for company in companies:
+                if household in company.employees:
+                    company.employees = [emp for emp in company.employees if emp is not household]
+            labor_market = getattr(state, "labor_market", None)
+            if labor_market is not None:
+                labor_market.registered_workers = [
+                    worker for worker in labor_market.registered_workers if worker is not household
+                ]
             continue
         elif result is not None:
             new_households.append(result)
