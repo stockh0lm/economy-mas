@@ -861,8 +861,8 @@ class MetricsCollector:
             return None
 
         # Identify potential cycles
-        recession_threshold = getattr(self.config, "recession_threshold", -0.01)  # -1% growth
-        boom_threshold = getattr(self.config, "boom_threshold", 0.03)  # 3% growth
+        recession_threshold = self.config.market.recession_threshold
+        boom_threshold = self.config.market.boom_threshold
 
         is_recession = any(rate <= recession_threshold for rate in growth_values[-3:])
         is_boom = any(rate >= boom_threshold for rate in growth_values[-3:])
@@ -920,10 +920,10 @@ class MetricsCollector:
         household_consumption: float,
     ) -> MetricDict:
         metrics: MetricDict = {}
-        price_index_base = float(self.config.price_index_base)
-        pressure_target = float(self.config.price_index_pressure_target)
-        price_sensitivity = float(self.config.price_index_sensitivity)
-        pressure_mode = str(self.config.price_index_pressure_ratio)
+        price_index_base = float(self.config.market.price_index_base)
+        pressure_target = float(self.config.market.price_index_pressure_target)
+        price_sensitivity = float(self.config.market.price_index_sensitivity)
+        pressure_mode = str(self.config.market.price_index_pressure_ratio)
         eps = 1e-9
 
         money_supply_pressure = total_money / (gdp + eps) if gdp > 0 else pressure_target

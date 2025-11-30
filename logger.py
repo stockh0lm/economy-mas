@@ -2,7 +2,7 @@
 import logging
 from typing import Literal
 
-from config import CONFIG
+from config import CONFIG_MODEL
 
 # Logger level types
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
@@ -27,11 +27,9 @@ def setup_logger(
         Configured logging.Logger instance
     """
     # Get configuration from CONFIG with defaults
-    config_level = level or CONFIG.get("logging_level", "DEBUG")
-    config_file = log_file or CONFIG.get("log_file", "simulation.log")
-    config_format = log_format or CONFIG.get(
-        "log_format", "%(asctime)s - %(levelname)s - %(message)s"
-    )
+    config_level = level or CONFIG_MODEL.logging_level
+    config_file = log_file or CONFIG_MODEL.log_file
+    config_format = log_format or CONFIG_MODEL.log_format
 
     # Convert string level to logging constant
     level_map: dict[str, int] = {

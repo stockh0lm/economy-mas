@@ -49,10 +49,10 @@ class State(BaseAgent):
         self.umweltsteuer_rate: float = self.config.tax_rates.umweltsteuer
 
         # Hyperwealth control parameter
-        self.hyperwealth_threshold: float = self.config.hyperwealth_threshold
+        self.hyperwealth_threshold: float = self.config.clearing.hyperwealth_threshold
 
         # Budget allocation percentages
-        allocation = self.config.state_budget_allocation or {}
+        allocation = self.config.state.budget_allocation or {}
         self.infrastructure_allocation: float = allocation.get("infrastructure", 0.5)
         self.social_allocation: float = allocation.get("social", 0.3)
         self.environment_allocation: float = allocation.get("environment", 0.2)

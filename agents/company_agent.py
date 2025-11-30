@@ -72,9 +72,9 @@ class Company(EconomicAgent, LineageMixin):
         self.growth_phase: bool = False
         self.growth_counter: int = 0
         self.config: SimulationConfig = config or CONFIG_MODEL
-        self.growth_threshold: int = self.config.growth_threshold
-        self.growth_balance_trigger: float = self.config.growth_balance_trigger
-        self.bankruptcy_threshold: float = self.config.bankruptcy_threshold
+        self.growth_threshold: int = self.config.company.growth_threshold
+        self.investment_threshold: float = self.config.company.investment_threshold
+        self.bankruptcy_threshold: float = self.config.company.bankruptcy_threshold
 
         # Research and development
         self.rd_investment: float = 0.0
@@ -87,8 +87,8 @@ class Company(EconomicAgent, LineageMixin):
 
         A percentage of excess balance is allocated to R&D investment.
         """
-        rd_trigger: float = self.config.rd_investment_trigger_balance
-        rd_rate: float = self.config.rd_investment_rate
+        rd_trigger: float = self.config.company.rd_investment_trigger_balance
+        rd_rate: float = self.config.company.rd_investment_rate
 
         if self.balance > rd_trigger:
             investment: float = (self.balance - rd_trigger) * rd_rate
@@ -109,8 +109,8 @@ class Company(EconomicAgent, LineageMixin):
         """
         # Probability of innovation success increases with R&D investment
         probability: float = min(self.rd_investment / 1000, 0.5)
-        innovation_bonus_rate: float = self.config.innovation_production_bonus
-        rd_decay_factor: float = self.config.rd_investment_decay_factor
+        innovation_bonus_rate: float = self.config.company.innovation_production_bonus
+        rd_decay_factor: float = self.config.company.rd_investment_decay_factor
 
         if random.random() < probability:
             bonus: float = self.production_capacity * innovation_bonus_rate
@@ -160,7 +160,7 @@ class Company(EconomicAgent, LineageMixin):
 
     def adjust_employees(self, labor_market: LaborMarket) -> None:
         """Advertise labor demand and release surplus employees via labor market."""
-        employee_capacity_ratio: float = self.config.employee_capacity_ratio
+        employee_capacity_ratio: float = self.config.company.employee_capacity_ratio
         required_employees: int = int(self.production_capacity / employee_capacity_ratio)
         current_count = len(self.employees)
 
@@ -176,7 +176,7 @@ class Company(EconomicAgent, LineageMixin):
                         wage=getattr(
                             labor_market,
                             "default_wage",
-                            self.config.wage_rate,
+                            self.config.company.base_wage,
                         ),
                         positions=new_positions,
                     )
@@ -205,10 +205,10 @@ class Company(EconomicAgent, LineageMixin):
         Returns:
             Revenue from sales
         """
-        actual_demand: float = demand if demand is not None else self.config.demand_default
+        actual_demand: float = demand if demand is not None else self.config.market.demand_default
         sold_quantity: float = min(self.inventory, actual_demand)
-        base_price: float = self.config.production_base_price
-        innovation_bonus_rate: float = self.config.production_innovation_bonus_rate
+        base_price: float = self.config.company.production_base_price
+        innovation_bonus_rate: float = self.config.company.production_innovation_bonus_rate
 
         # Calculate price with innovation bonus
         sale_price_per_unit: float = base_price * (
@@ -236,8 +236,8 @@ class Company(EconomicAgent, LineageMixin):
         if spending_capacity <= 0 or self.inventory <= 0:
             return 0.0
 
-        base_price: float = self.config.production_base_price
-        innovation_bonus_rate: float = self.config.production_innovation_bonus_rate
+        base_price: float = self.config.company.production_base_price
+        innovation_bonus_rate: float = self.config.company.production_innovation_bonus_rate
         price_per_unit: float = base_price * (1 + innovation_bonus_rate * self.innovation_index)
         if price_per_unit <= 0:
             return 0.0
@@ -280,7 +280,7 @@ class Company(EconomicAgent, LineageMixin):
             negotiated = getattr(employee, "current_wage", None)
             rate = negotiated if negotiated is not None else wage_rate
             if rate is None:
-                rate = self.config.default_wage
+                rate = self.config.labor_market.starting_wage
             total_wages += rate
             employee.receive_income(rate)
 
@@ -327,7 +327,7 @@ class Company(EconomicAgent, LineageMixin):
             Newly created spinoff company
         """
         # Split assets for new company
-        split_ratio: float = self.config.company_split_ratio
+        split_ratio: float = self.config.company.split_ratio
         split_balance: float = self.balance * split_ratio
         self.balance -= split_balance
 
@@ -382,11 +382,11 @@ class Company(EconomicAgent, LineageMixin):
         if warengeld_bank is None or not self.employees:
             return
 
-        default_wage = self.config.default_wage
+        default_wage = self.config.labor_market.starting_wage
         planned_wage_bill = sum(
             getattr(employee, "current_wage", default_wage) for employee in self.employees
         )
-        buffer_ratio = getattr(self.config, "company_liquidity_buffer_ratio", 0.2)
+        buffer_ratio = self.config.company.liquidity_buffer_ratio
         target_liquidity = planned_wage_bill * (1 + buffer_ratio)
 
         if self.balance >= target_liquidity:
@@ -423,12 +423,12 @@ class Company(EconomicAgent, LineageMixin):
 
     def _trigger_growth_and_investment(self, savings_bank: SavingsBank | None) -> None:
         """Toggle growth mode and request long-term financing if conditions are met."""
-        if not self.growth_phase and self.balance >= self.growth_balance_trigger:
+        if not self.growth_phase and self.balance >= self.investment_threshold:
             self.growth_phase = True
             log(f"Company {self.unique_id} enters growth phase.", level="INFO")
 
             if savings_bank is not None:
-                investment_factor = getattr(self.config, "growth_investment_factor", 0.5)
+                investment_factor = self.config.company.growth_investment_factor
                 invest_amount = self.production_capacity * investment_factor
                 if invest_amount > 0:
                     granted = savings_bank.allocate_credit(self, invest_amount)
@@ -459,7 +459,7 @@ class Company(EconomicAgent, LineageMixin):
         if warengeld_bank is None:
             return
 
-        min_working_capital = getattr(self.config, "min_working_capital_buffer", 0.0)
+        min_working_capital = self.config.company.min_working_capital_buffer
         outstanding = warengeld_bank.credit_lines.get(self.unique_id, 0.0)
         if outstanding <= 0 or self.balance <= min_working_capital:
             return
@@ -476,9 +476,9 @@ class Company(EconomicAgent, LineageMixin):
         )
 
     def _should_liquidate_due_to_staffing(self) -> bool:
-        if not getattr(self.config, "company_zero_staff_auto_liquidation", False):
+        if not self.config.company.zero_staff_auto_liquidation:
             return False
-        grace = getattr(self.config, "company_zero_staff_grace_steps", 1)
+        grace = self.config.company.zero_staff_grace_steps
         return self._zero_staff_steps >= grace
 
     def _handle_zero_staff_counter(self) -> None:
@@ -492,7 +492,7 @@ class Company(EconomicAgent, LineageMixin):
             f"Company {self.unique_id} forcibly liquidated after {self._zero_staff_steps} steps without employees.",
             level="WARNING",
         )
-        payout_share = getattr(self.config, "company_zero_staff_liquidation_state_share", 1.0)
+        payout_share = self.config.company.zero_staff_liquidation_state_share
         payout = max(0.0, self.balance * payout_share)
         if payout > 0 and state is not None:
             state.tax_revenue += payout

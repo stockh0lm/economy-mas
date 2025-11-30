@@ -51,9 +51,9 @@ class SavingsBank(BaseAgent):
         self.config: SimulationConfig = config or CONFIG_MODEL
 
         # Configuration parameters
-        self.loan_interest_rate: float = self.config.loan_interest_rate
-        self.max_savings_per_account: float = self.config.max_savings_per_account
-        self.liquidity: float = self.config.initial_bank_liquidity
+        self.loan_interest_rate: float = self.config.savings_bank.loan_interest_rate
+        self.max_savings_per_account: float = self.config.savings_bank.max_savings_per_account
+        self.liquidity: float = self.config.savings_bank.initial_liquidity
 
     def deposit_savings(self, agent: HasUniqueID, amount: float) -> float:
         """

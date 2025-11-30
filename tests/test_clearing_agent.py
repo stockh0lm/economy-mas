@@ -11,7 +11,8 @@ class DummyAgent:
 
 
 def test_report_hyperwealth_collects_excess_and_caps_balance() -> None:
-    cfg = config.load_simulation_config({**config.CONFIG, "hyperwealth_threshold": 100.0})
+    cfg = config.CONFIG_MODEL.model_copy(deep=True)
+    cfg.clearing.hyperwealth_threshold = 100.0
     clearing = ClearingAgent("clear_1", cfg)
 
     rich = DummyAgent("rich", 150.0)

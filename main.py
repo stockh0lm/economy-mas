@@ -72,7 +72,7 @@ def initialize_agents(config: SimulationConfig) -> AgentDict:
     environmental_agency = EnvironmentalAgency(config.ENV_AGENCY_ID, state=state, config=config)
     recycling_company = RecyclingCompany(
         config.RECYCLING_COMPANY_ID,
-        recycling_efficiency=config.recycling_efficiency,
+        recycling_efficiency=config.environmental.recycling_efficiency,
         config=config,
     )
     environmental_agency.attach_recycling_company(recycling_company)
@@ -85,7 +85,7 @@ def initialize_agents(config: SimulationConfig) -> AgentDict:
         labor_market.register_worker(hh)
     for comp in companies:
         labor_market.register_job_offer(
-            comp, wage=config.default_wage, positions=config.INITIAL_JOB_POSITIONS_PER_COMPANY
+            comp, wage=config.labor_market.starting_wage, positions=config.INITIAL_JOB_POSITIONS_PER_COMPANY
         )
 
     all_agents: list[object] = households + companies + [state, warengeld_bank, savings_bank]

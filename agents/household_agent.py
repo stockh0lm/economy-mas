@@ -57,28 +57,28 @@ class Household(EconomicAgent, LineageMixin):
         # Growth phase parameters
         self.growth_phase: bool = False
         self.growth_counter: int = 0
-        self.growth_threshold: int = self.config.growth_threshold
-        self.savings_growth_trigger: float = self.config.savings_growth_trigger
+        self.growth_threshold: int = self.config.household.growth_threshold
+        self.savings_growth_trigger: float = self.config.household.savings_growth_trigger
 
         # Age and generation tracking
         self.age: int = 0
-        self.max_age: int = self.config.max_age
-        self.max_generation: int = self.config.max_generation
+        self.max_age: int = self.config.household.max_age
+        self.max_generation: int = self.config.household.max_generation
 
         # Bank accounts
         self.checking_account: float = 0.0
         self.savings: float = 0.0
 
         self.consumption_rate_normal: float = self._resolve_consumption_rate(
-            self.config.household_consumption_rate_normal
+            self.config.household.consumption_rate_normal
         )
         self.consumption_rate_growth: float = self._resolve_consumption_rate(
-            self.config.household_consumption_rate_growth
+            self.config.household.consumption_rate_growth
         )
 
         # Child rearing and loan parameters
-        self.child_rearing_cost: float = self.config.child_rearing_cost
-        self.loan_repayment_rate: float = self.config.household_loan_repayment_rate
+        self.child_rearing_cost: float = self.config.household.child_rearing_cost
+        self.loan_repayment_rate: float = self.config.household.loan_repayment_rate
         self.child_cost_covered: bool = False
 
     def _resolve_consumption_rate(self, value: float) -> float:

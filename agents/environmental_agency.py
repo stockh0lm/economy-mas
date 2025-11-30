@@ -61,12 +61,12 @@ class EnvironmentalAgency(BaseAgent):
 
         # Accumulated environmental taxes
         self.collected_env_tax: float = 0.0
-        self.env_tax_state_share: float = self.config.environmental_tax_state_share
+        self.env_tax_state_share: float = self.config.environmental.environmental_tax_state_share
         self.env_tax_transferred_to_state: float = 0.0
         self.state: State | None = state
 
         # Penalty factor from configuration
-        self.penalty_factor: float = self.config.penalty_factor_env_audit
+        self.penalty_factor: float = self.config.environmental.penalty_factor_env_audit
 
         # Recycling company attachment
         self.recycling_company: RecyclingCompany | None = None
@@ -126,7 +126,7 @@ class EnvironmentalAgency(BaseAgent):
 
             # Route waste to recycling company if available
             if self.recycling_company:
-                waste = agent.environmental_impact * self.config.waste_output_per_env_impact
+                waste = agent.environmental_impact * self.config.environmental.waste_output_per_env_impact
                 if waste > 0:
                     self.recycling_company.collect_waste(cast(BaseAgent, agent), waste)
 
@@ -238,7 +238,7 @@ class RecyclingCompany(BaseAgent):
         self.recycling_efficiency: float = (
             recycling_efficiency
             if recycling_efficiency is not None
-            else self.config.recycling_efficiency
+            else self.config.environmental.recycling_efficiency
         )
 
         # Operating metrics

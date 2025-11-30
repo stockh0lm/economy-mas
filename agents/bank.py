@@ -52,20 +52,20 @@ class WarengeldBank(BaseAgent):
         self.config: SimulationConfig = config or CONFIG_MODEL
 
         # Bank parameters from configuration
-        self.fee_rate: float = self.config.bank_fee_rate
-        self.inventory_check_interval: int = self.config.inventory_check_interval
-        self.inventory_coverage_threshold: float = self.config.inventory_coverage_threshold
-        self.base_credit_reserve_ratio: float = self.config.bank_base_credit_reserve_ratio
-        self.credit_unemployment_sensitivity: float = self.config.bank_credit_unemployment_sensitivity
-        self.credit_inflation_sensitivity: float = self.config.bank_credit_inflation_sensitivity
-        self.target_unemployment_rate: float = self.config.target_unemployment_rate
-        self.target_inflation_rate: float = self.config.target_inflation_rate
+        self.fee_rate: float = self.config.bank.fee_rate
+        self.inventory_check_interval: int = self.config.bank.inventory_check_interval
+        self.inventory_coverage_threshold: float = self.config.bank.inventory_coverage_threshold
+        self.base_credit_reserve_ratio: float = self.config.bank.base_credit_reserve_ratio
+        self.credit_unemployment_sensitivity: float = self.config.bank.credit_unemployment_sensitivity
+        self.credit_inflation_sensitivity: float = self.config.bank.credit_inflation_sensitivity
+        self.target_unemployment_rate: float = self.config.labor_market.target_unemployment_rate
+        self.target_inflation_rate: float = self.config.labor_market.target_inflation_rate
         self.macro_unemployment: float = 0.0
         self.macro_inflation: float = 0.0
 
         # Financial tracking
         self.collected_fees: float = 0.0
-        self.liquidity: float = self.config.initial_bank_liquidity
+        self.liquidity: float = self.config.bank.initial_liquidity
 
     def update_macro_signals(
         self, unemployment_rate: float | None, inflation_rate: float | None

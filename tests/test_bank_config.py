@@ -8,9 +8,27 @@ from agents.bank import MerchantProtocol, WarengeldBank
 
 
 def make_bank(unique_id: str, **overrides) -> WarengeldBank:
-    payload = deepcopy(config.CONFIG)
-    payload.update(overrides)
-    cfg = config.load_simulation_config(payload)
+    cfg = config.CONFIG_MODEL.model_copy(deep=True)
+
+    if "bank_fee_rate" in overrides:
+        cfg.bank.fee_rate = overrides["bank_fee_rate"]
+    if "inventory_check_interval" in overrides:
+        cfg.bank.inventory_check_interval = overrides["inventory_check_interval"]
+    if "inventory_coverage_threshold" in overrides:
+        cfg.bank.inventory_coverage_threshold = overrides["inventory_coverage_threshold"]
+    if "bank_base_credit_reserve_ratio" in overrides:
+        cfg.bank.base_credit_reserve_ratio = overrides["bank_base_credit_reserve_ratio"]
+    if "bank_credit_unemployment_sensitivity" in overrides:
+        cfg.bank.credit_unemployment_sensitivity = overrides["bank_credit_unemployment_sensitivity"]
+    if "bank_credit_inflation_sensitivity" in overrides:
+        cfg.bank.credit_inflation_sensitivity = overrides["bank_credit_inflation_sensitivity"]
+    if "target_unemployment_rate" in overrides:
+        cfg.labor_market.target_unemployment_rate = overrides["target_unemployment_rate"]
+    if "target_inflation_rate" in overrides:
+        cfg.labor_market.target_inflation_rate = overrides["target_inflation_rate"]
+    if "initial_bank_liquidity" in overrides:
+        cfg.bank.initial_liquidity = overrides["initial_bank_liquidity"]
+
     return WarengeldBank(unique_id, cfg)
 
 

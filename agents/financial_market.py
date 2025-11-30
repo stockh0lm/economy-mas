@@ -35,7 +35,7 @@ class FinancialMarket(BaseAgent):
         self.bid_ask_spreads: dict[AssetName, float] = {}
 
         # Threshold for considering asset holdings as hyperwealth
-        self.speculation_limit: float = self.config.speculation_limit
+        self.speculation_limit: float = self.config.market.speculation_limit
 
     def check_for_hypervermoegen(self, agents: list[AssetPortfolioAgent | BaseAgent]) -> None:
         """

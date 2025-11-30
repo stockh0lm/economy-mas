@@ -61,12 +61,12 @@ class LaborMarket(BaseAgent):
         self.config: SimulationConfig = config or CONFIG_MODEL
 
         # Configuration parameters
-        self.default_wage: float = self.config.default_wage
-        self.minimum_wage_floor: float = self.config.minimum_wage_floor
-        self.wage_unemployment_sensitivity: float = self.config.wage_unemployment_sensitivity
-        self.wage_price_index_sensitivity: float = self.config.wage_price_index_sensitivity
-        self.target_unemployment_rate: float = self.config.target_unemployment_rate
-        self.target_inflation_rate: float = self.config.target_inflation_rate
+        self.default_wage: float = self.config.labor_market.starting_wage
+        self.minimum_wage_floor: float = self.config.labor_market.minimum_wage_floor
+        self.wage_unemployment_sensitivity: float = self.config.labor_market.wage_unemployment_sensitivity
+        self.wage_price_index_sensitivity: float = self.config.labor_market.wage_price_index_sensitivity
+        self.target_unemployment_rate: float = self.config.labor_market.target_unemployment_rate
+        self.target_inflation_rate: float = self.config.labor_market.target_inflation_rate
         self.latest_unemployment_rate: float = 0.0
         self.config_default_wage: float = self.default_wage
 

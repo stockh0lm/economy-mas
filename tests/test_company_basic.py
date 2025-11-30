@@ -31,7 +31,7 @@ def test_sell_goods_reduces_inventory_and_increases_balance() -> None:
     assert math.isclose(company.inventory, 30.0)
     assert math.isclose(revenue, company.balance)
 
-    base_price = CONFIG_MODEL.production_base_price
-    bonus_rate = CONFIG_MODEL.production_innovation_bonus_rate
+    base_price = CONFIG_MODEL.company.production_base_price
+    bonus_rate = CONFIG_MODEL.company.production_innovation_bonus_rate
     expected_price_per_unit = base_price * (1 + bonus_rate * company.innovation_index)
     assert math.isclose(revenue, 50.0 * expected_price_per_unit)

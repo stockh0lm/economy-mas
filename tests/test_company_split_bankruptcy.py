@@ -1,10 +1,10 @@
 from agents.company_agent import Company
-from config import CONFIG
+from config import CONFIG_MODEL
 
 
 def test_split_company_moves_part_of_balance_and_resets_growth() -> None:
-    original_ratio = CONFIG.get("company_split_ratio", 0.5)
-    CONFIG["company_split_ratio"] = 0.5
+    original_ratio = CONFIG_MODEL.company.split_ratio
+    CONFIG_MODEL.company.split_ratio = 0.5
     try:
         company = Company("C3", production_capacity=100.0)
         company.balance = 1000.0
@@ -20,11 +20,11 @@ def test_split_company_moves_part_of_balance_and_resets_growth() -> None:
         assert company.growth_phase is False
         assert company.growth_counter == 0
     finally:
-        CONFIG["company_split_ratio"] = original_ratio
+        CONFIG_MODEL.company.split_ratio = original_ratio
 
 
 def test_check_bankruptcy_triggers_when_balance_below_threshold() -> None:
-    threshold = CONFIG.get("bankruptcy_threshold", -100.0)
+    threshold = CONFIG_MODEL.company.bankruptcy_threshold
     company = Company("C4")
 
     company.balance = threshold - 1.0

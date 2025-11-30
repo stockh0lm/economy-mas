@@ -44,6 +44,6 @@ def test_recycling_company_collects_waste(env_setup) -> None:
 
     agency.collect_env_tax(agents, state)
 
-    expected_waste = sum(agent.environmental_impact for agent in agents) * agency.config.waste_output_per_env_impact
+    expected_waste = sum(agent.environmental_impact for agent in agents) * agency.config.environmental.waste_output_per_env_impact
     assert recycler.waste_collected == pytest.approx(expected_waste)
 

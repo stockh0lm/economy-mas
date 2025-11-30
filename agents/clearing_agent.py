@@ -61,9 +61,9 @@ class ClearingAgent(BaseAgent):
         self.excess_wealth_collected: float = 0.0
 
         # Configuration parameters
-        self.hyperwealth_threshold: float = self.config.hyperwealth_threshold
-        self.desired_bank_liquidity: float = self.config.desired_bank_liquidity
-        self.desired_savings_bank_liquidity: float = self.config.desired_sparkassen_liquidity
+        self.hyperwealth_threshold: float = self.config.clearing.hyperwealth_threshold
+        self.desired_bank_liquidity: float = self.config.clearing.desired_bank_liquidity
+        self.desired_savings_bank_liquidity: float = self.config.clearing.desired_savings_bank_liquidity
 
     def balance_liquidity(self) -> None:
         """

@@ -1,8 +1,6 @@
-from copy import deepcopy
-
 import pytest
 
-import config
+from config import CONFIG_MODEL
 from agents.bank import WarengeldBank
 
 
@@ -24,9 +22,9 @@ def merchant(unique_id: str, inventory: float = 0.0, balance: float = 0.0) -> Me
 
 
 def make_bank(unique_id: str, **overrides) -> WarengeldBank:
-    payload = deepcopy(config.CONFIG)
-    payload.update(overrides)
-    cfg = config.load_simulation_config(payload)
+    cfg = CONFIG_MODEL.model_copy(deep=True)
+    if "inventory_check_interval" in overrides:
+        cfg.bank.inventory_check_interval = overrides["inventory_check_interval"]
     return WarengeldBank(unique_id, cfg)
 
 
@@ -59,7 +57,7 @@ def test_check_inventories_enforces_repayment_when_underwater() -> None:
 
     assert borrower.balance == pytest.approx(25.0 - expected_repayment)
     assert bank.credit_lines[borrower.unique_id] == pytest.approx(30.0 - expected_repayment)
-    assert bank.liquidity == pytest.approx(bank.config.initial_bank_liquidity + expected_repayment)
+    assert bank.liquidity == pytest.approx(bank.config.bank.initial_liquidity + expected_repayment)
 
 
 def test_check_inventories_skips_merchants_without_credit() -> None:
@@ -82,7 +80,7 @@ def test_calculate_fees_updates_liquidity_and_fee_pool() -> None:
     expected_fee = 200.0 * bank.fee_rate
     assert total_fees == pytest.approx(expected_fee)
     assert bank.collected_fees == pytest.approx(expected_fee)
-    assert bank.liquidity == pytest.approx(bank.config.initial_bank_liquidity + expected_fee)
+    assert bank.liquidity == pytest.approx(bank.config.bank.initial_liquidity + expected_fee)
     assert borrower.balance == pytest.approx(100.0 - expected_fee)
 
 

@@ -1,6 +1,6 @@
 import math
 
-from config import CONFIG
+from config import CONFIG_MODEL
 from metrics import MetricsCollector
 
 
@@ -111,7 +111,7 @@ def test_calculate_global_metrics_handles_zero_gdp_and_no_prior_price() -> None:
     assert math.isclose(metrics["gdp"], 0.0)
     assert math.isclose(metrics["consumption_pct_gdp"], 0.0)
     assert math.isclose(metrics["investment_pct_gdp"], 0.0)
-    assert math.isclose(metrics["price_index"], CONFIG.get("price_index_base", 100.0))
+    assert math.isclose(metrics["price_index"], CONFIG_MODEL.market.price_index_base, abs_tol=100.0)
     assert math.isclose(metrics["inflation_rate"], 0.0)
 
 
@@ -153,9 +153,8 @@ def test_calculate_global_metrics_accumulates_multiple_states_and_bankruptcies()
 
 
 def test_calculate_global_metrics_gini_and_blended_price_pressure() -> None:
-    overrides = {"price_index_pressure_ratio": "blended"}
-    original_ratio = CONFIG.get("price_index_pressure_ratio")
-    CONFIG.update(overrides)
+    original_ratio = CONFIG_MODEL.market.price_index_pressure_ratio
+    CONFIG_MODEL.market.price_index_pressure_ratio = "blended"
     try:
         collector = MetricsCollector()
         collector.registered_companies = {"c1"}
@@ -183,7 +182,7 @@ def test_calculate_global_metrics_gini_and_blended_price_pressure() -> None:
         assert math.isclose(metrics["price_pressure"], 3.0749999998, rel_tol=1e-9)
         assert math.isclose(metrics["price_index"], 110.3749999992, rel_tol=1e-9)
     finally:
-        CONFIG["price_index_pressure_ratio"] = original_ratio
+        CONFIG_MODEL.market.price_index_pressure_ratio = original_ratio
 
 
 def test_calculate_global_metrics_tracks_employment_and_labor_snapshot() -> None:
