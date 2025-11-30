@@ -194,7 +194,7 @@ class LaborMarket(BaseAgent):
         for worker in self.registered_workers:
             if (
                 not hasattr(worker, "current_wage") or worker.current_wage is None
-            ) and not worker.employed:
+            ) and not getattr(worker, "employed", False):
                 worker.current_wage = self.default_wage
                 log(
                     f"LaborMarket {self.unique_id}: Set default wage {self.default_wage:.2f} "

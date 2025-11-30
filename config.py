@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import copy
-from collections.abc import Iterator, Mapping, MutableMapping
+from collections.abc import Iterator, Mapping
 from typing import Literal, cast
 
 from pydantic import (
@@ -9,7 +8,6 @@ from pydantic import (
     ConfigDict,
     Field,
     PositiveInt,
-    ValidationError,
     field_validator,
 )
 
@@ -86,7 +84,7 @@ class AssetPriceMap:
         return dict(self._data)
 
     @classmethod
-    def from_dict(cls, data: Mapping[str, float]) -> "AssetPriceMap":
+    def from_dict(cls, data: Mapping[str, float]) -> AssetPriceMap:
         return cls(data)
 
 

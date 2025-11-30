@@ -150,9 +150,15 @@ def test_company_step_handles_credit_growth_and_split() -> None:
         max(0, required_employees - initial_employee_count),
         company.max_employees - initial_employee_count,
     )
-    assert labor_market.job_offers == [
-        (company.unique_id, labor_market.default_wage, expected_positions),
-    ]
+    
+    # Original company registers job offers
+    expected_offers = [(company.unique_id, labor_market.default_wage, expected_positions)]
+    # New spinoff company also registers initial job offers (default positions)
+    initial_positions = cfg.INITIAL_JOB_POSITIONS_PER_COMPANY
+    expected_offers.append((new_company.unique_id, labor_market.default_wage, initial_positions))
+
+    # Sort both lists to ensure consistent comparison regardless of order
+    assert sorted(labor_market.job_offers) == sorted(expected_offers)
 
     planned_wage_bill = sum(getattr(worker, "current_wage", default_wage) for worker in employees)
     buffer_ratio = cfg.company.liquidity_buffer_ratio

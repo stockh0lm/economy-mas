@@ -40,3 +40,8 @@ class LineageMixin:
         counters[base_id] = next_suffix
         return next_suffix
 
+    def generate_next_id(self) -> str:
+        """Generate the next unique ID for a child/spinoff agent."""
+        next_suffix = self._reserve_lineage_suffix()
+        return f"{self._lineage_root_id}_g{next_suffix}"
+

@@ -36,6 +36,7 @@ class Company(EconomicAgent, LineageMixin):
         max_employees: int = 10,
         employees: Employee | None = None,
         config: SimulationConfig | None = None,
+        labor_market: LaborMarket | None = None,
     ) -> None:
         """
         Initialize a company with economic attributes.
@@ -48,6 +49,7 @@ class Company(EconomicAgent, LineageMixin):
             environmental_impact: Environmental impact factor
             max_employees: Maximum number of employees
             employees: Initial list of employees
+            labor_market: Optional reference to labor market for immediate job offer registration
         """
         super().__init__(unique_id)
         self._init_lineage(unique_id)
@@ -75,6 +77,13 @@ class Company(EconomicAgent, LineageMixin):
         self.growth_threshold: int = self.config.company.growth_threshold
         self.investment_threshold: float = self.config.company.investment_threshold
         self.bankruptcy_threshold: float = self.config.company.bankruptcy_threshold
+
+        if labor_market:
+            labor_market.register_job_offer(
+                self,
+                wage=self.config.labor_market.starting_wage,
+                positions=self.config.INITIAL_JOB_POSITIONS_PER_COMPANY,
+            )
 
         # Research and development
         self.rd_investment: float = 0.0
@@ -316,12 +325,15 @@ class Company(EconomicAgent, LineageMixin):
 
         return amount
 
-    def split_company(self) -> "Company":
+    def split_company(self, labor_market: LaborMarket | None = None) -> "Company":
         """
         Split company into two, creating a new spinoff company.
 
         The new company receives 50% of the parent's balance
         and similar attributes. The parent resets its growth state.
+
+        Args:
+            labor_market: Optional labor market to register the new company's job offers
 
         Returns:
             Newly created spinoff company
@@ -332,9 +344,7 @@ class Company(EconomicAgent, LineageMixin):
         self.balance -= split_balance
 
         # Generate new company ID using lineage-wide counter
-        next_suffix = self._reserve_lineage_suffix()
-        base_id: str = self._lineage_root_id
-        new_unique_id: str = f"{base_id}_g{next_suffix}"
+        new_unique_id = self.generate_next_id()
         new_generation: int = self.generation + 1
 
         # Create new company
@@ -345,6 +355,7 @@ class Company(EconomicAgent, LineageMixin):
             environmental_impact=self.environmental_impact,
             max_employees=self.max_employees,
             config=self.config,
+            labor_market=labor_market,
         )
 
         new_company.balance = split_balance
@@ -448,10 +459,10 @@ class Company(EconomicAgent, LineageMixin):
         if self.growth_phase:
             self.growth_counter += 1
 
-    def _handle_company_split(self) -> Company | None:
+    def _handle_company_split(self, labor_market: LaborMarket | None = None) -> Company | None:
         """Split the company if growth thresholds are satisfied."""
         if self.growth_phase and self.growth_counter >= self.growth_threshold:
-            return self.split_company()
+            return self.split_company(labor_market)
         return None
 
     def _service_warengeld_credit(self, warengeld_bank: WarengeldBank | None) -> None:
@@ -505,6 +516,7 @@ class Company(EconomicAgent, LineageMixin):
         state: State | None = None,
         warengeld_bank: WarengeldBank | None = None,
         savings_bank: SavingsBank | None = None,
+        #labor_market: LaborMarket | None = None,
     ) -> Company | Literal["DEAD"] | Literal["LIQUIDATED"] | None:
         """
         Execute one simulation step for the company.
@@ -528,6 +540,11 @@ class Company(EconomicAgent, LineageMixin):
             - "DEAD" if company is bankrupt
             - New Company instance if split occurred
             - None otherwise
+            :param state:
+            :param labor_market:
+            :param savings_bank:
+            :param current_step:
+            :param warengeld_bank:
         """
         log(f"Company {self.unique_id} starting step {current_step}.", level="INFO")
 
@@ -539,7 +556,10 @@ class Company(EconomicAgent, LineageMixin):
         self._sync_labor_market(state)
         self._run_operations()
         self._trigger_growth_and_investment(savings_bank)
-        new_company = self._handle_company_split()
+
+        # Pass labor market if available from state
+        lm = state.labor_market if state and hasattr(state, "labor_market") else None
+        new_company = self._handle_company_split(lm)
 
         if self.check_bankruptcy():
             log(
@@ -557,26 +577,4 @@ class Company(EconomicAgent, LineageMixin):
     def produce_output(self) -> None:
         """Deprecated wrapper maintained for compatibility."""
         self.produce()
-
-    @staticmethod
-    def _parse_unique_id(unique_id: str) -> tuple[str, int]:
-        if "_g" not in unique_id:
-            return unique_id, 0
-        base_id, _, suffix_str = unique_id.partition("_g")
-        try:
-            return base_id, int(suffix_str)
-        except ValueError:
-            return base_id, 0
-
-    @classmethod
-    def _ensure_lineage_counter(cls, base_id: str, suffix: int) -> None:
-        current = cls._lineage_counters.get(base_id)
-        if current is None or suffix > current:
-            cls._lineage_counters[base_id] = suffix
-
-    def _reserve_lineage_suffix(self) -> int:
-        base_id = self._lineage_root_id
-        next_suffix = self._lineage_counters.get(base_id, 0) + 1
-        self._lineage_counters[base_id] = next_suffix
-        return next_suffix
 

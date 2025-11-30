@@ -35,6 +35,8 @@ type AgentDict = dict[
 def initialize_agents(config: SimulationConfig) -> AgentDict:
     """Initialize all simulation agents and their relationships."""
     state: State = State(config.STATE_ID, config)
+    labor_market = LaborMarket(config.LABOR_MARKET_ID, config)
+    state.labor_market = labor_market
 
     # Create initial households based on configuration
     households: list[Household] = []
@@ -46,6 +48,7 @@ def initialize_agents(config: SimulationConfig) -> AgentDict:
                 land_area=params.land_area,
                 environmental_impact=params.environmental_impact,
                 config=config,
+                labor_market=labor_market,
             )
         )
 
@@ -59,6 +62,7 @@ def initialize_agents(config: SimulationConfig) -> AgentDict:
                 land_area=params.land_area,
                 environmental_impact=params.environmental_impact,
                 config=config,
+                labor_market=labor_market,
             )
         )
 
@@ -77,16 +81,6 @@ def initialize_agents(config: SimulationConfig) -> AgentDict:
     )
     environmental_agency.attach_recycling_company(recycling_company)
     financial_market = FinancialMarket(config.FINANCIAL_MARKET_ID, config)
-    labor_market = LaborMarket(config.LABOR_MARKET_ID, config)
-    state.labor_market = labor_market
-
-    # Register workers and job offers in labor market
-    for hh in households:
-        labor_market.register_worker(hh)
-    for comp in companies:
-        labor_market.register_job_offer(
-            comp, wage=config.labor_market.starting_wage, positions=config.INITIAL_JOB_POSITIONS_PER_COMPANY
-        )
 
     all_agents: list[object] = households + companies + [state, warengeld_bank, savings_bank]
 
@@ -110,6 +104,7 @@ def update_households(
     step: int,
     state: State,
     savings_bank: SavingsBank,
+    labor_market: LaborMarket,
     companies: list[Company],
 ) -> list[Household]:
     """Update all households and manage newly created or dead households."""
@@ -264,6 +259,7 @@ def main() -> None:
             step,
             agents["state"],
             agents["savings_bank"],
+            agents["labor_market"],
             agents["companies"],
         )
         agents["companies"] = update_companies(
@@ -272,6 +268,7 @@ def main() -> None:
             agents["state"],
             agents["warengeld_bank"],
             agents["savings_bank"],
+            #agents["labor_market"],
         )
         agents = update_all_agents(agents)
         update_other_agents(step, agents, agents["state"])

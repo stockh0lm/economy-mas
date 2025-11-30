@@ -94,11 +94,18 @@ def ensure_dirs(run_dir: Path) -> Path:
     return latest_dir
 
 
-def save_figure(fig: plt.Figure, filename: str, run_dir: Path, latest_dir: Path) -> None:
+def save_figure(
+    fig: plt.Figure,
+    filename: str,
+    run_dir: Path,
+    latest_dir: Path,
+    close_figure: bool = True,
+) -> None:
     target = run_dir / filename
     fig.savefig(target, dpi=150, bbox_inches="tight")
     shutil.copy2(target, latest_dir / filename)
-    plt.close(fig)
+    if close_figure:
+        plt.close(fig)
 
 
 def extract_series(
@@ -338,7 +345,7 @@ def main() -> None:
         fig, filename = plot_func(data_by_scope[scope])
         figures.append(fig)
         axes.extend(fig.axes)
-        save_figure(fig, filename, run_dir, latest_dir)
+        save_figure(fig, filename, run_dir, latest_dir, close_figure=not args.show)
 
     if args.show:
         if args.link_cursor:
@@ -350,16 +357,27 @@ def main() -> None:
 
 def add_linked_cursor(axes: list[plt.Axes]) -> Callable[[object], None]:
     lines = [ax.axvline(color="gray", lw=0.8, alpha=0.5, visible=False) for ax in axes]
+    canvases = {ax.figure.canvas for ax in axes}
 
     def on_move(event):
         if event.inaxes is None or event.xdata is None:
             for line in lines:
                 line.set_visible(False)
-            event.canvas.draw_idle()
-            return
-        for line in lines:
-            line.set_xdata(event.xdata)
-            line.set_visible(True)
-        event.canvas.draw_idle()
+        else:
+            # event.xdata is a single float, but set_xdata usually expects a sequence
+            # for a vertical line, however, axvline objects (Line2D) are special.
+            # The error "x must be a sequence" suggests we are treating it as a general Line2D
+            # where xdata must be [x0, x1].
+            # But axvline sets x position via transform. Let's try setting it as a list of 2 identical points.
+            for line in lines:
+                line.set_xdata([event.xdata, event.xdata])
+                line.set_visible(True)
+        
+        for canvas in canvases:
+            canvas.draw_idle()
 
     return on_move
+
+
+if __name__ == "__main__":
+    main()

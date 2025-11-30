@@ -8,6 +8,7 @@ from config import CONFIG_MODEL, SimulationConfig
 from logger import log
 
 from .economic_agent import EconomicAgent
+from .labor_market import LaborMarket
 from .lineage_mixin import LineageMixin
 from .savings_bank_agent import SavingsBank
 
@@ -33,6 +34,7 @@ class Household(EconomicAgent, LineageMixin):
         environmental_impact: float = 1.0,
         generation: int = 1,
         config: SimulationConfig | None = None,
+        labor_market: LaborMarket | None = None,
     ) -> None:
         """
         Initialize a household agent with economic attributes.
@@ -43,11 +45,15 @@ class Household(EconomicAgent, LineageMixin):
             land_area: Living or usage area (for land tax calculation)
             environment_impact: Ecological footprint factor
             generation: Current generation of the household
+            labor_market: Optional reference to labor market for immediate registration
         """
         super().__init__(unique_id)
         self._init_lineage(unique_id)
 
         self.config: SimulationConfig = config or CONFIG_MODEL
+
+        if labor_market:
+            labor_market.register_worker(self)
 
         self.income: float = income
         self.land_area: float = land_area
@@ -68,6 +74,10 @@ class Household(EconomicAgent, LineageMixin):
         # Bank accounts
         self.checking_account: float = 0.0
         self.savings: float = 0.0
+
+        # Employment status
+        self.employed: bool = False
+        self.current_wage: float | None = None
 
         self.consumption_rate_normal: float = self._resolve_consumption_rate(
             self.config.household.consumption_rate_normal
@@ -155,7 +165,7 @@ class Household(EconomicAgent, LineageMixin):
         )
         # Note: Actual tax payment is handled by the state agent
 
-    def offer_labor(self, labor_market: object | None = None) -> bool:
+    def offer_labor(self, labor_market: LaborMarket) -> bool:
         """
         Offer labor to the labor market.
 
@@ -165,6 +175,7 @@ class Household(EconomicAgent, LineageMixin):
         Returns:
             True if labor was successfully offered
         """
+        labor_market.register_worker(self)
         log(f"Household {self.unique_id} offers labor.", level="DEBUG")
         return True
 
@@ -241,12 +252,15 @@ class Household(EconomicAgent, LineageMixin):
             bank_holdings = savings_bank.savings_accounts.get(self.unique_id, 0.0)
         return self.savings + bank_holdings
 
-    def split_household(self) -> Household:
+    def split_household(self, labor_market: LaborMarket | None = None) -> Household:
         """
         Split household into two, creating a new child household.
 
         The child household receives 80% of parent's savings as initial capital.
         Parent household resets its growth phase.
+
+        Args:
+            labor_market: Optional labor market to register the new household
 
         Returns:
             Newly created child household
@@ -263,9 +277,7 @@ class Household(EconomicAgent, LineageMixin):
         )
 
         # Generate new household ID via lineage counter
-        next_suffix = self._reserve_lineage_suffix()
-        base_id = self._lineage_root_id
-        new_unique_id: str = f"{base_id}_g{next_suffix}"
+        new_unique_id = self.generate_next_id()
         new_generation: int = self.generation + 1
 
         new_household = Household(
@@ -275,6 +287,7 @@ class Household(EconomicAgent, LineageMixin):
             environmental_impact=self.environmental_impact,
             generation=new_generation,
             config=self.config,
+            labor_market=labor_market,
         )
         new_household.checking_account = split_consumption
 
@@ -363,6 +376,11 @@ class Household(EconomicAgent, LineageMixin):
             - "DEAD" if the household should be removed from simulation
             - New household instance if a split occurred
             - None otherwise
+
+            :param current_step:
+            :param state:
+            :param companies:
+            :param savings_bank:
         """
         log(f"Household {self.unique_id} starting step {current_step}.", level="INFO")
 
@@ -383,7 +401,8 @@ class Household(EconomicAgent, LineageMixin):
         self.consume(rate, companies)
         self.save(savings_bank)
         self._repay_savings_loans(savings_bank)
-        self.offer_labor()
+        if state and hasattr(state, "labor_market"):
+            self.offer_labor(state.labor_market)
 
         total_savings = self._total_savings(savings_bank)
 
@@ -400,7 +419,8 @@ class Household(EconomicAgent, LineageMixin):
 
         # Split household if growth phase lasts long enough
         if self.growth_phase and self.growth_counter >= self.growth_threshold:
-            new_household = self.split_household()
+            # Ensure we have a labor market to pass if state is available
+            new_household = self.split_household(state.labor_market)
 
         # Check death criteria: old age or high generation with no growth
         if self.age >= self.max_age or (

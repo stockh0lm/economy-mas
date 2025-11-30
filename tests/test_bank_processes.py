@@ -1,7 +1,7 @@
 import pytest
 
-from config import CONFIG_MODEL
 from agents.bank import WarengeldBank
+from config import CONFIG_MODEL
 
 
 class MerchantStub:

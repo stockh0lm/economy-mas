@@ -1,9 +1,9 @@
-import copy
 
 import pytest
 from pydantic import ValidationError
 
 import config
+
 
 def test_simulation_config_structure_defaults() -> None:
     """Test that SimulationConfig initializes with expected default values and structure."""
