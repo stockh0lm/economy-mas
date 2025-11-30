@@ -1,7 +1,7 @@
 import math
 
-from agents.clearing_agent import ClearingAgent
 import config
+from agents.clearing_agent import ClearingAgent
 
 
 class DummyAgent:

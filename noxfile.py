@@ -21,7 +21,7 @@ def lint(session: nox.Session) -> None:
     session.install(".[dev]")
     session.run("black", *TARGETS)
     session.run("isort", *TARGETS)
-    session.run("ruff", "check", *TARGETS)
+    session.run("ruff", "check", ".")
     session.run("mypy", ".")
     session.run(
         "vulture",

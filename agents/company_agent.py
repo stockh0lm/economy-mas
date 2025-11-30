@@ -8,7 +8,6 @@ from agents.household_agent import Household
 from agents.labor_market import LaborMarket
 from agents.savings_bank_agent import SavingsBank
 from agents.state_agent import State
-
 from config import CONFIG_MODEL, SimulationConfig
 from logger import log
 
@@ -162,24 +161,25 @@ class Company(EconomicAgent):
         current_count = len(self.employees)
 
         if required_employees > current_count:
-            new_positions = min(
-                required_employees - current_count, self.max_employees - current_count
-            )
-            if new_positions > 0:
-                self.pending_hires += new_positions
-                labor_market.register_job_offer(
-                    self,
-                    wage=getattr(
-                        labor_market,
-                        "default_wage",
-                        self.config.wage_rate,
-                    ),
-                    positions=new_positions,
-                )
-                log(
-                    f"Company {self.unique_id} requested {new_positions} workers via labor market.",
-                    level="INFO",
-                )
+git             open_positions = required_employees - current_count
+            unadvertised = max(0, open_positions - self.pending_hires)
+            if unadvertised > 0:
+                new_positions = min(unadvertised, self.max_employees - current_count)
+                if new_positions > 0:
+                    self.pending_hires += new_positions
+                    labor_market.register_job_offer(
+                        self,
+                        wage=getattr(
+                            labor_market,
+                            "default_wage",
+                            self.config.wage_rate,
+                        ),
+                        positions=new_positions,
+                    )
+                    log(
+                        f"Company {self.unique_id} requested {new_positions} workers via labor market.",
+                        level="INFO",
+                    )
         elif required_employees < current_count:
             to_release = current_count - required_employees
             for _ in range(to_release):
@@ -262,28 +262,21 @@ class Company(EconomicAgent):
         Pay wages to all employees.
 
         Args:
-            wage_rate: Amount to pay each employee
+            wage_rate: Optional override for per-employee wage
 
         Returns:
             Total wages paid
         """
-        wage_rate = wage_rate if wage_rate is not None else self.config.wage_rate
-
         if not self.employees:
             log(f"Company {self.unique_id} has no employees to pay wages.", level="WARNING")
             return 0.0
 
         total_wages: float = 0.0
         for employee in self.employees:
-            rate = (
-                wage_rate
-                if wage_rate is not None
-                else getattr(
-                    employee,
-                    "current_wage",
-                    self.config.default_wage,
-                )
-            )
+            negotiated = getattr(employee, "current_wage", None)
+            rate = negotiated if negotiated is not None else wage_rate
+            if rate is None:
+                rate = self.config.default_wage
             total_wages += rate
             employee.receive_income(rate)
 

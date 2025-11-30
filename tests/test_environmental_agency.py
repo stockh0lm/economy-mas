@@ -1,5 +1,4 @@
 import math
-import types
 
 import pytest
 

@@ -1,5 +1,6 @@
 # clearing_agent.py
-from typing import TYPE_CHECKING, Protocol, Sequence, TypeAlias, cast, runtime_checkable
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Protocol, TypeAlias, cast, runtime_checkable
 
 from config import CONFIG_MODEL, SimulationConfig
 from logger import log

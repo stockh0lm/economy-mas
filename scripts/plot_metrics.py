@@ -5,8 +5,8 @@ import argparse
 import csv
 import shutil
 from collections import defaultdict
+from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import Callable, Iterable
 
 import matplotlib.pyplot as plt
 

@@ -1,5 +1,6 @@
 # state_agent.py
-from typing import Protocol, Sequence, TypeAlias, cast
+from collections.abc import Sequence
+from typing import Protocol, TypeAlias, cast
 
 from config import CONFIG_MODEL, SimulationConfig
 from logger import log

@@ -1,9 +1,9 @@
 # bank.py
-from typing import Protocol, Sequence, TypeAlias
+from collections.abc import Sequence
+from typing import Protocol, TypeAlias
 
 from agents.base_agent import BaseAgent
 from config import CONFIG_MODEL, SimulationConfig
-
 from logger import log
 
 

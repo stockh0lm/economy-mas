@@ -511,7 +511,7 @@ class MetricsCollector:
             employed_workers = sum(
                 1
                 for w in labor_market.registered_workers
-                if hasattr(w, "employed") and getattr(w, "employed")
+                if hasattr(w, "employed") and w.employed
             )
             self.add_metric(
                 agent_id, "employed_workers", float(employed_workers), self.market_metrics, step
