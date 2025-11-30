@@ -24,7 +24,8 @@ dev = [
     "black",
     "isort",
     "vulture",
-    "lizard",
+    "radon",
+    "matplotlib",
 ]
 
 [tool.black]
