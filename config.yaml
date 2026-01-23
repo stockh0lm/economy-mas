@@ -1,0 +1,104 @@
+# Beispiel-Konfiguration für die Wirtschaftssimulation
+#
+# Diese Datei ist optional. Wenn du sie nutzen willst, kannst du sie so laden:
+#   - CLI:  python main.py --config config.yaml
+#   - ENV:  SIM_CONFIG=config.yaml python main.py
+#
+# Das Einlesen passiert in `main._resolve_config_from_args_or_env()`.
+# Die Validierung erfolgt über Pydantic beim Laden (siehe `config.load_simulation_config_from_yaml`).
+
+# Anzahl Simulationsschritte
+simulation_steps: 100
+
+# Ergebnisablage: aktuell im Code nur dokumentiert ("both" ist Default)
+result_storage: both
+
+# --- Population / Skalierung ---
+#
+# Damit du nicht hunderte Agenten einzeln auflisten musst, kannst du hier
+# Agentenzahlen und Startwerte angeben.
+#
+# WICHTIG:
+# - Die Generierung greift nur, wenn INITIAL_HOUSEHOLDS / INITIAL_COMPANIES leer sind.
+# - Wenn du INITIAL_HOUSEHOLDS/INITIAL_COMPANIES explizit setzt (Listen), werden diese genutzt.
+population:
+  # Anzahl Haushalte/Firmen, die beim Start erzeugt werden sollen
+  num_households: 200
+  num_companies: 50
+
+  # Startwerte für alle generierten Haushalte
+  household_template:
+    # Regelmäßiges Einkommen (Achtung: im Ist-Modell ist income aktuell Geldzufluss ohne Gegenbuchung)
+    income: 100
+    # Landfläche (für Steuern im Modell)
+    land_area: 50
+    # Ökologischer Impact (wird u.a. von EnvironmentalAgency verwendet)
+    environmental_impact: 1
+
+  # Startwerte für alle generierten Firmen
+  company_template:
+    # Produktionskapazität (beeinflusst Output pro Schritt)
+    production_capacity: 100
+    land_area: 100
+    environmental_impact: 5
+
+# --- Steuern ---
+tax_rates:
+  # Bodensteuer (0..1)
+  bodensteuer: 0.05
+  # Umweltsteuer (0..1)
+  umweltsteuer: 0.02
+
+# --- Haushalt-Parameter ---
+household:
+  # Maximalalter (Schritte) bis ein Haushalt im Modell "stirbt"
+  max_age: 80
+  # Maximalgenerationen für Splits
+  max_generation: 3
+  # Konsumquote (0..1)
+  consumption_rate_normal: 0.7
+  consumption_rate_growth: 0.9
+
+# --- Firmen-Parameter ---
+company:
+  # Basispreis pro Gütereinheit
+  production_base_price: 10
+  # Innovationsbonus auf Preis
+  production_innovation_bonus_rate: 0.02
+  # Schwelle, ab der Firmen in Wachstumsmodus gehen
+  investment_threshold: 1000
+
+# --- WarengeldBank-Parameter ---
+bank:
+  # Gebührenrate auf ausstehende Kreditlinien
+  fee_rate: 0.01
+  # Startliquidität der Bank
+  initial_liquidity: 1000
+  # Intervall für Inventory-Checks
+  inventory_check_interval: 3
+  # Mindest-Deckungsgrad (Inventory zu Credit)
+  inventory_coverage_threshold: 0.8
+
+# --- SavingsBank-Parameter ---
+savings_bank:
+  initial_liquidity: 500
+  max_savings_per_account: 10000
+
+# --- Arbeitsmarkt ---
+labor_market:
+  starting_wage: 10
+  minimum_wage_floor: 8
+  target_unemployment_rate: 0.05
+  target_inflation_rate: 0.02
+
+# --- Markt / Price Index ---
+market:
+  # Basiswert des Preisindex
+  price_index_base: 100
+  # Default-Nachfrage bei Firmensales (Legacy-Pfad)
+  demand_default: 50
+  # Sensitivität des Preisindex auf Preis-"Pressure"
+  price_index_sensitivity: 0.05
+  # In code: default ist "money_supply_to_gdp" (aktuell teils noch nicht konsistent)
+  price_index_pressure_ratio: money_supply_to_gdp
+

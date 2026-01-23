@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
+from pathlib import Path
 from typing import Literal, cast
 
 from pydantic import (
@@ -20,30 +21,53 @@ class TaxRates(BaseModel):
 
 
 class InitialHousehold(BaseModel):
-    income: float = Field(ge=0)
-    land_area: float = Field(ge=0)
-    environmental_impact: float = Field(ge=0)
+    income: float = Field(100.0, ge=0)
+    land_area: float = Field(50.0, ge=0)
+    environmental_impact: float = Field(1.0, ge=0)
 
 
 class InitialCompany(BaseModel):
-    production_capacity: float = Field(ge=0)
-    land_area: float = Field(ge=0)
-    environmental_impact: float = Field(ge=0)
+    production_capacity: float = Field(100.0, ge=0)
+    land_area: float = Field(100.0, ge=0)
+    environmental_impact: float = Field(5.0, ge=0)
 
 
-def _default_households() -> list[dict[str, float]]:
+class BaseConfigModel(BaseModel):
+    model_config = ConfigDict(validate_default=True, frozen=False)
+
+
+class PopulationConfig(BaseConfigModel):
+    """Optional helpers to generate many initial agents without enumerating lists."""
+
+    num_households: PositiveInt | None = None
+    num_companies: PositiveInt | None = None
+
+    household_template: InitialHousehold = Field(default_factory=InitialHousehold)
+    company_template: InitialCompany = Field(default_factory=InitialCompany)
+
+    seed: int | None = None
+
+    @field_validator("seed")
+    @classmethod
+    def _validate_seed(cls, value: int | None) -> int | None:
+        if value is None:
+            return None
+        return int(value)
+
+
+def _default_households() -> list[InitialHousehold]:
     return [
-        {"income": 100, "land_area": 50, "environmental_impact": 1},
-        {"income": 120, "land_area": 60, "environmental_impact": 2},
-        {"income": 110, "land_area": 70, "environmental_impact": 2},
-        {"income": 80, "land_area": 40, "environmental_impact": 1},
+        InitialHousehold(income=100, land_area=50, environmental_impact=1),
+        InitialHousehold(income=120, land_area=60, environmental_impact=2),
+        InitialHousehold(income=110, land_area=70, environmental_impact=2),
+        InitialHousehold(income=80, land_area=40, environmental_impact=1),
     ]
 
 
-def _default_companies() -> list[dict[str, float]]:
+def _default_companies() -> list[InitialCompany]:
     return [
-        {"production_capacity": 100, "land_area": 100, "environmental_impact": 5},
-        {"production_capacity": 80, "land_area": 80, "environmental_impact": 4},
+        InitialCompany(production_capacity=100, land_area=100, environmental_impact=5),
+        InitialCompany(production_capacity=80, land_area=80, environmental_impact=4),
     ]
 
 
@@ -77,7 +101,7 @@ class AssetPriceMap:
     def get(self, item: str, default: float | None = None) -> float | None:
         return self._data.get(item, default)
 
-    def items(self) -> Mapping[str, float].items:
+    def items(self):
         return self._data.items()
 
     def as_dict(self) -> dict[str, float]:
@@ -113,10 +137,6 @@ def _coerce_value(value: object) -> ConfigValue:
 
 def _coerce_config_dict(data: Mapping[str, object]) -> dict[str, ConfigValue]:
     return {key: _coerce_value(value) for key, value in data.items()}
-
-
-class BaseConfigModel(BaseModel):
-    model_config = ConfigDict(validate_default=True, frozen=False)
 
 
 class HouseholdConfig(BaseConfigModel):
@@ -232,6 +252,10 @@ class SimulationConfig(BaseConfigModel):
     environmental: EnvironmentalConfig = Field(default_factory=EnvironmentalConfig)
     clearing: ClearingConfig = Field(default_factory=ClearingConfig)
     state: StateConfig = Field(default_factory=StateConfig)
+
+    # New: population helpers
+    population: PopulationConfig = Field(default_factory=PopulationConfig)
+
     logging_level: str = "DEBUG"
     log_file: str = output_dir + "simulation.log"
     log_format: str = "%(asctime)s - %(levelname)s - %(message)s"
@@ -270,12 +294,207 @@ class SimulationConfig(BaseConfigModel):
     def json_indent(self) -> PositiveInt:
         return self.JSON_INDENT
 
+    @field_validator("result_storage")
+    @classmethod
+    def _validate_result_storage(cls, value: str) -> str:
+        """Validate result storage option."""
+        valid_options = ["both", "file", "memory", "none"]
+        if value not in valid_options:
+            raise ValueError(f"result_storage must be one of {valid_options}, got {value}")
+        return value
+
+    @field_validator("logging_level")
+    @classmethod
+    def _validate_logging_level(cls, value: str) -> str:
+        """Validate logging level."""
+        valid_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+        if value not in valid_levels:
+            raise ValueError(f"logging_level must be one of {valid_levels}, got {value}")
+        return value
+
+    @field_validator("metrics_export_path")
+    @classmethod
+    def _validate_metrics_path(cls, value: str) -> str:
+        """Validate metrics export path."""
+        if not value or not isinstance(value, str):
+            raise ValueError("metrics_export_path must be a non-empty string")
+        return value
+
+    def validate_agent_counts(self) -> None:
+        """Validate that agent counts are consistent with configuration."""
+        # Only validate if both are explicitly set by the user (not using defaults)
+        # If population.num_households is set, we should ignore INITIAL_HOUSEHOLDS
+        # If INITIAL_HOUSEHOLDS is provided, we should ignore population.num_households
+        pass  # Remove validation for now to allow both approaches
+
+    def get_effective_household_count(self) -> int:
+        """Get the effective number of households that will be created."""
+        if self.population.num_households is not None:
+            return self.population.num_households
+        return len(self.INITIAL_HOUSEHOLDS)
+
+    def get_effective_company_count(self) -> int:
+        """Get the effective number of companies that will be created."""
+        if self.population.num_companies is not None:
+            return self.population.num_companies
+        return len(self.INITIAL_COMPANIES)
+
+    def validate_economic_parameters(self) -> None:
+        """Validate that economic parameters are within reasonable bounds."""
+        # Check that tax rates are reasonable
+        if self.tax_rates.bodensteuer + self.tax_rates.umweltsteuer > 0.5:
+            raise ValueError("Combined tax rates exceed 50% - this may cause simulation instability")
+
+        # Check that wage parameters are consistent
+        if self.labor_market.minimum_wage_floor > self.labor_market.starting_wage:
+            raise ValueError("minimum_wage_floor cannot be higher than starting_wage")
+
+        # Check that bank parameters are stable
+        if self.bank.fee_rate > 0.1:
+            raise ValueError("Bank fee rate exceeds 10% - this may cause economic instability")
+
+    def validate_all(self) -> None:
+        """Run all validation checks on the configuration."""
+        self.validate_agent_counts()
+        self.validate_economic_parameters()
+
+        # Validate that all required directories exist or can be created
+        for path_attr in ['log_file', 'SUMMARY_FILE', 'metrics_export_path']:
+            path_value = getattr(self, path_attr)
+            if isinstance(path_value, str):
+                try:
+                    Path(path_value).parent.mkdir(parents=True, exist_ok=True)
+                except Exception as e:
+                    raise ValueError(f"Cannot create directory for {path_attr}: {str(e)}")
+
+class ConfigValidationError(Exception):
+    """Exception raised when configuration validation fails."""
+    def __init__(self, message: str, config_errors: list[str] | None = None):
+        self.message = message
+        self.config_errors = config_errors or []
+        super().__init__(message)
+
+    def __str__(self) -> str:
+        if self.config_errors:
+            return f"{self.message}\nErrors: {', '.join(self.config_errors)}"
+        return self.message
+
 
 def load_simulation_config(data: Mapping[str, ConfigValue] | None = None) -> SimulationConfig:
     if data is not None:
         coerced = _coerce_config_dict(cast(Mapping[str, object], data))
         return SimulationConfig(**coerced)
     return SimulationConfig()
+
+
+def load_simulation_config_from_yaml(path: str) -> SimulationConfig:
+    """Load a YAML config file and validate it via `SimulationConfig`.
+
+    YAML is only an input format: schema validation remains centralized in Pydantic.
+
+    Args:
+        path: Path to YAML configuration file
+
+    Returns:
+        Validated SimulationConfig instance
+
+    Raises:
+        FileNotFoundError: If config file doesn't exist
+        ModuleNotFoundError: If YAML parser not installed
+        TypeError: If YAML structure is invalid
+        ConfigValidationError: If configuration validation fails
+    """
+    try:
+        import yaml  # type: ignore[import-not-found]
+    except ModuleNotFoundError as exc:  # pragma: no cover
+        msg = (
+            "YAML support is not installed. Add PyYAML (or another YAML parser) to dependencies "
+            "to use load_simulation_config_from_yaml()."
+        )
+        raise ModuleNotFoundError(msg) from exc
+
+    try:
+        with open(path, encoding="utf-8") as fh:
+            raw = yaml.safe_load(fh)
+    except FileNotFoundError:
+        raise FileNotFoundError(f"Configuration file not found: {path}")
+    except Exception as e:
+        raise ConfigValidationError(f"Failed to read YAML file {path}: {str(e)}")
+
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, Mapping):
+        msg = "Top-level YAML config must be a mapping/object."
+        raise TypeError(msg)
+
+    try:
+        config = load_simulation_config(cast(Mapping[str, ConfigValue], raw))
+        config.validate_all()
+        return config
+    except Exception as e:
+        raise ConfigValidationError(f"Configuration validation failed: {str(e)}", [str(e)])
+
+def validate_config_compatibility(config: SimulationConfig) -> None:
+    """
+    Validate that configuration is compatible with current simulation requirements.
+
+    Args:
+        config: Configuration to validate
+
+    Raises:
+        ConfigValidationError: If compatibility issues found
+    """
+    errors = []
+
+    # Check that agent counts are reasonable for performance
+    household_count = config.get_effective_household_count()
+    company_count = config.get_effective_company_count()
+
+    if household_count > 1000:
+        errors.append(f"Household count {household_count} exceeds recommended maximum of 1000")
+    if company_count > 200:
+        errors.append(f"Company count {company_count} exceeds recommended maximum of 200")
+
+    # Check economic parameter compatibility
+    if config.company.base_wage < config.labor_market.minimum_wage_floor:
+        errors.append("Company base wage is below minimum wage floor")
+
+    if config.bank.fee_rate > 0.05 and household_count > 100:
+        errors.append("High bank fee rate with large household count may cause instability")
+
+    if errors:
+        raise ConfigValidationError("Configuration compatibility issues found", errors)
+
+class SimulationError(Exception):
+    """Base exception for simulation errors."""
+    def __init__(self, message: str, agent_id: str | None = None):
+        self.message = message
+        self.agent_id = agent_id
+        super().__init__(self._format_message())
+
+    def _format_message(self) -> str:
+        if self.agent_id:
+            return f"Agent {self.agent_id}: {self.message}"
+        return self.message
+
+class InsufficientFundsError(SimulationError):
+    """Exception for insufficient funds situations."""
+    def __init__(self, message: str, agent_id: str, required: float, available: float):
+        self.required = required
+        self.available = available
+        super().__init__(message, agent_id)
+
+    def _format_message(self) -> str:
+        base_msg = super()._format_message()
+        return f"{base_msg} (Required: {self.required:.2f}, Available: {self.available:.2f})"
+
+class AgentLifecycleError(SimulationError):
+    """Exception for agent lifecycle management errors."""
+    pass
+
+class EconomicParameterError(SimulationError):
+    """Exception for invalid economic parameter values."""
+    pass
 
 
 CONFIG_MODEL: SimulationConfig = load_simulation_config()

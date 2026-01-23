@@ -69,17 +69,9 @@ class EnvironmentalAgency(BaseAgent):
         self.penalty_factor: float = self.config.environmental.penalty_factor_env_audit
 
         # Recycling company attachment
-        self.recycling_company: RecyclingCompany | None = None
+        self.recycling_company: "RecyclingCompany | None" = None
 
-    def attach_state(self, state: State) -> None:
-        """Link the environmental agency to the state for revenue transfers."""
-        self.state = state
-        log(
-            f"EnvironmentalAgency {self.unique_id} attached to State {state.unique_id}.",
-            level="DEBUG",
-        )
-
-    def attach_recycling_company(self, recycler: RecyclingCompany) -> None:
+    def attach_recycling_company(self, recycler: "RecyclingCompany") -> None:
         """Link the environmental agency to a recycling company for waste processing."""
         self.recycling_company = recycler
         log(

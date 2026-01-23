@@ -55,7 +55,7 @@ class Company(EconomicAgent, LineageMixin):
         self._init_lineage(unique_id)
 
         # Basic attributes
-        self.generation: int = 0
+        self.generation: int = 1
         self.production_capacity: float = production_capacity
         self.resource_usage: float = resource_usage
         self.land_area: float = land_area
@@ -459,7 +459,7 @@ class Company(EconomicAgent, LineageMixin):
         if self.growth_phase:
             self.growth_counter += 1
 
-    def _handle_company_split(self, labor_market: LaborMarket | None = None) -> Company | None:
+    def _handle_company_split(self, labor_market: LaborMarket | None = None) -> "Company | None":
         """Split the company if growth thresholds are satisfied."""
         if self.growth_phase and self.growth_counter >= self.growth_threshold:
             return self.split_company(labor_market)
@@ -517,50 +517,91 @@ class Company(EconomicAgent, LineageMixin):
         warengeld_bank: WarengeldBank | None = None,
         savings_bank: SavingsBank | None = None,
         #labor_market: LaborMarket | None = None,
-    ) -> Company | Literal["DEAD"] | Literal["LIQUIDATED"] | None:
+    ) -> "Company | None":
         """
         Execute one simulation step for the company.
 
         During each step, the company:
-        1. Invests in R&D
-        2. Attempts innovation
-        3. Produces goods
-        4. Sells goods
-        5. Pays wages
-        6. Pays taxes
-        7. May enter growth phase based on balance
-        8. May split if growth conditions are met
-        9. May go bankrupt if balance is too low
+        1. Ensures liquidity for operations
+        2. Handles R&D and innovation
+        3. Manages workforce and staffing
+        4. Runs core business operations
+        5. Manages growth and investment
+        6. Handles company lifecycle events (splits, bankruptcy)
 
         Args:
             current_step: Current simulation step number
             state: State agent providing regulation and markets
+            warengeld_bank: Warengeld bank for financing
+            savings_bank: Savings bank for long-term financing
 
         Returns:
-            - "DEAD" if company is bankrupt
-            - New Company instance if split occurred
-            - None otherwise
-            :param state:
-            :param labor_market:
-            :param savings_bank:
-            :param current_step:
-            :param warengeld_bank:
+            - Company: New company instance if split occurred
+            - "DEAD": If company went bankrupt
+            - "LIQUIDATED": If company was liquidated due to staffing issues
+            - None: Normal completion
         """
-        log(f"Company {self.unique_id} starting step {current_step}.", level="INFO")
+        self._log_step_start(current_step)
 
+        # Phase 1: Financial Preparation
         self._ensure_wage_liquidity(warengeld_bank)
+
+        # Phase 2: Innovation & R&D
         self._handle_rd_cycle()
+
+        # Phase 3: Workforce Management
         self._handle_zero_staff_counter()
         if self._should_liquidate_due_to_staffing():
             return self._liquidate_due_to_staff_loss(state)
         self._sync_labor_market(state)
+
+        # Phase 4: Core Business Operations
         self._run_operations()
+
+        # Phase 5: Growth & Investment
         self._trigger_growth_and_investment(savings_bank)
 
-        # Pass labor market if available from state
+        # Phase 6: Lifecycle Events
+        lifecycle_result = self._handle_lifecycle_events(state)
+        if lifecycle_result is not None:
+            return lifecycle_result
+
+        # Phase 7: Financial Cleanup
+        self._service_warengeld_credit(warengeld_bank)
+
+        self._log_step_completion(current_step)
+        return None
+
+    def _log_step_start(self, current_step: int) -> None:
+        """Log the start of a company step."""
+        self.log_metric("step_start", current_step)
+        log(f"Company {self.unique_id} starting step {current_step}.", level="INFO")
+
+    def _log_step_completion(self, current_step: int) -> None:
+        """Log the completion of a company step."""
+        self.log_metric("step_completion", current_step)
+        log(f"Company {self.unique_id} completed step {current_step}.", level="INFO")
+
+    def _handle_lifecycle_events(self, state: State | None) -> "Company | None":
+        """
+        Handle company lifecycle events (bankruptcy, splits).
+
+        Args:
+            state: State agent for liquidation payouts
+
+        Returns:
+            - Company: New company if split occurred
+            - "DEAD": If bankrupt
+            - "LIQUIDATED": If liquidated
+            - None: No lifecycle event
+        """
+        # Handle company splits
         lm = state.labor_market if state and hasattr(state, "labor_market") else None
         new_company = self._handle_company_split(lm)
+        if new_company is not None:
+            return new_company
 
+        # Check for bankruptcy
         if self.check_bankruptcy():
             log(
                 f"Company {self.unique_id} is removed from simulation due to bankruptcy.",
@@ -568,13 +609,8 @@ class Company(EconomicAgent, LineageMixin):
             )
             return "DEAD"
 
-        self._service_warengeld_credit(warengeld_bank)
-        log(f"Company {self.unique_id} completed step {current_step}.", level="INFO")
-        if new_company is not None:
-            return new_company
         return None
 
     def produce_output(self) -> None:
         """Deprecated wrapper maintained for compatibility."""
         self.produce()
-

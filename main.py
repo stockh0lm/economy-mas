@@ -1,22 +1,27 @@
 # main.py
 import json
-from typing import Literal
+import os
+import sys
+from pathlib import Path
+from typing import Any, Literal, TypedDict, cast
 
 from agents.bank import WarengeldBank
 from agents.clearing_agent import ClearingAgent
 from agents.company_agent import Company
+from agents.config_cache import GlobalConfigCache
 from agents.environmental_agency import EnvironmentalAgency, RecyclingCompany
 from agents.financial_market import FinancialMarket
 from agents.household_agent import Household
 from agents.labor_market import LaborMarket
+from agents.logging_utils import create_system_logger
 from agents.savings_bank_agent import SavingsBank
 from agents.state_agent import State
-from config import CONFIG_MODEL, SimulationConfig
+from config import CONFIG_MODEL, SimulationConfig, ConfigValidationError, load_simulation_config_from_yaml
 from logger import log, setup_logger
 from metrics import MetricsCollector
 
-# Type aliases
-type AgentResult = None | Literal["DEAD"] | object
+# Type aliases for improved type safety
+type AgentResult = None | Literal["DEAD"] | Literal["LIQUIDATED"] | Company | Household
 type AgentDict = dict[
     str,
     State
@@ -31,19 +36,43 @@ type AgentDict = dict[
     | list[object],
 ]
 
+class SimulationSummary(TypedDict):
+    """Type definition for simulation summary structure."""
+    State: dict[str, float]
+    Households: dict[str, dict[str, Any]]
+    Companies: dict[str, dict[str, Any]]
+    WarengeldBank: dict[str, float]
+    SavingsBank: dict[str, float]
+    ClearingAgent: dict[str, float]
+    EnvironmentalAgency: dict[str, float]
+    RecyclingCompany: dict[str, float]
 
-def initialize_agents(config: SimulationConfig) -> AgentDict:
-    """Initialize all simulation agents and their relationships."""
-    state: State = State(config.STATE_ID, config)
-    labor_market = LaborMarket(config.LABOR_MARKET_ID, config)
-    state.labor_market = labor_market
 
-    # Create initial households based on configuration
+def create_households(config: SimulationConfig, labor_market: LaborMarket) -> list[Household]:
+    """
+    Create initial households based on configuration.
+
+    Args:
+        config: Simulation configuration
+        labor_market: Labor market instance
+
+    Returns:
+        List of initialized household agents
+    """
+    def _resolve_initial_households() -> list:
+        if config.INITIAL_HOUSEHOLDS:
+            return list(config.INITIAL_HOUSEHOLDS)
+        pop = getattr(config, "population", None)
+        if pop is None or pop.num_households is None:
+            return []
+        template = pop.household_template
+        return [template for _ in range(pop.num_households)]
+
     households: list[Household] = []
-    for i, params in enumerate(config.initial_households):
+    for i, params in enumerate(_resolve_initial_households()):
         households.append(
             Household(
-                f"{config.HOUSEHOLD_ID_PREFIX}{i+1}",
+                f"{config.HOUSEHOLD_ID_PREFIX}{i+1}_g1",
                 income=params.income,
                 land_area=params.land_area,
                 environmental_impact=params.environmental_impact,
@@ -52,12 +81,34 @@ def initialize_agents(config: SimulationConfig) -> AgentDict:
             )
         )
 
-    # Create initial companies based on configuration
+    log(f"Created {len(households)} households", level="INFO")
+    return households
+
+def create_companies(config: SimulationConfig, labor_market: LaborMarket) -> list[Company]:
+    """
+    Create initial companies based on configuration.
+
+    Args:
+        config: Simulation configuration
+        labor_market: Labor market instance
+
+    Returns:
+        List of initialized company agents
+    """
+    def _resolve_initial_companies() -> list:
+        if config.INITIAL_COMPANIES:
+            return list(config.INITIAL_COMPANIES)
+        pop = getattr(config, "population", None)
+        if pop is None or pop.num_companies is None:
+            return []
+        template = pop.company_template
+        return [template for _ in range(pop.num_companies)]
+
     companies: list[Company] = []
-    for i, params in enumerate(config.initial_companies):
+    for i, params in enumerate(_resolve_initial_companies()):
         companies.append(
             Company(
-                f"{config.COMPANY_ID_PREFIX}{i+1}",
+                f"{config.COMPANY_ID_PREFIX}{i+1}_g1",
                 production_capacity=params.production_capacity,
                 land_area=params.land_area,
                 environmental_impact=params.environmental_impact,
@@ -66,9 +117,27 @@ def initialize_agents(config: SimulationConfig) -> AgentDict:
             )
         )
 
+    log(f"Created {len(companies)} companies", level="INFO")
+    return companies
+
+def initialize_agents(config: SimulationConfig) -> AgentDict:
+    """Initialize all simulation agents and their relationships."""
+    log("Initializing simulation agents...", level="INFO")
+
+    # Create core infrastructure agents
+    state: State = State(config.STATE_ID, config)
+    labor_market = LaborMarket(config.LABOR_MARKET_ID, config)
+    state.labor_market = labor_market
+
+    # Create economic agents using factory functions
+    households: list[Household] = create_households(config, labor_market)
+    companies: list[Company] = create_companies(config, labor_market)
+
+    # Create financial institutions
     warengeld_bank = WarengeldBank(config.BANK_ID, config)
     savings_bank = SavingsBank(config.SAVINGS_BANK_ID, config)
 
+    # Create regulatory and auxiliary agents
     clearing_agent = ClearingAgent(config.CLEARING_AGENT_ID, config)
     clearing_agent.monitored_banks.append(warengeld_bank)
     clearing_agent.monitored_savings_banks.append(savings_bank)
@@ -82,7 +151,10 @@ def initialize_agents(config: SimulationConfig) -> AgentDict:
     environmental_agency.attach_recycling_company(recycling_company)
     financial_market = FinancialMarket(config.FINANCIAL_MARKET_ID, config)
 
+    # Compile complete agent list
     all_agents: list[object] = households + companies + [state, warengeld_bank, savings_bank]
+
+    log(f"Agent initialization complete: {len(households)} households, {len(companies)} companies", level="INFO")
 
     return {
         "state": state,
@@ -240,13 +312,48 @@ def summarize_simulation(agents_dict: AgentDict) -> None:
     log(f"Simulation summary stored in {CONFIG_MODEL.SUMMARY_FILE}", level="INFO")
 
 
+def _resolve_config_from_args_or_env() -> SimulationConfig:
+    """Resolve SimulationConfig.
+
+    Order:
+    1) CLI: `--config PATH`
+    2) ENV: `SIM_CONFIG=PATH`
+    3) Default: `./config.yaml` (if it exists)
+    4) Fallback: `CONFIG_MODEL`
+
+    This keeps an easy zero-arg workflow while still allowing overrides.
+    """
+
+    cli_path: str | None = None
+    argv = sys.argv[1:]
+    if "--config" in argv:
+        idx = argv.index("--config")
+        if idx + 1 < len(argv):
+            cli_path = argv[idx + 1]
+
+    env_path = os.getenv("SIM_CONFIG")
+    path_str = cli_path or env_path
+
+    if path_str:
+        return load_simulation_config_from_yaml(str(Path(path_str)))
+
+    default_yaml = Path("config.yaml")
+    if default_yaml.exists():
+        return load_simulation_config_from_yaml(str(default_yaml))
+
+    return CONFIG_MODEL
+
+
 def main() -> None:
     """Main simulation execution function."""
     setup_logger()
+    system_logger = create_system_logger("Simulation")
+
+    system_logger.log_system_metric("Simulation started", 0, "event")
     log("Starting MAS simulation...", level="INFO")
     metrics = MetricsCollector()
 
-    config = CONFIG_MODEL
+    config = _resolve_config_from_args_or_env()
     num_steps: int = config.simulation_steps
 
     agents: AgentDict = initialize_agents(config)
@@ -284,9 +391,10 @@ def main() -> None:
         metrics.collect_household_metrics(agents["households"], step)
         metrics.calculate_global_metrics(step)
 
-    log("Simulation complete.", level="INFO")
-    summarize_simulation(agents)
-    metrics.export_metrics()
+        log("Simulation complete.", level="INFO")
+        system_logger.log_system_metric("Simulation completed successfully", 1, "event")
+        summarize_simulation(agents)
+        metrics.export_metrics()
 
 
 if __name__ == "__main__":

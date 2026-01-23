@@ -7,7 +7,7 @@ name = "wirtschaftssimulation"
 version = "0.1.0"
 description = "Multiagenten-Simulation des Geldsystems nach Kenawi"
 requires-python = ">=3.12"
-dependencies = ["pydantic>=2.7.4"]
+dependencies = ["pydantic>=2.7.4", "PyYAML>=6.0.2"]
 
 [tool.setuptools]
 py-modules = ["main", "config", "metrics", "logger"]
