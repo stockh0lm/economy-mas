@@ -96,7 +96,7 @@ class IntegrationWarengeldBank(StubWarengeldBank):
 
     def check_inventories(self, merchants: list[Company]) -> None:
         for merchant in merchants:
-            self.inventory_checks.append(merchant.inventory)
+            self.inventory_checks.append(merchant.finished_goods_units)
 
 
 class IntegrationSavingsBank(StubSavingsBank):
@@ -127,7 +127,7 @@ def test_company_step_handles_credit_growth_and_split() -> None:
         employee.employed = True
     initial_balance = 10.0
     company.employees = employees
-    company.balance = initial_balance
+    company.sight_balance = initial_balance
     initial_employee_count = len(employees)
     labor_market = StubLaborMarket(cfg.labor_market.starting_wage)
     state = StubState(labor_market)
@@ -193,7 +193,7 @@ def test_company_step_without_employees_skips_credit_and_production() -> None:
     )
     company = Company("company_no_workers", production_capacity=80.0, max_employees=5, config=cfg)
     company.employees = []
-    company.balance = 50.0
+    company.sight_balance = 50.0
 
     class PassiveWarengeldBank(StubWarengeldBank):
         def grant_credit(self, merchant: Company, amount: float) -> float:  # type: ignore[override]
@@ -205,13 +205,13 @@ def test_company_step_without_employees_skips_credit_and_production() -> None:
 
     assert new_company is None
     assert warengeld_bank.grant_calls == []
-    assert math.isclose(company.inventory, 0.0)
+    assert math.isclose(company.finished_goods_units, 0.0)
 
 
 def test_company_step_returns_dead_when_bankrupt() -> None:
     cfg = build_config({"company.bankruptcy_threshold": -5.0})
     company = Company("company_bankrupt", production_capacity=50.0, config=cfg)
-    company.balance = -10.0
+    company.sight_balance = -10.0
 
     result = company.step(current_step=3)
 
@@ -233,7 +233,7 @@ def test_company_step_handles_credit_denial_gracefully() -> None:
         worker.current_wage = wage
         worker.employed = True
     company.employees = employees
-    company.balance = 0.0
+    company.sight_balance = 0.0
 
     class DenyingWarengeldBank(StubWarengeldBank):
         def grant_credit(self, merchant: Company, amount: float) -> float:  # type: ignore[override]
@@ -249,7 +249,7 @@ def test_company_step_handles_credit_denial_gracefully() -> None:
     assert new_company is None
     assert warengeld_bank.credit_lines == {}
     assert len(warengeld_bank.grant_calls) == 1
-    assert company.balance <= 0.0
+    assert company.sight_balance <= 0.0
 
 
 def test_company_step_repayment_respects_working_capital_buffer() -> None:
@@ -262,7 +262,7 @@ def test_company_step_repayment_respects_working_capital_buffer() -> None:
     )
     company = Company("company_repay_buffer", production_capacity=60.0, config=cfg)
     company.employees = []
-    company.balance = 40.0
+    company.sight_balance = 40.0
 
     warengeld_bank = StubWarengeldBank()
     warengeld_bank.credit_lines[company.unique_id] = 30.0
@@ -270,7 +270,7 @@ def test_company_step_repayment_respects_working_capital_buffer() -> None:
     company.step(current_step=5, warengeld_bank=warengeld_bank)
 
     assert warengeld_bank.process_calls == [30.0]
-    assert math.isclose(company.balance, cfg.company.min_working_capital_buffer)
+    assert math.isclose(company.sight_balance, cfg.company.min_working_capital_buffer)
     assert math.isclose(warengeld_bank.credit_lines[company.unique_id], 0.0)
 
 
@@ -289,7 +289,7 @@ def test_company_step_growth_persists_and_releases_workers() -> None:
         worker.current_wage = cfg.labor_market.starting_wage
         worker.employed = True
     company.employees = employees.copy()
-    company.balance = 200.0
+    company.sight_balance = 200.0
 
     class TrackingLaborMarket(StubLaborMarket):
         def __init__(self, default_wage: float) -> None:
@@ -332,7 +332,7 @@ def test_company_state_bank_integration_multi_step() -> None:
     savings_bank = IntegrationSavingsBank()
 
     company = Company("company_integration", production_capacity=60.0, max_employees=5, config=cfg)
-    company.balance = 5.0
+    company.sight_balance = 5.0
     employees = [Household("emp_int_1", config=cfg), Household("emp_int_2", config=cfg), Household("emp_int_3", config=cfg)]
     for worker in employees:
         worker.current_wage = cfg.labor_market.starting_wage
@@ -346,13 +346,13 @@ def test_company_state_bank_integration_multi_step() -> None:
     warengeld_bank.check_inventories([company])
     assert warengeld_bank.inventory_checks
 
-    company.balance = 100.0
+    company.sight_balance = 100.0
     warengeld_bank.credit_lines[company.unique_id] = 20.0
     Company.step(company, 2, state=state, warengeld_bank=warengeld_bank, savings_bank=savings_bank)
     assert math.isclose(warengeld_bank.credit_lines[company.unique_id], 0.0)
-    assert company.balance >= cfg.company.min_working_capital_buffer
+    assert company.sight_balance >= cfg.company.min_working_capital_buffer
 
-    company.balance = 250.0
+    company.sight_balance = 250.0
     result = company.step(3, state=state, warengeld_bank=warengeld_bank, savings_bank=savings_bank)
     assert result is None or isinstance(result, Company)
     assert company.growth_counter >= 1
@@ -367,7 +367,7 @@ def test_company_auto_liquidates_when_staffless() -> None:
         }
     )
     company = Company("company_staffless", production_capacity=50.0, config=cfg)
-    company.balance = 100.0
+    company.sight_balance = 100.0
     company.employees = []
 
     class StubStateWithRevenue(StubState):
@@ -381,5 +381,5 @@ def test_company_auto_liquidates_when_staffless() -> None:
     assert company._zero_staff_steps == 1
     result = company.step(2, state=state)
     assert result == "LIQUIDATED"
-    assert company.balance == 0.0
+    assert company.sight_balance == 0.0
     assert state.tax_revenue == 50.0

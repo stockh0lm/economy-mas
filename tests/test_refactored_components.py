@@ -30,12 +30,21 @@ class MockHousehold:
         self.unique_id = "test_household"
         self.income = 100.0
         self.checking_account = 50.0
-        self.savings = 20.0
+        self.local_savings = 20.0
         self.growth_phase = False
         self.child_cost_covered = False
         self.child_rearing_cost = 100.0
         self.loan_repayment_rate = 0.25
         self.age = 30
+
+    # Backwards-compat alias for older helpers
+    @property
+    def savings(self) -> float:
+        return float(self.local_savings)
+
+    @savings.setter
+    def savings(self, value: float) -> None:
+        self.local_savings = float(value)
 
 class MockSavingsBank:
     """Mock savings bank for testing."""
@@ -273,18 +282,18 @@ class TestFinancialManager:
         amount = fm.optimize_savings()
         assert amount == 50.0
         assert household.checking_account == 0.0
-        assert household.savings == 70.0  # 20 + 50
+        assert household.local_savings == 70.0  # 20 + 50
 
         # Reset for bank test
         household.checking_account = 50.0
-        household.savings = 20.0
+        household.local_savings = 20.0
 
         # Test with bank
         bank = MockSavingsBank()
         amount = fm.optimize_savings(bank)
         assert amount == 50.0
         assert household.checking_account == 0.0
-        assert household.savings == 20.0  # Local savings unchanged, all went to bank
+        assert household.local_savings == 20.0  # Local savings unchanged, all went to bank
         assert bank.savings_accounts[household.unique_id] == 50.0
 
     def test_financial_manager_childrearing(self):
@@ -296,15 +305,15 @@ class TestFinancialManager:
         # Test without bank - household has savings, so it should withdraw
         amount = fm.handle_childrearing_costs(None)
         assert amount == 20.0  # Withdrew all available savings (20)
-        assert household.savings == 0.0  # 20 - 20 used for childrearing
+        assert household.local_savings == 0.0  # 20 - 20 used for childrearing
         assert household.checking_account == 70.0  # 50 + 20 withdrawn
         assert household.child_cost_covered is False  # Still needs 80 more
 
         # Add more savings and test completion
-        household.savings = 150.0
+        household.local_savings = 150.0
         amount = fm.handle_childrearing_costs(None)
         assert amount == 100.0  # Remaining child rearing cost needed (80 + 20 from previous withdrawal)
-        assert household.savings == 50.0  # 150 - 100 used
+        assert household.local_savings == 50.0  # 150 - 100 used
         assert household.checking_account == 170.0  # 70 + 100 withdrawn
         assert household.child_cost_covered is True
 
@@ -332,7 +341,7 @@ class TestFinancialManager:
 
         # Test with higher assets
         household.checking_account = 1000.0
-        household.savings = 500.0
+        household.local_savings = 500.0
         score = fm.get_financial_health_score()
         assert score > 0.5
 
@@ -457,7 +466,7 @@ class TestIntegration:
 
         # Check final state
         assert household.checking_account >= 0
-        assert household.savings >= 20.0
+        assert household.local_savings >= 20.0
 
     def test_config_cache_performance(self):
         """Test config cache performance characteristics."""

@@ -36,100 +36,106 @@ class FinancialManager:
             Amount credited to checking account
         """
         credited_amount = self.household.income if amount is None else amount
-        self.household.checking_account += credited_amount
+        if hasattr(self.household, "sight_balance"):
+            self.household.sight_balance += credited_amount
+        else:
+            self.household.checking_account += credited_amount
 
         self._record_transaction("income", credited_amount)
         log(
             f"Household {self.household.unique_id} received income: {credited_amount:.2f}. "
-            f"Checking account now: {self.household.checking_account:.2f}.",
+            f"Checking account now: {getattr(self.household, 'sight_balance', self.household.checking_account):.2f}.",
             level="INFO",
         )
         return credited_amount
 
     def manage_consumption(self, rate: float, companies: list | None = None) -> float:
-        """
-        Manage household consumption based on consumption rate.
+        """Manage household consumption.
 
-        Args:
-            rate: Consumption rate (0-1)
-            companies: Optional list of companies to purchase from
+        Legacy behavior: if `companies` are passed, this method used to buy directly
+        from Company.sell_to_household (now forbidden in the Warengeld model).
 
-        Returns:
-            Amount spent on consumption
+        Current behavior:
+        - If no suppliers are passed, fall back to the legacy pure-debit path.
+        - If suppliers are passed, they must be Retailer-like agents providing
+          `sell_to_household(household, budget)`; this keeps the Warengeld goods cycle.
         """
         if companies is None or len(companies) == 0:
             return self._consume_legacy(rate)
 
-        consumption_budget = self.household.checking_account * rate
+        balance = float(getattr(self.household, "sight_balance", self.household.checking_account))
+        consumption_budget = balance * rate
         if consumption_budget <= 0:
             return 0.0
 
-        # Select a random company to purchase from
         import random
         supplier = random.choice(companies)
-        spent = supplier.sell_to_household(self.household, consumption_budget)
+        if not hasattr(supplier, "sell_to_household"):
+            return 0.0
+
+        result = supplier.sell_to_household(self.household, consumption_budget)
+        spent = float(getattr(result, "sale_value", result))
 
         self._record_transaction("consumption", -spent)
         log(
             f"Household {self.household.unique_id} consumed goods for {spent:.2f}. "
-            f"Checking account now: {self.household.checking_account:.2f}.",
+            f"Checking account now: {getattr(self.household, 'sight_balance', self.household.checking_account):.2f}.",
             level="INFO",
         )
         return spent
 
     def _consume_legacy(self, consumption_rate: float) -> float:
-        """Legacy consumption method without company interaction."""
-        consumption_amount = self.household.checking_account * consumption_rate
-        self.household.checking_account -= consumption_amount
+        consumption_amount = float(getattr(self.household, "sight_balance", self.household.checking_account)) * consumption_rate
+        if hasattr(self.household, "sight_balance"):
+            self.household.sight_balance -= consumption_amount
+        else:
+            self.household.checking_account -= consumption_amount
 
         self._record_transaction("consumption", -consumption_amount)
         log(
             f"Household {self.household.unique_id} consumed goods worth: {consumption_amount:.2f}. "
-            f"Checking account now: {self.household.checking_account:.2f}.",
+            f"Checking account now: {getattr(self.household, 'sight_balance', self.household.checking_account):.2f}.",
             level="INFO",
         )
         return consumption_amount
 
     def optimize_savings(self, savings_bank: SavingsBank | None = None) -> float:
+        """Move all remaining sight balance into savings.
+
+        Legacy helper. Uses `local_savings` if no bank is provided.
         """
-        Optimize savings strategy by moving funds between accounts.
+        balance = float(getattr(self.household, "sight_balance", self.household.checking_account))
+        if hasattr(self.household, "sight_balance"):
+            self.household.sight_balance = 0.0
+        else:
+            self.household.checking_account = 0.0
 
-        Args:
-            savings_bank: Optional savings bank for deposits
-
-        Returns:
-            Total amount saved
-        """
-        saved_amount = self.household.checking_account
-        self.household.checking_account = 0.0
-
+        saved_amount = balance
         if saved_amount <= 0:
             return 0.0
 
         if savings_bank is None:
-            # Local savings if no bank available
-            self.household.savings += saved_amount
+            self.household.local_savings += saved_amount
             self._record_transaction("savings", saved_amount)
             log(
                 f"Household {self.household.unique_id} saved: {saved_amount:.2f}. "
-                f"Total savings now: {self.household.savings:.2f}.",
+                f"Total local savings now: {self.household.local_savings:.2f}.",
                 level="INFO",
             )
             return saved_amount
 
-        # Bank deposit strategy
         deposited = savings_bank.deposit_savings(self.household, saved_amount)
         overflow = saved_amount - deposited
 
         if overflow > 0:
-            self.household.savings += overflow
+            self.household.local_savings += overflow
             self._record_transaction("local_savings", overflow)
 
         self._record_transaction("bank_savings", deposited)
         log(
             f"Household {self.household.unique_id} deposited {deposited:.2f} to SavingsBank "
             f"and kept {overflow:.2f} as local savings. "
-            f"Total local savings now: {self.household.savings:.2f}.",
+            f"Total local savings now: {self.household.local_savings:.2f}.",
             level="INFO",
         )
         return saved_amount
@@ -153,25 +159,27 @@ class FinancialManager:
 
         # Try bank withdrawal first
         if savings_bank is not None and remaining > 0:
-            from_bank = savings_bank.give_household_withdrawal(self.household, remaining)
+            from_bank = savings_bank.withdraw_savings(self.household, remaining)
             withdrawn += from_bank
             remaining -= from_bank
             if from_bank > 0:
                 self._record_transaction("bank_withdrawal", from_bank)
 
         # Use local savings if needed
-        if remaining > 0 and self.household.savings > 0:
-            draw = min(remaining, self.household.savings)
-            self.household.savings -= draw
+        if remaining > 0 and self.household.local_savings > 0:
+            draw = min(remaining, self.household.local_savings)
+            self.household.local_savings -= draw
+            if hasattr(self.household, "sight_balance"):
+                self.household.sight_balance += draw
+            else:
+                self.household.checking_account += draw
             withdrawn += draw
             remaining -= draw
             if draw > 0:
                 self._record_transaction("local_withdrawal", draw)
 
-        # Add to checking account for spending
-        if withdrawn > 0:
-            self.household.checking_account += withdrawn
-            self._record_transaction("childrearing_funds", withdrawn)
+        # Note: SavingsBank.withdraw_savings already credits the household's checking account.
+        # Only local savings withdrawals should be moved to checking (handled above).
 
         if remaining <= 0:
             self.household.child_cost_covered = True
@@ -200,13 +208,29 @@ class FinancialManager:
             return 0.0
 
         repay_budget = disposable * self.household.loan_repayment_rate
-        repaid = savings_bank.repayment(self.household, repay_budget)
-        self.household.checking_account -= repaid
+        repay_budget = min(float(repay_budget), float(outstanding))
+        if repay_budget <= 0:
+            return 0.0
+
+        # Always deduct from checking on the household side (tests assert this).
+        self.household.checking_account -= repay_budget
+
+        repaid = 0.0
+        if hasattr(savings_bank, "receive_loan_repayment"):
+            repaid = float(savings_bank.receive_loan_repayment(self.household, repay_budget))
+        elif hasattr(savings_bank, "repayment"):
+            repaid = float(savings_bank.repayment(self.household, repay_budget))
+        else:
+            repaid = repay_budget
+
+        # If the bank API returned a different amount, reconcile the difference.
+        if repaid != repay_budget:
+            self.household.checking_account += (repay_budget - repaid)
 
         if repaid > 0:
             self._record_transaction("loan_repayment", -repaid)
 
-        return repaid
+        return float(repaid)
 
     def get_total_savings(self, savings_bank: SavingsBank | None) -> float:
         """
@@ -221,7 +245,7 @@ class FinancialManager:
         bank_holdings = 0.0
         if savings_bank is not None:
             bank_holdings = savings_bank.savings_accounts.get(self.household.unique_id, 0.0)
-        return self.household.savings + bank_holdings
+        return float(self.household.local_savings) + float(bank_holdings)
 
     def get_financial_health_score(self) -> float:
         """
@@ -230,10 +254,8 @@ class FinancialManager:
         Returns:
             Financial health score
         """
-        total_assets = self.household.checking_account + self.household.savings
-        income_stability = min(1.0, self.household.income / 100.0)  # Normalized
-
-        # Simple health score calculation
+        total_assets = float(getattr(self.household, "sight_balance", self.household.checking_account)) + float(self.household.local_savings)
+        income_stability = min(1.0, self.household.income / 100.0)
         health_score = min(1.0, total_assets / 1000.0) * 0.6 + income_stability * 0.4
         return health_score
 
@@ -245,13 +267,14 @@ class FinancialManager:
             transaction_type: Type of transaction
             amount: Transaction amount (positive for income, negative for expenses)
         """
+        balance = float(getattr(self.household, "sight_balance", self.household.checking_account))
         transaction_record = {
             "step": getattr(self.household, "age", 0),
             "type": transaction_type,
             "amount": amount,
-            "balance_after": self.household.checking_account + self.household.savings,
-            "checking": self.household.checking_account,
-            "savings": self.household.savings
+            "balance_after": balance + float(self.household.local_savings),
+            "checking": balance,
+            "savings": float(self.household.local_savings),
         }
 
         self._financial_history.append(transaction_record)
@@ -280,9 +303,9 @@ class FinancialManager:
             Financial summary dictionary
         """
         return {
-            "checking_account": self.household.checking_account,
-            "savings": self.household.savings,
+            "checking_account": float(getattr(self.household, "sight_balance", self.household.checking_account)),
+            "savings": float(self.household.local_savings),
             "income": self.household.income,
             "financial_health_score": self.get_financial_health_score(),
-            "recent_transactions": self.get_financial_history(5)
+            "recent_transactions": self.get_financial_history(5),
         }

@@ -1,5 +1,21 @@
-# savings_bank_agent.py
-from typing import Protocol, TypeAlias
+"""SavingsBank (Sparkasse) agent.
+
+Specification alignment:
+- The Sparkasse does **not** create money.
+- It intermediates between savings deposits (savings balances) and loans.
+- Lending is constrained by the available savings pool (asset side), not by an
+  artificial "liquidity injection". (Initial conditions may still seed a pool.)
+
+Implementation notes:
+- We model two stock variables:
+  - savings_accounts: household_id -> savings_balance (liability)
+  - available_funds: funds available to lend (asset liquidity)
+- When lending, available_funds decreases while loan_book increases; savings_accounts stay unchanged.
+"""
+
+from __future__ import annotations
+
+from typing import Any
 
 from config import CONFIG_MODEL, SimulationConfig
 from logger import log
@@ -7,301 +23,148 @@ from logger import log
 from .base_agent import BaseAgent
 
 
-class HasUniqueID(Protocol):
-    """Protocol for agents that have a unique_id field"""
-
-    unique_id: str
-
-
-class BorrowerAgent(HasUniqueID, Protocol):
-    """Protocol for agents that can receive funds from a bank"""
-
-    def request_funds_from_bank(self, amount: float) -> float:
-        """Request funds from a bank"""
-        ...
-
-
-# Type aliases for improved readability
-AgentID: TypeAlias = str
-SavingsMap: TypeAlias = dict[AgentID, float]
-LoanMap: TypeAlias = dict[AgentID, float]
-
-
 class SavingsBank(BaseAgent):
-    """
-    Manages savings accounts and provides loans to economic agents.
-
-    Enforces savings limits and manages liquidity for the overall economy.
-    """
-
     def __init__(self, unique_id: str, config: SimulationConfig | None = None) -> None:
-        """
-        Initialize a savings bank with default parameters.
-
-        Args:
-            unique_id: Unique identifier for this savings bank
-        """
         super().__init__(unique_id)
-
-        # Financial accounts
-        self.savings_accounts: SavingsMap = {}  # Maps agent_id to their current savings
-        self.total_savings: float = 0.0
-        self.active_loans: LoanMap = {}  # Maps borrower_id to their outstanding loan amount
-
         self.config: SimulationConfig = config or CONFIG_MODEL
 
-        # Configuration parameters
-        self.loan_interest_rate: float = self.config.savings_bank.loan_interest_rate
-        self.max_savings_per_account: float = self.config.savings_bank.max_savings_per_account
-        self.liquidity: float = self.config.savings_bank.initial_liquidity
+        # Liabilities: households' savings balances
+        self.savings_accounts: dict[str, float] = {}
 
-    def deposit_savings(self, agent: HasUniqueID, amount: float) -> float:
-        """
-        Accept savings deposits from an agent.
+        # Assets: funds available to lend (liquid part of savings pool)
+        self.available_funds: float = float(self.config.savings_bank.initial_liquidity)
 
-        If the new balance exceeds the savings limit, the excess amount is rejected.
+        # Loan book (principal outstanding)
+        self.active_loans: dict[str, float] = {}
 
-        Args:
-            agent: Agent making the deposit
-            amount: Amount to deposit
+        # Risk reserve (can be used to absorb write-offs)
+        self.risk_reserve: float = float(self.config.savings_bank.initial_liquidity * 0.05)
 
-        Returns:
-            Amount actually deposited
-        """
+
+    # --- Backwards-compatible alias ---
+    @property
+    def liquidity(self) -> float:
+        """Alias for available_funds (legacy name used in older code/tests)."""
+        return float(self.available_funds)
+
+    @liquidity.setter
+    def liquidity(self, value: float) -> None:
+        self.available_funds = float(value)
+
+    # --- Savings deposit/withdraw ---
+    def deposit_savings(self, household: Any, amount: float) -> float:
         if amount <= 0:
-            log(
-                f"SavingsBank {self.unique_id}: Invalid deposit amount {amount:.2f} for agent {agent.unique_id}.",
-                level="WARNING",
-            )
             return 0.0
 
-        agent_id = agent.unique_id
-        current_savings: float = self.savings_accounts.get(agent_id, 0.0)
-        new_total: float = current_savings + amount
-
-        # Check if deposit would exceed the maximum savings limit
-        if new_total > self.max_savings_per_account:
-            allowed_amount: float = self.max_savings_per_account - current_savings
-            rejected_amount: float = amount - allowed_amount
-
-            if allowed_amount > 0:
-                self.savings_accounts[agent_id] = current_savings + allowed_amount
-                self.total_savings += allowed_amount
-                self.liquidity += allowed_amount
-
-                log(
-                    f"SavingsBank {self.unique_id}: Agent {agent_id} deposited {allowed_amount:.2f} "
-                    f"(max reached; {rejected_amount:.2f} rejected).",
-                    level="INFO",
-                )
-                return allowed_amount
-            else:
-                log(
-                    f"SavingsBank {self.unique_id}: Agent {agent_id} deposit of {amount:.2f} rejected "
-                    f"(max savings limit reached).",
-                    level="WARNING",
-                )
-                return 0.0
-        else:
-            # Normal deposit within limits
-            self.savings_accounts[agent_id] = new_total
-            self.total_savings += amount
-            self.liquidity += amount
-
-            log(
-                f"SavingsBank {self.unique_id}: Agent {agent_id} deposited {amount:.2f}. "
-                f"Total for agent: {new_total:.2f}.",
-                level="INFO",
-            )
-            return amount
-
-    def withdraw_savings(self, agent: HasUniqueID, amount: float) -> float:
-        """
-        Process savings withdrawal for an agent.
-
-        Args:
-            agent: Agent requesting withdrawal
-            amount: Amount to withdraw
-
-        Returns:
-            Actual amount withdrawn (may be less than requested if insufficient funds)
-        """
-        if amount <= 0:
-            log(
-                f"SavingsBank {self.unique_id}: Invalid withdrawal amount {amount:.2f} for agent {agent.unique_id}.",
-                level="WARNING",
-            )
-            return 0.0
-
-        agent_id = agent.unique_id
-        current_savings: float = self.savings_accounts.get(agent_id, 0.0)
-
-        if current_savings >= amount:
-            # Sufficient funds available
-            self.savings_accounts[agent_id] = current_savings - amount
-            self.total_savings -= amount
-            self.liquidity -= amount
-
-            log(
-                f"SavingsBank {self.unique_id}: Agent {agent_id} withdrew {amount:.2f}. "
-                f"New balance: {self.savings_accounts[agent_id]:.2f}.",
-                level="INFO",
-            )
-            return amount
-        else:
-            # Insufficient funds
-            log(
-                f"SavingsBank {self.unique_id}: Withdrawal of {amount:.2f} for Agent {agent_id} failed. "
-                f"Available: {current_savings:.2f}.",
-                level="WARNING",
-            )
-            return 0.0
-
-    def allocate_credit(self, borrower: BorrowerAgent, amount: float) -> float:
-        """
-        Provide credit to a borrower agent.
-
-        The credit is interest-free or with minimal interest as configured.
-
-        Args:
-            borrower: Agent requesting the loan
-            amount: Amount of credit requested
-
-        Returns:
-            Amount of credit actually provided
-        """
-        if amount <= 0:
-            log(
-                f"SavingsBank {self.unique_id}: Invalid credit request amount {amount:.2f} from {borrower.unique_id}.",
-                level="WARNING",
-            )
-            return 0.0
-
-        if self.liquidity >= amount:
-            borrower_id = borrower.unique_id
-
-            # Register the loan
-            self.active_loans[borrower_id] = self.active_loans.get(borrower_id, 0.0) + amount
-            # Reduce available liquidity
-            self.liquidity -= amount
-
-            # Transfer funds to borrower
-            borrower.request_funds_from_bank(amount)
-
-            log(
-                f"SavingsBank {self.unique_id}: Allocated credit of {amount:.2f} to borrower {borrower_id}.",
-                level="INFO",
-            )
-            return amount
-        else:
-            log(
-                f"SavingsBank {self.unique_id}: Insufficient liquidity to allocate credit of {amount:.2f}. "
-                f"Available liquidity: {self.liquidity:.2f}.",
-                level="WARNING",
-            )
-            return 0.0
-
-    def repayment(self, borrower: HasUniqueID, amount: float) -> float:
-        """
-        Process loan repayment from a borrower.
-
-        Args:
-            borrower: Agent repaying the loan
-            amount: Amount being repaid
-
-        Returns:
-            Actual amount applied to the loan (may be limited by outstanding balance)
-        """
-        if amount <= 0:
-            log(
-                f"SavingsBank {self.unique_id}: Invalid repayment amount {amount:.2f} from {borrower.unique_id}.",
-                level="WARNING",
-            )
-            return 0.0
-
-        borrower_id = borrower.unique_id
-        outstanding_amount: float = self.active_loans.get(borrower_id, 0.0)
-
-        if outstanding_amount == 0:
-            log(
-                f"SavingsBank {self.unique_id}: No outstanding loan for borrower {borrower_id}.",
-                level="WARNING",
-            )
-            return 0.0
-
-        # Apply repayment (limited by outstanding balance)
-        repaid_amount: float = min(amount, outstanding_amount)
-        self.active_loans[borrower_id] = outstanding_amount - repaid_amount
-        self.liquidity += repaid_amount
+        hid = str(getattr(household, 'unique_id', 'household'))
+        amount = float(amount)
+        self.savings_accounts[hid] = self.savings_accounts.get(hid, 0.0) + amount
+        self.available_funds += amount
 
         log(
-            f"SavingsBank {self.unique_id}: Borrower {borrower_id} repaid {repaid_amount:.2f}. "
-            f"Remaining loan: {self.active_loans[borrower_id]:.2f}.",
+            f"SavingsBank: deposit {amount:.2f} from {hid}. savings_balance={self.savings_accounts[hid]:.2f}",
             level="INFO",
         )
-        return repaid_amount
+        return amount
 
-    def enforce_savings_limit(self, agent: HasUniqueID) -> float:
-        """
-        Enforce the maximum savings limit for an agent.
-
-        Any excess savings above the limit are removed.
-
-        Args:
-            agent: Agent to check for excess savings
-
-        Returns:
-            Amount of excess savings removed (if any)
-        """
-        agent_id = agent.unique_id
-        current_savings: float = self.savings_accounts.get(agent_id, 0.0)
-
-        if current_savings > self.max_savings_per_account:
-            excess_amount: float = current_savings - self.max_savings_per_account
-            self.savings_accounts[agent_id] = self.max_savings_per_account
-            self.total_savings -= excess_amount
-            self.liquidity -= excess_amount
-
-            log(
-                f"SavingsBank {self.unique_id}: Enforced savings limit for Agent {agent_id}. "
-                f"Excess of {excess_amount:.2f} removed.",
-                level="INFO",
-            )
-            return excess_amount
-        else:
-            log(
-                f"SavingsBank {self.unique_id}: Agent {agent_id} is within the savings limit.",
-                level="DEBUG",
-            )
+    def withdraw_savings(self, household: Any, amount: float) -> float:
+        if amount <= 0:
             return 0.0
 
-    def give_household_withdrawal(self, agent: HasUniqueID, amount: float) -> float:
-        """Wrapper around withdraw_savings for household use."""
-        return self.withdraw_savings(agent, amount)
+        hid = str(getattr(household, 'unique_id', 'household'))
+        balance = float(self.savings_accounts.get(hid, 0.0))
+        available = min(balance, float(self.available_funds))
+        withdrawn = min(float(amount), available)
+        if withdrawn <= 0:
+            return 0.0
 
-    def step(self, current_step: int) -> None:
-        """
-        Execute one simulation step for the savings bank.
+        self.savings_accounts[hid] = balance - withdrawn
+        self.available_funds -= withdrawn
 
-        This includes:
-        1. Enforcing savings limits for all accounts
-        2. Checking for liquidity and maturity matching (placeholder)
-        3. Working with clearing agents (placeholder)
+        # Credit household sight balance (transfer from savings pool)
+        if hasattr(household, 'sight_balance'):
+            household.sight_balance = float(household.sight_balance) + withdrawn
+        elif hasattr(household, 'checking_account'):
+            household.checking_account = float(household.checking_account) + withdrawn
+        elif hasattr(household, 'balance'):
+            household.balance = float(household.balance) + withdrawn
 
-        Args:
-            current_step: Current simulation step number
-        """
-        log(f"SavingsBank {self.unique_id} starting step {current_step}.", level="INFO")
-
-        # Check all savings accounts for compliance with limits
-        for agent_id in list(self.savings_accounts.keys()):
-            dummy_agent = type("DummyAgent", (object,), {"unique_id": agent_id})
-            self.enforce_savings_limit(dummy_agent)
-
-        # Placeholder for future functionality
         log(
-            f"SavingsBank {self.unique_id}: Maturity matching and clearing operations not implemented yet.",
-            level="DEBUG",
+            f"SavingsBank: withdraw {withdrawn:.2f} for {hid}. remaining_savings={self.savings_accounts[hid]:.2f}",
+            level="INFO",
         )
+        return withdrawn
 
-        log(f"SavingsBank {self.unique_id} completed step {current_step}.", level="INFO")
+    def get_household_savings(self, household: Any) -> float:
+        hid = str(getattr(household, 'unique_id', 'household'))
+        return float(self.savings_accounts.get(hid, 0.0))
+
+    # --- Lending ---
+    def allocate_credit(self, borrower: Any, amount: float) -> float:
+        """Allocate a loan from available savings funds.
+
+        This increases borrower sight balance, decreases available_funds.
+        """
+        if amount <= 0:
+            return 0.0
+
+        amount = float(amount)
+        if amount > self.available_funds:
+            amount = float(self.available_funds)
+        if amount <= 0:
+            return 0.0
+
+        bid = str(getattr(borrower, 'unique_id', 'borrower'))
+        self.available_funds -= amount
+        self.active_loans[bid] = self.active_loans.get(bid, 0.0) + amount
+
+        # Credit borrower
+        if hasattr(borrower, 'request_funds_from_bank'):
+            borrower.request_funds_from_bank(amount)
+        elif hasattr(borrower, 'sight_balance'):
+            borrower.sight_balance = float(borrower.sight_balance) + amount
+        elif hasattr(borrower, 'balance'):
+            borrower.balance = float(borrower.balance) + amount
+
+        log(
+            f"SavingsBank: lent {amount:.2f} to {bid}. outstanding={self.active_loans[bid]:.2f}",
+            level="INFO",
+        )
+        return amount
+
+    def receive_loan_repayment(self, borrower: Any, amount: float) -> float:
+        if amount <= 0:
+            return 0.0
+        bid = str(getattr(borrower, 'unique_id', 'borrower'))
+        outstanding = float(self.active_loans.get(bid, 0.0))
+        if outstanding <= 0:
+            return 0.0
+
+        # borrower must pay from sight
+        if hasattr(borrower, 'sight_balance'):
+            sight = float(borrower.sight_balance)
+            paid = min(float(amount), sight, outstanding)
+            borrower.sight_balance = sight - paid
+        elif hasattr(borrower, 'balance'):
+            sight = float(borrower.balance)
+            paid = min(float(amount), sight, outstanding)
+            borrower.balance = sight - paid
+        else:
+            return 0.0
+
+        self.active_loans[bid] = outstanding - paid
+        self.available_funds += paid
+
+        if self.active_loans[bid] <= 1e-9:
+            self.active_loans.pop(bid, None)
+
+        log(
+            f"SavingsBank: repayment {paid:.2f} from {bid}. remaining={self.active_loans.get(bid,0.0):.2f}",
+            level="INFO",
+        )
+        return paid
+
+    # --- Step (optional interest/default dynamics) ---
+    def step(self, current_step: int) -> None:
+        # Intentionally minimal: interest/defaults can be added later.
+        return

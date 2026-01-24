@@ -1,14 +1,11 @@
-# economic_agent.py
-from .base_agent import BaseAgent
+"""LEGACY (removed): EconomicAgent
 
+This file previously contained a dummy agent that mutated `balance` and printed to stdout.
+It was not used anywhere in the simulation or tests and conflicted with the project goal
+of having explicit, spec-aligned monetary primitives.
 
-class EconomicAgent(BaseAgent):
-    def __init__(self, unique_id):
-        super().__init__(unique_id)
-        # Zusätzliche Attribute für ökonomische Agenten
-        self.balance: float = 0.0
+If we ever need a shared base for economically active agents, we should define it in terms
+of explicit balance-sheet accounts (e.g., `sight_balance`) and keep it side-effect free.
+"""
 
-    def step(self, current_step):
-        # Beispielhafte wirtschaftliche Aktion: Balance aktualisieren
-        self.balance += 1  # Dummy-Update, später z.B. Interaktionen, Kredite, etc.
-        print(f"Economic Agent {self.unique_id}: balance = {self.balance} at step {current_step}.")
+# Intentionally left without runtime symbols.

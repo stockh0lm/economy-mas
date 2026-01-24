@@ -111,10 +111,13 @@ class EnvironmentalAgency(BaseAgent):
             tax: float = agent.environmental_impact * tax_rate
             total_tax += tax
 
-            # Deduct tax from agent's balance if available
+            # Deduct tax from agent's balances if available
             if isinstance(agent, BillingAgent):
                 billing_agent = cast(BillingAgent, agent)
-                billing_agent.balance -= tax
+                if hasattr(billing_agent, "sight_balance"):
+                    billing_agent.sight_balance = float(getattr(billing_agent, "sight_balance")) - tax
+                else:
+                    billing_agent.balance -= tax
 
             # Route waste to recycling company if available
             if self.recycling_company:
@@ -163,10 +166,13 @@ class EnvironmentalAgency(BaseAgent):
             excess: float = company.environmental_impact - max_impact
             penalty: float = excess * self.penalty_factor
 
-            # Apply penalty if company has balance attribute
+            # Apply penalty if company has balances
             if isinstance(company, BillingAgent):
                 billing_company = cast(BillingAgent, company)
-                billing_company.balance -= penalty
+                if hasattr(billing_company, "sight_balance"):
+                    billing_company.sight_balance = float(getattr(billing_company, "sight_balance")) - penalty
+                else:
+                    billing_company.balance -= penalty
 
             log(
                 f"EnvironmentalAgency {self.unique_id} audited company {company.unique_id} and imposed "

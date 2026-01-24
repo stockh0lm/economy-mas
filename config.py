@@ -32,6 +32,13 @@ class InitialCompany(BaseModel):
     environmental_impact: float = Field(5.0, ge=0)
 
 
+class InitialRetailer(BaseModel):
+    initial_cc_limit: float = Field(500.0, ge=0)
+    target_inventory_value: float = Field(200.0, ge=0)
+    land_area: float = Field(20.0, ge=0)
+    environmental_impact: float = Field(1.0, ge=0)
+
+
 class BaseConfigModel(BaseModel):
     model_config = ConfigDict(validate_default=True, frozen=False)
 
@@ -42,8 +49,12 @@ class PopulationConfig(BaseConfigModel):
     num_households: PositiveInt | None = None
     num_companies: PositiveInt | None = None
 
+    num_retailers: PositiveInt | None = None
+
     household_template: InitialHousehold = Field(default_factory=InitialHousehold)
     company_template: InitialCompany = Field(default_factory=InitialCompany)
+
+    retailer_template: InitialRetailer = Field(default_factory=InitialRetailer)
 
     seed: int | None = None
 
@@ -70,6 +81,13 @@ def _default_companies() -> list[InitialCompany]:
         InitialCompany(production_capacity=80, land_area=80, environmental_impact=4),
     ]
 
+
+
+def _default_retailers() -> list[InitialRetailer]:
+    return [
+        InitialRetailer(initial_cc_limit=500, target_inventory_value=200, land_area=20, environmental_impact=1),
+        InitialRetailer(initial_cc_limit=500, target_inventory_value=200, land_area=20, environmental_impact=1),
+    ]
 
 def _default_state_budget_allocation() -> dict[str, float]:
     return {"infrastructure": 0.5, "social": 0.3, "environment": 0.2}
@@ -173,8 +191,25 @@ class CompanyConfig(BaseConfigModel):
     zero_staff_liquidation_state_share: float = Field(1.0, ge=0, le=1)
 
 
+class RetailerConfig(BaseConfigModel):
+    # Kontokorrent-Kreditrahmen (zinsenfrei) wird bei Initialisierung gesetzt; Anpassung ist politisch/vertraglich geregelt.
+    initial_cc_limit: float = Field(500.0, ge=0)
+    target_inventory_value: float = Field(200.0, ge=0)
+    reorder_point_ratio: float = Field(0.5, ge=0, le=1)
+    working_capital_buffer: float = Field(25.0, ge=0)
+    price_markup: float = Field(0.2, ge=0)
+    # Abschreibung / Obsoleszenz (pro Schritt, wenn Schritt=Tag)
+    obsolescence_rate: float = Field(0.001, ge=0, le=1)
+    # Anteil des geschätzten Gewinns, der in Warenwertberichtigungskonten fließt
+    write_down_reserve_share: float = Field(0.05, ge=0, le=1)
+    # Automatische Tilgung: ab welchem Überschuss wird Kontokorrent zurückgeführt?
+    auto_repay: bool = True
+
 class BankConfig(BaseConfigModel):
     fee_rate: float = Field(0.01, ge=0)
+    base_account_fee: float = Field(0.0, ge=0)
+    positive_balance_fee_rate: float = Field(0.0, ge=0)
+    negative_balance_fee_rate: float = Field(0.0, ge=0)
     inventory_check_interval: PositiveInt = 3
     inventory_coverage_threshold: float = Field(0.8, gt=0)
     base_credit_reserve_ratio: float = Field(0.1, gt=0)
@@ -220,6 +255,16 @@ class EnvironmentalConfig(BaseConfigModel):
 
 class ClearingConfig(BaseConfigModel):
     hyperwealth_threshold: float = Field(1_000_000.0, gt=0)
+    # Audit- und Reserve-Mechanik (Warengeld-Clearingstelle)
+    audit_interval: PositiveInt = 90  # z.B. 90 Schritte ~ Quartal, wenn Schritt=Tag
+    required_reserve_ratio: float = Field(0.1, ge=0, le=1)
+    reserve_ratio_step: float = Field(0.02, ge=0, le=1)
+    reserve_bounds_min: float = Field(0.05, ge=0, le=1)
+    reserve_bounds_max: float = Field(0.3, ge=0, le=1)
+    # Sichtguthaben-Abschmelzung (nur Überschuss über Freibetrag)
+    sight_allowance_multiplier: float = Field(1.0, ge=0)
+    sight_excess_decay_rate: float = Field(0.01, ge=0, le=1)
+    # Legacy: alte Liquidity-Balancing Parameter
     desired_bank_liquidity: float = Field(1000.0, ge=0)
     desired_savings_bank_liquidity: float = Field(500.0, ge=0)
 
@@ -245,6 +290,7 @@ class SimulationConfig(BaseConfigModel):
     tax_rates: TaxRates = Field(default_factory=TaxRates)
     household: HouseholdConfig = Field(default_factory=HouseholdConfig)
     company: CompanyConfig = Field(default_factory=CompanyConfig)
+    retailer: RetailerConfig = Field(default_factory=RetailerConfig)
     bank: BankConfig = Field(default_factory=BankConfig)
     savings_bank: SavingsBankConfig = Field(default_factory=SavingsBankConfig)
     labor_market: LaborMarketConfig = Field(default_factory=LaborMarketConfig)
@@ -273,8 +319,10 @@ class SimulationConfig(BaseConfigModel):
     LABOR_MARKET_ID: str = "labor_market_1"
     HOUSEHOLD_ID_PREFIX: str = "household_"
     COMPANY_ID_PREFIX: str = "company_"
+    RETAILER_ID_PREFIX: str = "retailer_"
     INITIAL_HOUSEHOLDS: list[InitialHousehold] = Field(default_factory=_default_households)
     INITIAL_COMPANIES: list[InitialCompany] = Field(default_factory=_default_companies)
+    INITIAL_RETAILERS: list[InitialRetailer] = Field(default_factory=_default_retailers)
     INITIAL_JOB_POSITIONS_PER_COMPANY: PositiveInt = 3
     state_budget_allocation: dict[str, float] = Field(default_factory=_default_state_budget_allocation)
 
@@ -285,6 +333,11 @@ class SimulationConfig(BaseConfigModel):
     @property
     def initial_companies(self) -> list[InitialCompany]:
         return self.INITIAL_COMPANIES
+
+
+    @property
+    def initial_retailers(self) -> list[InitialRetailer]:
+        return self.INITIAL_RETAILERS
 
     @property
     def summary_file(self) -> str:
@@ -338,6 +391,13 @@ class SimulationConfig(BaseConfigModel):
         if self.population.num_companies is not None:
             return self.population.num_companies
         return len(self.INITIAL_COMPANIES)
+
+
+    def get_effective_retailer_count(self) -> int:
+        """Get the effective number of retailers that will be created."""
+        if self.population.num_retailers is not None:
+            return self.population.num_retailers
+        return len(self.INITIAL_RETAILERS)
 
     def validate_economic_parameters(self) -> None:
         """Validate that economic parameters are within reasonable bounds."""
@@ -402,7 +462,7 @@ def load_simulation_config_from_yaml(path: str) -> SimulationConfig:
         FileNotFoundError: If config file doesn't exist
         ModuleNotFoundError: If YAML parser not installed
         TypeError: If YAML structure is invalid
-        ConfigValidationError: If configuration validation fails
+        ConfigValidationError: If configuration validation fails in a non-schema way
     """
     try:
         import yaml  # type: ignore[import-not-found]
@@ -427,11 +487,21 @@ def load_simulation_config_from_yaml(path: str) -> SimulationConfig:
         msg = "Top-level YAML config must be a mapping/object."
         raise TypeError(msg)
 
+    # Let schema validation errors propagate as-is (tests assert this).
+    from pydantic import ValidationError as PydanticValidationError  # type: ignore
+    try:
+        from pydantic_core import ValidationError as CoreValidationError  # type: ignore
+    except Exception:  # pragma: no cover
+        CoreValidationError = None  # type: ignore
+
     try:
         config = load_simulation_config(cast(Mapping[str, ConfigValue], raw))
         config.validate_all()
         return config
     except Exception as e:
+        # Keep schema validation errors unwrapped for tests and callers.
+        if type(e).__module__.startswith("pydantic"):
+            raise
         raise ConfigValidationError(f"Configuration validation failed: {str(e)}", [str(e)])
 
 def validate_config_compatibility(config: SimulationConfig) -> None:

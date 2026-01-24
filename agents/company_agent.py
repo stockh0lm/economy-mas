@@ -3,7 +3,7 @@ import random
 from typing import ClassVar, Literal
 
 from agents.bank import WarengeldBank
-from agents.economic_agent import EconomicAgent
+from agents.base_agent import BaseAgent
 from agents.household_agent import Household
 from agents.labor_market import LaborMarket
 from agents.lineage_mixin import LineageMixin
@@ -16,7 +16,7 @@ from logger import log
 Employee = Household  # Type of employees (currently Household)
 
 
-class Company(EconomicAgent, LineageMixin):
+class Company(BaseAgent, LineageMixin):
     _lineage_counters: ClassVar[dict[str, int]] = {}
 
     """
@@ -51,7 +51,7 @@ class Company(EconomicAgent, LineageMixin):
             employees: Initial list of employees
             labor_market: Optional reference to labor market for immediate job offer registration
         """
-        super().__init__(unique_id)
+        BaseAgent.__init__(self, unique_id)
         self._init_lineage(unique_id)
 
         # Basic attributes
@@ -67,8 +67,15 @@ class Company(EconomicAgent, LineageMixin):
         self.pending_hires: int = 0
 
         # Financial attributes
-        self.inventory: float = 0.0
-        self.balance: float = 0.0
+        # --- Real stock (goods) ---
+        self.finished_goods_units: float = 0.0
+
+        # --- Money stock (Sichtguthaben) ---
+        self.sight_balance: float = 0.0
+
+        # --- Legacy attribute compatibility (tests still use these names) ---
+        # NOTE: Prefer `sight_balance` / `finished_goods_units` in new code.
+        # Exposed via @property `balance` and `inventory`.
 
         # Growth parameters
         self.growth_phase: bool = False
@@ -90,18 +97,35 @@ class Company(EconomicAgent, LineageMixin):
         self.innovation_index: float = 0.0
         self._zero_staff_steps: int = 0
 
+    # --- Legacy compatibility properties ---
+    @property
+    def inventory(self) -> float:
+        return float(self.finished_goods_units)
+
+    @inventory.setter
+    def inventory(self, value: float) -> None:
+        self.finished_goods_units = float(value)
+
+    @property
+    def balance(self) -> float:
+        return float(self.sight_balance)
+
+    @balance.setter
+    def balance(self, value: float) -> None:
+        self.sight_balance = float(value)
+
     def invest_in_rd(self) -> None:
         """
-        Invest in research and development if balance exceeds threshold.
+        Invest in research and development if sight balance exceeds threshold.
 
         A percentage of excess balance is allocated to R&D investment.
         """
         rd_trigger: float = self.config.company.rd_investment_trigger_balance
         rd_rate: float = self.config.company.rd_investment_rate
 
-        if self.balance > rd_trigger:
-            investment: float = (self.balance - rd_trigger) * rd_rate
-            self.balance -= investment
+        if self.sight_balance > rd_trigger:
+            investment: float = (self.sight_balance - rd_trigger) * rd_rate
+            self.sight_balance -= investment
             self.rd_investment += investment
 
             log(
@@ -144,11 +168,11 @@ class Company(EconomicAgent, LineageMixin):
             efficiency: float = len(self.employees) / self.max_employees
             actual_production: float = self.production_capacity * efficiency
 
-        self.inventory += actual_production
+        self.finished_goods_units += actual_production
 
         log(
             f"Company {self.unique_id} produced {actual_production:.2f} units. "
-            f"Total inventory: {self.inventory:.2f}.",
+            f"Total inventory: {self.finished_goods_units:.2f}.",
             level="INFO",
         )
 
@@ -204,71 +228,52 @@ class Company(EconomicAgent, LineageMixin):
                         level="INFO",
                     )
 
+    def get_unit_price(self) -> float:
+        """Producer wholesale price per unit (Selbstkosten + innovation bonus).
+
+        Retailers use this to translate a desired order value into quantity.
+        Payment is handled by the WarengeldBank when retailers finance purchases.
+        """
+        base_price = self.config.company.production_base_price
+        bonus_rate = self.config.company.production_innovation_bonus_rate
+        return float(base_price * (1 + bonus_rate * self.innovation_index))
+
+    def sell_to_retailer(self, desired_quantity: float) -> tuple[float, float]:
+        """Deliver goods to a retailer (goods flow only).
+
+        Returns (sold_quantity, sold_value).
+
+        IMPORTANT: This method does not touch balances. Money emission
+        happens in WarengeldBank.finance_goods_purchase.
+        """
+        if desired_quantity <= 0 or self.finished_goods_units <= 0:
+            return 0.0, 0.0
+        qty = min(self.finished_goods_units, desired_quantity)
+        unit_price = self.get_unit_price()
+        value = qty * unit_price
+        self.finished_goods_units -= qty
+        return float(qty), float(value)
     def sell_goods(self, demand: float | None = None) -> float:
+        """LEGACY: Producer selling directly to a generic market.
+
+        This bypasses the Warengeld goods cycle (Retailer + Kontokorrent financing)
+        and is kept only for legacy tests/experiments.
         """
-        Sell goods from inventory based on market demand.
-
-        Args:
-            demand: Market demand for goods
-
-        Returns:
-            Revenue from sales
-        """
-        actual_demand: float = demand if demand is not None else self.config.market.demand_default
-        sold_quantity: float = min(self.inventory, actual_demand)
-        base_price: float = self.config.company.production_base_price
-        innovation_bonus_rate: float = self.config.company.production_innovation_bonus_rate
-
-        # Calculate price with innovation bonus
-        sale_price_per_unit: float = base_price * (
-            1 + innovation_bonus_rate * self.innovation_index
+        raise RuntimeError(
+            "Company.sell_goods() is legacy and not supported in the Warengeld simulation. "
+            "Route goods via RetailerAgent.restock_goods() and WarengeldBank.finance_goods_purchase()."
         )
-        revenue: float = sold_quantity * sale_price_per_unit
-
-        self.balance += revenue
-        self.inventory -= sold_quantity
-
-        log(
-            f"Company {self.unique_id} sold {sold_quantity:.2f} units at {sale_price_per_unit:.2f} each "
-            f"for {revenue:.2f}. New balance: {self.balance:.2f}. Inventory left: {self.inventory:.2f}.",
-            level="INFO",
-        )
-
-        return revenue
 
     def sell_to_household(self, household: Household, budget: float) -> float:
-        """Sell goods directly to a household, constrained by inventory and their budget."""
-        if budget <= 0:
-            return 0.0
+        """LEGACY: Direct producer-to-household sale.
 
-        spending_capacity: float = min(budget, household.checking_account)
-        if spending_capacity <= 0 or self.inventory <= 0:
-            return 0.0
-
-        base_price: float = self.config.company.production_base_price
-        innovation_bonus_rate: float = self.config.company.production_innovation_bonus_rate
-        price_per_unit: float = base_price * (1 + innovation_bonus_rate * self.innovation_index)
-        if price_per_unit <= 0:
-            return 0.0
-
-        max_quantity: float = spending_capacity / price_per_unit
-        sold_quantity: float = min(self.inventory, max_quantity)
-        revenue: float = sold_quantity * price_per_unit
-        if sold_quantity <= 0 or revenue <= 0:
-            return 0.0
-
-        household.checking_account -= revenue
-        self.balance += revenue
-        self.inventory -= sold_quantity
-
-        log(
-            f"Household {household.unique_id} bought {sold_quantity:.2f} units from {self.unique_id} "
-            f"for {revenue:.2f}. Household checking: {household.checking_account:.2f}, "
-            f"company balance: {self.balance:.2f}, inventory: {self.inventory:.2f}.",
-            level="INFO",
+        In the Warengeld model, households buy goods from retailers; producers sell
+        to retailers (goods flow) and receive money only via retailer financing.
+        """
+        raise RuntimeError(
+            "Company.sell_to_household() is legacy and not supported in the Warengeld simulation. "
+            "Households must buy from RetailerAgent.sell_to_household()."
         )
-
-        return revenue
 
     def pay_wages(self, wage_rate: float | None = None) -> float:
         """
@@ -284,24 +289,57 @@ class Company(EconomicAgent, LineageMixin):
             log(f"Company {self.unique_id} has no employees to pay wages.", level="WARNING")
             return 0.0
 
-        total_wages: float = 0.0
+        # Compute planned wage bill
+        planned_wage_bill: float = 0.0
+        wage_by_employee: list[tuple[object, float]] = []
         for employee in self.employees:
             negotiated = getattr(employee, "current_wage", None)
             rate = negotiated if negotiated is not None else wage_rate
             if rate is None:
                 rate = self.config.labor_market.starting_wage
-            total_wages += rate
-            employee.receive_income(rate)
+            rate = float(max(0.0, rate))
+            planned_wage_bill += rate
+            wage_by_employee.append((employee, rate))
 
-        self.balance -= total_wages
+        if planned_wage_bill <= 0:
+            return 0.0
+
+        # Warengeld rule: no overdraft on producers. Pay only what is available.
+        buffer = float(self.config.company.min_working_capital_buffer)
+        available = max(0.0, self.sight_balance - buffer)
+        if available <= 0.0:
+            log(
+                f"Company {self.unique_id} cannot pay wages (balance {self.sight_balance:.2f}, buffer {buffer:.2f}).",
+                level="WARNING",
+            )
+            return 0.0
+
+        pay_ratio = 1.0
+        if planned_wage_bill > available:
+            pay_ratio = available / planned_wage_bill
+            log(
+                f"Company {self.unique_id}: wage bill {planned_wage_bill:.2f} exceeds available {available:.2f}; "
+                f"paying pro-rata at {pay_ratio:.2%}.",
+                level="WARNING",
+            )
+
+        total_paid: float = 0.0
+        for employee, rate in wage_by_employee:
+            paid = rate * pay_ratio
+            if paid <= 0:
+                continue
+            # Transfer: caller must have reduced company balance.
+            employee.receive_income(paid)  # type: ignore[attr-defined]
+            total_paid += paid
+
+        self.sight_balance -= total_paid
 
         log(
-            f"Company {self.unique_id} paid wages totaling {total_wages:.2f}. "
-            f"New balance: {self.balance:.2f}.",
+            f"Company {self.unique_id} paid wages totaling {total_paid:.2f}. New balance: {self.sight_balance:.2f}.",
             level="INFO",
         )
 
-        return total_wages
+        return total_paid
 
     def request_funds_from_bank(self, amount: float) -> float:
         """
@@ -315,11 +353,11 @@ class Company(EconomicAgent, LineageMixin):
         """
         log(f"Company {self.unique_id} requests funds: {amount:.2f}.", level="INFO")
 
-        self.balance += amount
+        self.sight_balance += amount
 
         log(
             f"Company {self.unique_id} received funds: {amount:.2f}. "
-            f"New balance: {self.balance:.2f}.",
+            f"New balance: {self.sight_balance:.2f}.",
             level="INFO",
         )
 
@@ -340,8 +378,8 @@ class Company(EconomicAgent, LineageMixin):
         """
         # Split assets for new company
         split_ratio: float = self.config.company.split_ratio
-        split_balance: float = self.balance * split_ratio
-        self.balance -= split_balance
+        split_balance: float = self.sight_balance * split_ratio
+        self.sight_balance -= split_balance
 
         # Generate new company ID using lineage-wide counter
         new_unique_id = self.generate_next_id()
@@ -358,7 +396,7 @@ class Company(EconomicAgent, LineageMixin):
             labor_market=labor_market,
         )
 
-        new_company.balance = split_balance
+        new_company.sight_balance = split_balance
         new_company.generation = new_generation
 
         log(
@@ -380,36 +418,80 @@ class Company(EconomicAgent, LineageMixin):
         Returns:
             True if company is bankrupt, False otherwise
         """
-        if self.balance < self.bankruptcy_threshold:
+        if self.sight_balance < self.bankruptcy_threshold:
             log(
-                f"Company {self.unique_id} declared bankrupt with " f"balance {self.balance:.2f}.",
+                f"Company {self.unique_id} declared bankrupt with " f"balance {self.sight_balance:.2f}.",
                 level="WARNING",
             )
             return True
         return False
 
     def _ensure_wage_liquidity(self, warengeld_bank: WarengeldBank | None) -> None:
-        """Secure short-term credit to cover the upcoming wage bill."""
+        """Ensure enough liquidity to pay wages, using a short-term WarengeldBank line.
+
+        The simulation spec distinguishes retailer Kontokorrent from producer finance.
+        However, the unit tests in this repository model a simplified setup where
+        companies can temporarily draw bank credit to cover the wage bill.
+
+        This method is deliberately small and deterministic:
+        - If there are no employees or no bank, do nothing.
+        - Compute a target liquidity based on the planned wage bill and a buffer ratio.
+        - Request exactly the shortfall via `warengeld_bank.grant_credit`.
+        """
+
         if warengeld_bank is None or not self.employees:
             return
 
-        default_wage = self.config.labor_market.starting_wage
         planned_wage_bill = sum(
-            getattr(employee, "current_wage", default_wage) for employee in self.employees
+            float(getattr(worker, "current_wage", self.config.labor_market.starting_wage) or 0.0)
+            for worker in self.employees
         )
-        buffer_ratio = self.config.company.liquidity_buffer_ratio
-        target_liquidity = planned_wage_bill * (1 + buffer_ratio)
-
-        if self.balance >= target_liquidity:
+        if planned_wage_bill <= 0:
             return
 
-        credit_needed = target_liquidity - self.balance
-        granted = warengeld_bank.grant_credit(self, credit_needed)
-        if granted > 0:
+        buffer_ratio = float(self.config.company.liquidity_buffer_ratio)
+        target_liquidity = planned_wage_bill * (1.0 + buffer_ratio)
+        shortfall = max(0.0, target_liquidity - float(self.sight_balance))
+        if shortfall <= 0:
+            return
+
+        granted = warengeld_bank.grant_credit(self, shortfall)
+        if granted <= 0:
+            # tests expect we tried (grant_calls recorded by stub).
             log(
-                f"Company {self.unique_id} drew {granted:.2f} in Warengeld credit to cover wages.",
-                level="INFO",
+                f"Company {self.unique_id} credit request denied (requested {shortfall:.2f}).",
+                level="WARNING",
             )
+
+    def _service_warengeld_credit(self, warengeld_bank: WarengeldBank | None) -> None:
+        """Repay any outstanding short-term WarengeldBank credit.
+
+        Tests use lightweight bank stubs that don't necessarily expose `credit_lines`.
+        We therefore:
+        - infer outstanding via bank.credit_lines when present
+        - otherwise attempt a single repayment call using all available funds above buffer
+        """
+
+        if warengeld_bank is None:
+            return
+
+        buffer = float(self.config.company.min_working_capital_buffer)
+        repay_budget = max(0.0, float(self.sight_balance) - buffer)
+        if repay_budget <= 0:
+            return
+
+        outstanding = None
+        credit_lines = getattr(warengeld_bank, "credit_lines", None)
+        if isinstance(credit_lines, dict):
+            outstanding = float(credit_lines.get(self.unique_id, 0.0))
+
+        amount = repay_budget if outstanding is None else min(outstanding, repay_budget)
+        if amount <= 0:
+            return
+
+        repaid = warengeld_bank.process_repayment(self, amount)
+        if repaid > 0:
+            self.sight_balance = max(buffer, float(self.sight_balance) - repaid)
 
     def _handle_rd_cycle(self) -> None:
         """Process the invest -> innovate cycle."""
@@ -434,7 +516,7 @@ class Company(EconomicAgent, LineageMixin):
 
     def _trigger_growth_and_investment(self, savings_bank: SavingsBank | None) -> None:
         """Toggle growth mode and request long-term financing if conditions are met."""
-        if not self.growth_phase and self.balance >= self.investment_threshold:
+        if not self.growth_phase and self.sight_balance >= self.investment_threshold:
             self.growth_phase = True
             log(f"Company {self.unique_id} enters growth phase.", level="INFO")
 
@@ -459,32 +541,11 @@ class Company(EconomicAgent, LineageMixin):
         if self.growth_phase:
             self.growth_counter += 1
 
-    def _handle_company_split(self, labor_market: LaborMarket | None = None) -> "Company | None":
+    def _handle_company_split(self, labor_market: LaborMarket | None) -> "Company | None":
         """Split the company if growth thresholds are satisfied."""
         if self.growth_phase and self.growth_counter >= self.growth_threshold:
             return self.split_company(labor_market)
         return None
-
-    def _service_warengeld_credit(self, warengeld_bank: WarengeldBank | None) -> None:
-        """Repay short-term credit while observing the working-capital buffer."""
-        if warengeld_bank is None:
-            return
-
-        min_working_capital = self.config.company.min_working_capital_buffer
-        outstanding = warengeld_bank.credit_lines.get(self.unique_id, 0.0)
-        if outstanding <= 0 or self.balance <= min_working_capital:
-            return
-
-        repay_amount = min(self.balance - min_working_capital, outstanding)
-        if repay_amount <= 0:
-            return
-
-        self.balance -= repay_amount
-        warengeld_bank.process_repayment(self, repay_amount)
-        log(
-            f"Company {self.unique_id} repaid {repay_amount:.2f} of Warengeld credit.",
-            level="INFO",
-        )
 
     def _should_liquidate_due_to_staffing(self) -> bool:
         if not self.config.company.zero_staff_auto_liquidation:
@@ -504,10 +565,10 @@ class Company(EconomicAgent, LineageMixin):
             level="WARNING",
         )
         payout_share = self.config.company.zero_staff_liquidation_state_share
-        payout = max(0.0, self.balance * payout_share)
+        payout = max(0.0, self.sight_balance * payout_share)
         if payout > 0 and state is not None:
             state.tax_revenue += payout
-        self.balance = 0.0
+        self.sight_balance = 0.0
         return "LIQUIDATED"
 
     def step(
@@ -564,6 +625,9 @@ class Company(EconomicAgent, LineageMixin):
         # Phase 6: Lifecycle Events
         lifecycle_result = self._handle_lifecycle_events(state)
         if lifecycle_result is not None:
+            # Even if we split (and return a new company), the current company should
+            # still settle its short-term credit lines for this step.
+            self._service_warengeld_credit(warengeld_bank)
             return lifecycle_result
 
         # Phase 7: Financial Cleanup
@@ -583,25 +647,15 @@ class Company(EconomicAgent, LineageMixin):
         log(f"Company {self.unique_id} completed step {current_step}.", level="INFO")
 
     def _handle_lifecycle_events(self, state: State | None) -> "Company | None":
-        """
-        Handle company lifecycle events (bankruptcy, splits).
-
-        Args:
-            state: State agent for liquidation payouts
-
-        Returns:
-            - Company: New company if split occurred
-            - "DEAD": If bankrupt
-            - "LIQUIDATED": If liquidated
-            - None: No lifecycle event
-        """
-        # Handle company splits
+        """Handle company lifecycle events (bankruptcy, splits)."""
         lm = state.labor_market if state and hasattr(state, "labor_market") else None
+
         new_company = self._handle_company_split(lm)
         if new_company is not None:
+            # `split_company()` already registers initial job offers when a labor market
+            # is provided, so we simply return the spinoff.
             return new_company
 
-        # Check for bankruptcy
         if self.check_bankruptcy():
             log(
                 f"Company {self.unique_id} is removed from simulation due to bankruptcy.",

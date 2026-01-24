@@ -103,8 +103,48 @@ Vor der Umstellung der Logik sollen Tests das Zielmodell „festnageln“:
 
 ---
 
+## 5) Naming / Semantik: Standardisiertes Balance-Sheet Vokabular (Household/Company/Retailer)
+
+- [ ] **Adopt a naming scheme commonly used in financial multi-agent simulations** (balance-sheet terms)
+
+  **Problem**
+  Aktuell werden Begriffe wie `balance`, `checking_account`, `savings`, `inventory` teils als Geld-Stock, teils als Vermögens-/Netto-Größe verwendet. Das führt zu Missverständnissen (z.B. „negative savings“), und erschwert eine korrekte Warengeld-Buchführung.
+
+  **Ziel / Soll**
+  Einheitliches, buchhalterisch klares Modell mit getrennten Stocks:
+
+  - `sight_balance` (Sichtguthaben / M1-Komponente)
+  - `savings_balance` (Sparguthaben bei der Sparkasse; kein negativer Stock)
+  - `loan_balance` (aus Spargeld vergebene Kredite; separater Schuldenstock)
+  - Retailer-spezifisch: `cc_balance`, `cc_limit`, `inventory_units`, `inventory_value`, `write_down_reserve`
+  - Producer/Company: `sight_balance` (statt `balance`), `finished_goods_units` (statt `inventory`)
+
+  **Konkrete Maßnahmen**
+  - [ ] Haushalte: `checking_account` -> `sight_balance` (alias, dann Migration); `savings` umbenennen in `local_savings` oder entfernen
+  - [ ] Sparkasse: Household-Sparen nur als `SavingsBank.savings_accounts[hid]` (als echter `savings_balance`)
+  - [ ] Schulden explizit machen: keine „negativen savings“ als Schuldenersatz
+  - [ ] Metriken: `total_money_supply` als M1-Prox sauber definieren (Summe positiver `sight_balance`), Schulden separat reporten
+
+  **Qualitätsgate**
+  - [ ] Invariant-/Contract-Tests: (a) Sparguthaben nie < 0; (b) Geldschöpfung nur über `WarengeldBank.finance_goods_purchase`.
+
+---
+
+## 6) Tooling: legacy_scan als Ruff/Pre-Commit/CI-Linter integrieren?
+
+Aktuell wird `scripts/legacy_scan.py` via Pytest (`tests/test_legacy_scan.py`) ausgeführt.
+Das ist robust, aber etwas „hacky“ (Subprocess in Tests) und technisch kein Linter.
+
+Optionen:
+- Ruff als *ein* Gate nutzen (z.B. über ein Pre-Commit Hook), aber: Ruff kann ohne Plugin keine semantischen Projektregeln.
+- Beibehalten als eigenständiger Repo-Linter (empfohlen), aber in CI/Nox als eigener Schritt (`nox -s legacy_scan`) statt in Pytest.
+
+Entscheidungsvorschlag:
+- Mittelfristig: `legacy_scan.py` als **separaten Lint-Check** (Nox/CI/Pre-Commit), nicht als Unit-Test.
+
+---
+
 ## Nächste Schritte (kurz)
 - [ ] YAML-Konfig einführen + Agentenzahlen skalierbar machen
 - [ ] Tests für Warengeld-Güterzyklus hinzufügen (ohne die Produktions-/Lohnlogik schon umzubauen)
 - [ ] Erst danach: Warengeld-Mechanik implementieren und die bestehenden Regressionstests entsprechend anpassen
-

@@ -60,6 +60,22 @@ class State(BaseAgent):
         # Reference to labor market (set after initialization)
         self.labor_market: LaborMarket | None = None
 
+
+    @property
+    def sight_balance(self) -> float:
+        """Total state sight balances (sum of sub-budgets).
+
+        We model state deposits as split among several budget buckets.
+        This makes tax collection and internal allocations money-neutral.
+        """
+        return float(
+            self.tax_revenue
+            + self.infrastructure_budget
+            + self.social_budget
+            + self.environment_budget
+        )
+
+
     def collect_taxes(self, agents: AgentCollection) -> None:
         """
         Collect land taxes from all applicable agents.
@@ -84,14 +100,24 @@ class State(BaseAgent):
                 land_tax: float = agent.land_area * self.bodensteuer_rate
                 agent_taxes += land_tax
 
-            # Apply total tax to agent
+            # Apply total tax to agent (transfer, no money creation/destruction)
             if agent_taxes > 0:
-                taxable_agent.balance -= agent_taxes
-                total_tax += agent_taxes
-                log(
-                    f"State {self.unique_id} collected {agent_taxes:.2f} taxes from {agent.unique_id}",
-                    level="DEBUG",
-                )
+                # Prefer sight_balance (Warengeld) if available, else fall back to balance.
+                if hasattr(taxable_agent, "sight_balance"):
+                    available = float(max(0.0, getattr(taxable_agent, "sight_balance")))
+                    paid = min(float(agent_taxes), available)
+                    setattr(taxable_agent, "sight_balance", available - paid)
+                else:
+                    available = float(max(0.0, taxable_agent.balance))
+                    paid = min(float(agent_taxes), available)
+                    taxable_agent.balance -= paid
+
+                if paid > 0:
+                    total_tax += paid
+                    log(
+                        f"State {self.unique_id} collected {paid:.2f} taxes from {agent.unique_id}",
+                        level="DEBUG",
+                    )
 
         self.tax_revenue += total_tax
         log(

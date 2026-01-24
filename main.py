@@ -1,400 +1,315 @@
-# main.py
-import json
+"""Entry point and orchestration for the Warengeld simulation.
+
+This file intentionally stays light: it wires agent objects together and
+executes a time-step scheduler.
+
+Key spec alignment:
+- **Money creation** happens only when retailers finance *goods purchases* via
+  an interest-free Kontokorrent at the WarengeldBank.
+- **Money extinguishing** happens when retailers repay Kontokorrent from sales
+  revenues.
+- The SavingsBank (Sparkasse) intermediates savings and loans without creating
+  money.
+- The ClearingAgent audits banks and applies reserve requirements and value
+  corrections.
+"""
+
+from __future__ import annotations
+
+import argparse
 import os
-import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, TypedDict, cast
+from typing import Any
+
+import yaml
 
 from agents.bank import WarengeldBank
 from agents.clearing_agent import ClearingAgent
 from agents.company_agent import Company
-from agents.config_cache import GlobalConfigCache
-from agents.environmental_agency import EnvironmentalAgency, RecyclingCompany
+from agents.environmental_agency import EnvironmentalAgency
 from agents.financial_market import FinancialMarket
 from agents.household_agent import Household
 from agents.labor_market import LaborMarket
-from agents.logging_utils import create_system_logger
+from agents.retailer_agent import RetailerAgent
 from agents.savings_bank_agent import SavingsBank
 from agents.state_agent import State
-from config import CONFIG_MODEL, SimulationConfig, ConfigValidationError, load_simulation_config_from_yaml
+from config import SimulationConfig
 from logger import log, setup_logger
-from metrics import MetricsCollector
-
-# Type aliases for improved type safety
-type AgentResult = None | Literal["DEAD"] | Literal["LIQUIDATED"] | Company | Household
-type AgentDict = dict[
-    str,
-    State
-    | list[Household | Company]
-    | WarengeldBank
-    | SavingsBank
-    | ClearingAgent
-    | EnvironmentalAgency
-    | RecyclingCompany
-    | FinancialMarket
-    | LaborMarket
-    | list[object],
-]
-
-class SimulationSummary(TypedDict):
-    """Type definition for simulation summary structure."""
-    State: dict[str, float]
-    Households: dict[str, dict[str, Any]]
-    Companies: dict[str, dict[str, Any]]
-    WarengeldBank: dict[str, float]
-    SavingsBank: dict[str, float]
-    ClearingAgent: dict[str, float]
-    EnvironmentalAgency: dict[str, float]
-    RecyclingCompany: dict[str, float]
 
 
-def create_households(config: SimulationConfig, labor_market: LaborMarket) -> list[Household]:
-    """
-    Create initial households based on configuration.
-
-    Args:
-        config: Simulation configuration
-        labor_market: Labor market instance
-
-    Returns:
-        List of initialized household agents
-    """
-    def _resolve_initial_households() -> list:
-        if config.INITIAL_HOUSEHOLDS:
-            return list(config.INITIAL_HOUSEHOLDS)
-        pop = getattr(config, "population", None)
-        if pop is None or pop.num_households is None:
-            return []
-        template = pop.household_template
-        return [template for _ in range(pop.num_households)]
-
-    households: list[Household] = []
-    for i, params in enumerate(_resolve_initial_households()):
-        households.append(
-            Household(
-                f"{config.HOUSEHOLD_ID_PREFIX}{i+1}_g1",
-                income=params.income,
-                land_area=params.land_area,
-                environmental_impact=params.environmental_impact,
-                config=config,
-                labor_market=labor_market,
-            )
-        )
-
-    log(f"Created {len(households)} households", level="INFO")
-    return households
-
-def create_companies(config: SimulationConfig, labor_market: LaborMarket) -> list[Company]:
-    """
-    Create initial companies based on configuration.
-
-    Args:
-        config: Simulation configuration
-        labor_market: Labor market instance
-
-    Returns:
-        List of initialized company agents
-    """
-    def _resolve_initial_companies() -> list:
-        if config.INITIAL_COMPANIES:
-            return list(config.INITIAL_COMPANIES)
-        pop = getattr(config, "population", None)
-        if pop is None or pop.num_companies is None:
-            return []
-        template = pop.company_template
-        return [template for _ in range(pop.num_companies)]
-
-    companies: list[Company] = []
-    for i, params in enumerate(_resolve_initial_companies()):
-        companies.append(
-            Company(
-                f"{config.COMPANY_ID_PREFIX}{i+1}_g1",
-                production_capacity=params.production_capacity,
-                land_area=params.land_area,
-                environmental_impact=params.environmental_impact,
-                config=config,
-                labor_market=labor_market,
-            )
-        )
-
-    log(f"Created {len(companies)} companies", level="INFO")
-    return companies
-
-def initialize_agents(config: SimulationConfig) -> AgentDict:
-    """Initialize all simulation agents and their relationships."""
-    log("Initializing simulation agents...", level="INFO")
-
-    # Create core infrastructure agents
-    state: State = State(config.STATE_ID, config)
-    labor_market = LaborMarket(config.LABOR_MARKET_ID, config)
-    state.labor_market = labor_market
-
-    # Create economic agents using factory functions
-    households: list[Household] = create_households(config, labor_market)
-    companies: list[Company] = create_companies(config, labor_market)
-
-    # Create financial institutions
-    warengeld_bank = WarengeldBank(config.BANK_ID, config)
-    savings_bank = SavingsBank(config.SAVINGS_BANK_ID, config)
-
-    # Create regulatory and auxiliary agents
-    clearing_agent = ClearingAgent(config.CLEARING_AGENT_ID, config)
-    clearing_agent.monitored_banks.append(warengeld_bank)
-    clearing_agent.monitored_savings_banks.append(savings_bank)
-
-    environmental_agency = EnvironmentalAgency(config.ENV_AGENCY_ID, state=state, config=config)
-    recycling_company = RecyclingCompany(
-        config.RECYCLING_COMPANY_ID,
-        recycling_efficiency=config.environmental.recycling_efficiency,
-        config=config,
-    )
-    environmental_agency.attach_recycling_company(recycling_company)
-    financial_market = FinancialMarket(config.FINANCIAL_MARKET_ID, config)
-
-    # Compile complete agent list
-    all_agents: list[object] = households + companies + [state, warengeld_bank, savings_bank]
-
-    log(f"Agent initialization complete: {len(households)} households, {len(companies)} companies", level="INFO")
-
-    return {
-        "state": state,
-        "households": households,
-        "companies": companies,
-        "warengeld_bank": warengeld_bank,
-        "savings_bank": savings_bank,
-        "clearing_agent": clearing_agent,
-        "environmental_agency": environmental_agency,
-        "recycling_company": recycling_company,
-        "financial_market": financial_market,
-        "labor_market": labor_market,
-        "all_agents": all_agents,
-    }
+# ---------------------------
+# Config loading
+# ---------------------------
 
 
-def update_households(
-    households: list[Household],
-    step: int,
-    state: State,
-    savings_bank: SavingsBank,
-    labor_market: LaborMarket,
-    companies: list[Company],
-) -> list[Household]:
-    """Update all households and manage newly created or dead households."""
-    new_households: list[Household] = []
-    alive_households: list[Household] = []
+def load_config(config_path: str | Path) -> SimulationConfig:
+    """Load YAML config into the pydantic model."""
 
-    for household in households:
-        result: AgentResult = household.step(step, state, savings_bank, companies)
-
-        if result == "DEAD":
-            log(f"Household {household.unique_id} removed (dead).", level="INFO")
-            for company in companies:
-                if household in company.employees:
-                    company.employees = [emp for emp in company.employees if emp is not household]
-            labor_market = getattr(state, "labor_market", None)
-            if labor_market is not None:
-                labor_market.registered_workers = [
-                    worker for worker in labor_market.registered_workers if worker is not household
-                ]
-            continue
-        elif result is not None:
-            new_households.append(result)
-            alive_households.append(household)
-        else:
-            alive_households.append(household)
-
-    return alive_households + new_households
-
-
-def update_companies(
-    companies: list[Company],
-    step: int,
-    state: State,
-    warengeld_bank: WarengeldBank,
-    savings_bank: SavingsBank,
-) -> list[Company]:
-    """Update all companies and manage newly created or bankrupt companies."""
-    new_companies: list[Company] = []
-    surviving_companies: list[Company] = []
-
-    for company in companies:
-        result: AgentResult = company.step(step, state, warengeld_bank, savings_bank)
-
-        if result == "DEAD" or result == "LIQUIDATED":
-            reason = "bankrupt" if result == "DEAD" else "liquidated"
-            log(f"Company {company.unique_id} removed ({reason}).", level="INFO")
-            continue
-        elif result is not None:
-            new_companies.append(result)
-            surviving_companies.append(company)
-        else:
-            surviving_companies.append(company)
-
-    return surviving_companies + new_companies
-
-
-def update_other_agents(step: int, agents_dict: AgentDict, state: State) -> None:
-    """Update all auxiliary agents in the simulation."""
-    warengeld_bank: WarengeldBank = agents_dict["warengeld_bank"]
-    savings_bank: SavingsBank = agents_dict["savings_bank"]
-    clearing_agent: ClearingAgent = agents_dict["clearing_agent"]
-    environmental_agency: EnvironmentalAgency = agents_dict["environmental_agency"]
-    recycling_company: RecyclingCompany = agents_dict["recycling_company"]
-    financial_market: FinancialMarket = agents_dict["financial_market"]
-    labor_market: LaborMarket = agents_dict["labor_market"]
-    companies: list[Company] = agents_dict["companies"]
-    households: list[Household] = agents_dict["households"]
-    all_agents: list[object] = agents_dict["all_agents"]
-
-    warengeld_bank.step(step, companies)
-    savings_bank.step(step)
-    clearing_agent.step(step, all_agents, state)
-    environmental_agency.step(step, companies + households, state)
-    recycling_company.step(step)
-    financial_market.step(step, companies + households)
-    labor_market.step(step)
-
-
-def update_all_agents(agents_dict: AgentDict) -> AgentDict:
-    """Update the combined agents list after individual agent updates."""
-    agents_dict["all_agents"] = (
-        agents_dict["households"]
-        + agents_dict["companies"]
-        + [agents_dict["state"], agents_dict["warengeld_bank"], agents_dict["savings_bank"]]
-    )
-    return agents_dict
-
-
-def summarize_simulation(agents_dict: AgentDict) -> None:
-    """Generate and save simulation summary to a JSON file."""
-    summary = {
-        "State": {
-            "infrastructure_budget": agents_dict["state"].infrastructure_budget,
-            "social_budget": agents_dict["state"].social_budget,
-            "environment_budget": agents_dict["state"].environment_budget,
-        },
-        "Households": {
-            hh.unique_id: {
-                "balance": hh.balance,
-                "checking_account": hh.checking_account,
-                "savings": hh.savings,
-                "age": hh.age,
-                "generation": hh.generation,
-            }
-            for hh in agents_dict["households"]
-        },
-        "Companies": {
-            comp.unique_id: {"balance": comp.balance, "inventory": comp.inventory}
-            for comp in agents_dict["companies"]
-        },
-        "WarengeldBank": {
-            "collected_fees": agents_dict["warengeld_bank"].collected_fees,
-            "liquidity": agents_dict["warengeld_bank"].liquidity,
-        },
-        "SavingsBank": {
-            "total_savings": agents_dict["savings_bank"].total_savings,
-            "liquidity": agents_dict["savings_bank"].liquidity,
-        },
-        "ClearingAgent": {
-            "excess_wealth_collected": agents_dict["clearing_agent"].excess_wealth_collected
-        },
-        "EnvironmentalAgency": {
-            "collected_env_tax": agents_dict["environmental_agency"].collected_env_tax
-        },
-        "RecyclingCompany": {
-            "processed_materials": agents_dict["recycling_company"].processed_materials
-        },
-    }
-
-    with open(CONFIG_MODEL.SUMMARY_FILE, "w") as f:
-        json.dump(summary, f, indent=CONFIG_MODEL.JSON_INDENT)
-
-    log(f"Simulation summary stored in {CONFIG_MODEL.SUMMARY_FILE}", level="INFO")
+    path = Path(config_path)
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else {}
+    return SimulationConfig(**(data or {}))
 
 
 def _resolve_config_from_args_or_env() -> SimulationConfig:
-    """Resolve SimulationConfig.
+    """Resolve config via CLI (--config) or SIM_CONFIG env var.
 
-    Order:
-    1) CLI: `--config PATH`
-    2) ENV: `SIM_CONFIG=PATH`
-    3) Default: `./config.yaml` (if it exists)
-    4) Fallback: `CONFIG_MODEL`
-
-    This keeps an easy zero-arg workflow while still allowing overrides.
+    Falls back to ./config.yaml (if present) and then to an empty/default config.
     """
 
-    cli_path: str | None = None
-    argv = sys.argv[1:]
-    if "--config" in argv:
-        idx = argv.index("--config")
-        if idx + 1 < len(argv):
-            cli_path = argv[idx + 1]
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--config", type=str, default=None)
+    args, _ = parser.parse_known_args()
+
+    if args.config:
+        return load_config(args.config)
 
     env_path = os.getenv("SIM_CONFIG")
-    path_str = cli_path or env_path
+    if env_path:
+        return load_config(env_path)
 
-    if path_str:
-        return load_simulation_config_from_yaml(str(Path(path_str)))
+    if Path("config.yaml").exists():
+        return load_config("config.yaml")
 
-    default_yaml = Path("config.yaml")
-    if default_yaml.exists():
-        return load_simulation_config_from_yaml(str(default_yaml))
+    # default: empty config (model defaults)
+    return SimulationConfig()
 
-    return CONFIG_MODEL
+
+# ---------------------------
+# Agent creation
+# ---------------------------
+
+
+def create_households(config: SimulationConfig) -> list[Household]:
+    if config.population.num_households is not None:
+        count = int(config.population.num_households)
+        template = config.population.household_template
+        return [
+            Household(unique_id=f"{config.HOUSEHOLD_ID_PREFIX}{i}", income=template.income, config=config)
+            for i in range(count)
+        ]
+
+    # fall back: explicit list
+    households: list[Household] = []
+    for i, h in enumerate(config.INITIAL_HOUSEHOLDS):
+        households.append(Household(unique_id=f"{config.HOUSEHOLD_ID_PREFIX}{i}", income=h.income, config=config))
+    return households
+
+
+def create_companies(config: SimulationConfig) -> list[Company]:
+    if config.population.num_companies is not None:
+        count = int(config.population.num_companies)
+        template = config.population.company_template
+        return [
+            Company(unique_id=f"{config.COMPANY_ID_PREFIX}{i}", production_capacity=template.production_capacity, config=config)
+            for i in range(count)
+        ]
+
+    companies: list[Company] = []
+    for i, c in enumerate(config.INITIAL_COMPANIES):
+        companies.append(
+            Company(unique_id=f"{config.COMPANY_ID_PREFIX}{i}", production_capacity=c.production_capacity, config=config)
+        )
+    return companies
+
+
+def create_retailers(config: SimulationConfig) -> list[RetailerAgent]:
+    # explicit list wins if present and population not specified
+    if config.population.num_retailers is not None:
+        count = int(config.population.num_retailers)
+        template = config.population.retailer_template
+        return [
+            RetailerAgent(
+                unique_id=f"{config.RETAILER_ID_PREFIX}{i}",
+                config=config,
+                cc_limit=getattr(template, "initial_cc_limit", config.retailer.initial_cc_limit),
+                target_inventory_value=getattr(template, "target_inventory_value", config.retailer.target_inventory_value),
+            )
+            for i in range(count)
+        ]
+
+    retailers: list[RetailerAgent] = []
+    for i, r in enumerate(getattr(config, "INITIAL_RETAILERS", [])):
+        retailers.append(
+            RetailerAgent(
+                unique_id=f"{config.RETAILER_ID_PREFIX}{i}",
+                config=config,
+                cc_limit=getattr(r, "initial_cc_limit", config.retailer.initial_cc_limit),
+                target_inventory_value=getattr(r, "target_inventory_value", config.retailer.target_inventory_value),
+            )
+        )
+
+    if retailers:
+        return retailers
+
+    # fallback heuristic: a few retailers per regionless economy
+    default_count = max(1, len(config.INITIAL_COMPANIES) // 2)
+    return [
+        RetailerAgent(
+            unique_id=f"{config.RETAILER_ID_PREFIX}{i}",
+            config=config,
+            cc_limit=config.retailer.initial_cc_limit,
+            target_inventory_value=config.retailer.target_inventory_value,
+        )
+        for i in range(default_count)
+    ]
+
+
+@dataclass
+class SimulationAgents:
+    households: list[Household]
+    companies: list[Company]
+    retailers: list[RetailerAgent]
+    state: State
+    warengeld_bank: WarengeldBank
+    savings_bank: SavingsBank
+    clearing: ClearingAgent
+    financial_market: FinancialMarket
+    labor_market: LaborMarket
+    environmental_agency: EnvironmentalAgency
+
+
+def initialize_agents(config: SimulationConfig) -> dict[str, Any]:
+    """Create agent instances.
+
+    Kept for backwards compatibility with unit tests.
+    """
+
+    state = State(unique_id="state", config=config)
+    warengeld_bank = WarengeldBank(unique_id="warengeld_bank", config=config)
+    savings_bank = SavingsBank(unique_id="savings_bank", config=config)
+    clearing = ClearingAgent(unique_id="clearing", config=config)
+    financial_market = FinancialMarket(unique_id="financial_market", config=config)
+    labor_market = LaborMarket(unique_id="labor_market", config=config)
+    environmental_agency = EnvironmentalAgency(unique_id="environmental_agency", config=config)
+
+    households = create_households(config)
+    companies = create_companies(config)
+    retailers = create_retailers(config)
+
+    # Attach labor market to state
+    state.labor_market = labor_market
+
+    # Register retailer Kontokorrent lines
+    for r in retailers:
+        warengeld_bank.register_retailer(r, cc_limit=r.cc_limit)
+
+    # Register bank with clearing (reserve tracking)
+    clearing.register_bank(warengeld_bank)
+
+    return {
+        "households": households,
+        "companies": companies,
+        "retailers": retailers,
+        "state": state,
+        "warengeld_bank": warengeld_bank,
+        "savings_bank": savings_bank,
+        "clearing_agent": clearing,
+        "financial_market": financial_market,
+        "labor_market": labor_market,
+        "environmental_agency": environmental_agency,
+    }
+
+
+# ---------------------------
+# Simulation loop
+# ---------------------------
+
+
+def _m1_proxy(households: list[Household], companies: list[Company], retailers: list[RetailerAgent], state: State) -> float:
+    """M1 proxy = sum of sight balances."""
+
+    total = 0.0
+    for h in households:
+        total += max(0.0, getattr(h, "sight_balance", h.checking_account))
+    for c in companies:
+        total += max(0.0, getattr(c, "sight_balance", getattr(c, "balance", 0.0)))
+    for r in retailers:
+        total += max(0.0, getattr(r, "sight_balance", 0.0))
+    total += max(0.0, getattr(state, "sight_balance", 0.0))
+    return total
+
+
+def run_simulation(config: SimulationConfig) -> dict[str, Any]:
+    agents = initialize_agents(config)
+
+    households: list[Household] = agents["households"]
+    companies: list[Company] = agents["companies"]
+    retailers: list[RetailerAgent] = agents["retailers"]
+
+    state: State = agents["state"]
+    warengeld_bank: WarengeldBank = agents["warengeld_bank"]
+    savings_bank: SavingsBank = agents["savings_bank"]
+    clearing: ClearingAgent = agents["clearing_agent"]
+    labor_market: LaborMarket = agents["labor_market"]
+    environmental_agency: EnvironmentalAgency = agents["environmental_agency"]
+
+    steps = int(config.simulation_steps)
+    month_len = int(getattr(config, "MONTH_LENGTH", 30))
+
+    log(f"Starting simulation for {steps} steps...")
+
+    for step in range(steps):
+        # 1) Firms: production, workforce, wage payments (no Warengeld credit)
+        for c in companies:
+            c.step(current_step=step, state=state, warengeld_bank=warengeld_bank, savings_bank=savings_bank)
+
+        # 2) Labor market matching
+        labor_market.step(current_step=step)
+
+        # 3) Retail restocking (money creation point)
+        for r in retailers:
+            r.restock_goods(companies=companies, bank=warengeld_bank, current_step=step)
+
+        # 4) Households consume from retailers, then save via Sparkasse
+        for h in households:
+            h.step(current_step=step, savings_bank=savings_bank, retailers=retailers)
+
+        # 5) Retail settlement (repay CC -> money extinguishing; write-downs)
+        for r in retailers:
+            r.settle_accounts(bank=warengeld_bank, current_step=step)
+
+        # 6) Monthly policies
+        if (step + 1) % month_len == 0:
+            # Bank account fees (no interest)
+            warengeld_bank.charge_account_fees([*households, *companies, *retailers, state])
+
+            # State taxes and budgets
+            state.step([*companies, *retailers])
+
+            # Sight factor decay (excess sight balances)
+            clearing.apply_sight_decay(households)
+
+            # Savings bank bookkeeping
+            savings_bank.step(current_step=step)
+
+        # 7) Periodic clearing audits / reserve adjustments
+        if (step + 1) % int(config.clearing.audit_interval) == 0:
+            companies_by_id = {c.unique_id: c for c in companies}
+            clearing.audit_bank(bank=warengeld_bank, retailers=retailers, companies_by_id=companies_by_id, current_step=step)
+            clearing.enforce_reserve_bounds(bank=warengeld_bank)
+
+        # 8) Environment (optional)
+        environmental_agency.step(current_step=step, agents=[*companies, *retailers])
+
+        if step % max(1, steps // 10) == 0:
+            m1 = _m1_proxy(households, companies, retailers, state)
+            log(f"Step {step}: M1 proxy={m1:.2f}, CC exposure={warengeld_bank.total_cc_exposure:.2f}")
+
+    log("Simulation finished.")
+    return agents
+
+
+# ---------------------------
+# CLI
+# ---------------------------
 
 
 def main() -> None:
-    """Main simulation execution function."""
-    setup_logger()
-    system_logger = create_system_logger("Simulation")
-
-    system_logger.log_system_metric("Simulation started", 0, "event")
-    log("Starting MAS simulation...", level="INFO")
-    metrics = MetricsCollector()
-
-    config = _resolve_config_from_args_or_env()
-    num_steps: int = config.simulation_steps
-
-    agents: AgentDict = initialize_agents(config)
-
-    for step in range(1, num_steps + 1):
-        log(f"---- Simulation Step {step} ----", level="INFO")
-        agents["state"].step(agents["households"] + agents["companies"])
-        agents["households"] = update_households(
-            agents["households"],
-            step,
-            agents["state"],
-            agents["savings_bank"],
-            agents["labor_market"],
-            agents["companies"],
-        )
-        agents["companies"] = update_companies(
-            agents["companies"],
-            step,
-            agents["state"],
-            agents["warengeld_bank"],
-            agents["savings_bank"],
-            #agents["labor_market"],
-        )
-        agents = update_all_agents(agents)
-        update_other_agents(step, agents, agents["state"])
-        metrics.collect_state_metrics(
-            agents["state"].unique_id,
-            agents["state"],
-            agents["households"],
-            agents["companies"],
-            step,
-        )
-        metrics.collect_bank_metrics([agents["warengeld_bank"], agents["savings_bank"]], step)
-        metrics.collect_company_metrics(agents["companies"], step)
-        metrics.collect_household_metrics(agents["households"], step)
-        metrics.calculate_global_metrics(step)
-
-        log("Simulation complete.", level="INFO")
-        system_logger.log_system_metric("Simulation completed successfully", 1, "event")
-        summarize_simulation(agents)
-        metrics.export_metrics()
+    cfg = _resolve_config_from_args_or_env()
+    # Ensure logging is configured before any agents emit logs.
+    setup_logger(level=cfg.logging_level, log_file=cfg.log_file, log_format=cfg.log_format, file_mode="w")
+    run_simulation(cfg)
 
 
 if __name__ == "__main__":

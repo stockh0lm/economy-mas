@@ -469,8 +469,12 @@ class MetricsCollector:
         )
 
         # Calculate aggregate economic metrics
-        total_household_savings = sum(household.savings for household in households)
-        total_company_balance = sum(company.balance for company in companies)
+        total_household_savings = sum(
+            float(getattr(h, "local_savings", getattr(h, "savings", 0.0))) for h in households
+        )
+        total_company_balance = sum(
+            float(getattr(c, "sight_balance", getattr(c, "balance", 0.0))) for c in companies
+        )
         total_employment = sum(
             1 for household in households if hasattr(household, "employed") and household.employed
         )

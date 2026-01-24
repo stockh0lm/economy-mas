@@ -1,0 +1,15 @@
+# Python / Tooling
+**/__pycache__/
+**/.venv/
+**/.ruff_cache/
+**/.pytest_cache/
+
+# Build / Output
+**/output/
+
+# Virtual envs / tooling
+**/.nox/
+
+# VCS / IDE
+**/.git/
+**/.idea/
