@@ -10,6 +10,7 @@ from pydantic import (
     Field,
     PositiveInt,
     field_validator,
+    model_validator,
 )
 
 output_dir = "output/"
@@ -158,15 +159,28 @@ def _coerce_config_dict(data: Mapping[str, object]) -> dict[str, ConfigValue]:
 
 
 class HouseholdConfig(BaseConfigModel):
-    max_age: PositiveInt = 80
+    max_age: PositiveInt = 70
     max_generation: PositiveInt = 3
     base_income: float = Field(100.0, ge=0)
     growth_threshold: PositiveInt = 5
     consumption_rate_normal: float = Field(0.7, ge=0, le=1)
     consumption_rate_growth: float = Field(0.9, ge=0, le=1)
     savings_growth_trigger: float = Field(500.0, ge=0)
+    # New: allow growth to trigger from sustained disposable sight-balance (when savings_rate is low).
+    sight_growth_trigger: float = Field(0.0, ge=0)
     loan_repayment_rate: float = Field(0.25, ge=0, le=1)
     child_rearing_cost: float = Field(200.0, ge=0)
+
+    # New: household saving behavior
+    savings_rate: float = Field(0.0, ge=0, le=1)
+    transaction_buffer: float = Field(5.0, ge=0)
+
+    # --- Demography (age-dependent mortality) ---
+    # All rates are annual and translated to daily probabilities via the global
+    # calendar (360 days/year).
+    mortality_base_annual: float = Field(0.002, ge=0)
+    mortality_senescence_annual: float = Field(0.15, ge=0)
+    mortality_shape: float = Field(3.0, ge=0.1)
 
 
 class CompanyConfig(BaseConfigModel):
@@ -210,6 +224,9 @@ class BankConfig(BaseConfigModel):
     base_account_fee: float = Field(0.0, ge=0)
     positive_balance_fee_rate: float = Field(0.0, ge=0)
     negative_balance_fee_rate: float = Field(0.0, ge=0)
+    # Risk pool: distribute a small fee proportional to total CC exposure across
+    # all accounts. This is *not* interest; it is a shared risk premium.
+    risk_pool_rate: float = Field(0.0, ge=0)
     inventory_check_interval: PositiveInt = 3
     inventory_coverage_threshold: float = Field(0.8, gt=0)
     base_credit_reserve_ratio: float = Field(0.1, gt=0)
@@ -264,6 +281,8 @@ class ClearingConfig(BaseConfigModel):
     # Sichtguthaben-Abschmelzung (nur Überschuss über Freibetrag)
     sight_allowance_multiplier: float = Field(1.0, ge=0)
     sight_excess_decay_rate: float = Field(0.01, ge=0, le=1)
+    # Rolling window length for average spending used by the sight allowance.
+    sight_allowance_window_days: PositiveInt = 30
     # Legacy: alte Liquidity-Balancing Parameter
     desired_bank_liquidity: float = Field(1000.0, ge=0)
     desired_savings_bank_liquidity: float = Field(500.0, ge=0)
@@ -284,6 +303,43 @@ class StateConfig(BaseConfigModel):
         return value
 
 
+class TimeConfig(BaseConfigModel):
+    """Temporal granularity.
+
+    The core tick is interpreted as a *day*.
+    Monthly policies (fees, sight-decay, savings-bank) run every `days_per_month`.
+
+    Time scaling:
+    - `days_per_year` is used to convert age expressed in *years* to simulation steps.
+    """
+
+    days_per_month: PositiveInt = 30
+    months_per_year: PositiveInt = 12
+    days_per_year: PositiveInt = 360
+    start_year: int = 0
+    seed: int | None = None
+
+    @model_validator(mode="after")
+    def _normalize_days_per_year(self):
+        """Ensure `days_per_year` is consistent with month/year settings.
+
+        The project uses a fixed convention: days_per_year == days_per_month * months_per_year.
+        We normalize rather than error, because YAML configs might override one field.
+        """
+
+        expected = int(self.days_per_month) * int(self.months_per_year)
+        if int(self.days_per_year) != expected:
+            self.days_per_year = expected
+        return self
+
+
+class SpatialConfig(BaseConfigModel):
+    """Geographic granularity for 'Hausbanken' and local retail markets."""
+
+    num_regions: PositiveInt = 1
+    local_trade_bias: float = Field(0.8, ge=0, le=1)  # probability to trade within the same region
+
+
 class SimulationConfig(BaseConfigModel):
     simulation_steps: PositiveInt = 100
     result_storage: str = Field("both")
@@ -298,6 +354,9 @@ class SimulationConfig(BaseConfigModel):
     environmental: EnvironmentalConfig = Field(default_factory=EnvironmentalConfig)
     clearing: ClearingConfig = Field(default_factory=ClearingConfig)
     state: StateConfig = Field(default_factory=StateConfig)
+
+    time: TimeConfig = Field(default_factory=TimeConfig)
+    spatial: SpatialConfig = Field(default_factory=SpatialConfig)
 
     # New: population helpers
     population: PopulationConfig = Field(default_factory=PopulationConfig)

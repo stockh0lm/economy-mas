@@ -1,6 +1,9 @@
-# Issues / Backlog: Warengeld + YAML-Konfiguration
+# Issues / Backlog (Warengeld-Simulation)
 
-Dieses Dokument ist ein **Arbeits- und Fortschrittslog**: Es listet Probleme/Fehler im aktuellen Simulationsmodell sowie geplante Änderungen, die **noch nicht** implementiert sind. Ziel: Nichts vergessen, Fortschritt nachhalten, und größere Umbauten in nachvollziehbare Schritte zerlegen.
+Stand: **2026-01-24**
+
+Dieses Dokument ist ein Arbeits- und Fortschrittslog: offene Punkte, erledigte Fixes,
+und konkrete nächste Schritte – mit Fokus auf **Schlankheit, Verständlichkeit, saubere Buchführung**.
 
 ## Status-Legende
 - [ ] offen
@@ -9,142 +12,140 @@ Dieses Dokument ist ein **Arbeits- und Fortschrittslog**: Es listet Probleme/Feh
 
 ---
 
-## 1) Fehler: Geldschöpfung ist aktuell nicht „Warengeld“ (Commodity Money)
+## 1) Compliance-Fixes (gegen Buch/Spezifikation)
 
-### Problem
-Das aktuelle Modell entspricht **nicht** der beabsichtigten Warengeld-Mechanik („Geldschöpfung nur zwischen Händler/Firma und Bank zur Warenanschaffung; Geldvernichtung beim Warenverkauf; keine herkömmliche Geldschöpfung“).
-
-Im Ist-Zustand entstehen und zirkulieren Geldbeträge an Stellen, die in einem reinen Warengeldregime so **nicht** vorkommen sollten:
-
-1. **Haushalts-Einkommen erzeugt Geld aus dem Nichts**
-   - `Household.receive_income()` erhöht `checking_account` direkt.
-   - Bei Löhnen (`Company.pay_wages()` → `employee.receive_income(rate)`) fehlt eine konsistente Gegenbuchung.
-   - Effekt: Geldmenge kann steigen, ohne dass ein warengeld-typischer Deckungsbezug (Warenbestand/Wareneinkauf) existiert.
-
-2. **WarengeldBank-Kredit ist aktuell kein „Geldschöpfen“, sondern Liquiditätsabfluss**
-   - `WarengeldBank.grant_credit()` reduziert `bank.liquidity` und erhöht `company.balance`.
-   - Damit verteilt die Bank primär vorhandene Liquidität statt (im Sinne von Buchgeld) eine liability-basierte Geldmenge passend zum Warenkreislauf zu emittieren.
-
-3. **Warengeld-Kredit wird für Löhne genutzt (unerwünscht für reines Warengeld)**
-   - `Company._ensure_wage_liquidity()` zieht Warengeld-Kredit explizit zur Lohnzahlung.
-
-4. **Warenverkauf vernichtet kein Geld**
-   - `Company.sell_to_household()` transferiert Geld vom Haushalt an die Firma.
-   - In der Zielmechanik soll beim Warenverkauf **Geld eingezogen/vernichtet** werden (Commodity Money Loop), statt sich als Unternehmensgeldsaldo aufzuschichten.
-
-### Auswirkungen
-- Aussagen über langfristige Geldmengenentwicklung, Umlaufgeschwindigkeit, Deflation/Inflation etc. sind aktuell schwer interpretierbar, weil die Geldentstehung nicht eindeutig an Waren-Emission/Vernichtung gekoppelt ist.
-
-### Zielverhalten (Soll)
-- **Schöpfung**: Nur wenn eine Firma Waren anschafft/finanziert (z.B. Einkauf/Herstellung mit Bankfinanzierung) soll Warengeld emittiert werden.
-- **Vernichtung**: Beim Verkauf an Haushalte soll (über Bank/Clearing) der entsprechende Geldbetrag wieder eingezogen und vernichtet werden.
-- **Kein** klassisches „Kredit schafft Einzahlung“ im allgemeinen Sinn (insb. nicht für Löhne/Transfers).
-
-### Notwendige Änderungen (noch NICHT umgesetzt)
-- [ ] **Monetäre Primitive als explizite API definieren** (voraussichtlich in `agents/bank.py` und genutzt in `agents/company_agent.py`):
-  - `finance_goods_purchase(...)` (Emission)
-  - `extinguish_on_goods_sale(...)` (Einzug/Vernichtung)
-- [ ] `Company.sell_to_household()` darf nicht mehr `company.balance += revenue` machen, wenn Geld vernichtet werden soll.
-- [ ] `Company._ensure_wage_liquidity()` muss entfallen oder per Config-Flag deaktivierbar werden, wenn Warengeld nur für Warenfinanzierung zulässig ist.
-- [ ] `Household.receive_income()`/Lohnlogik muss so angepasst werden, dass Einkommen nicht mehr automatisch Geldschöpfung ist (Design-Entscheidung nötig).
-- [ ] Metriken (`metrics.py`, `total_money_supply`) müssen zu einer klaren Geldmengendefinition passen (z.B. Deposits vs. bankseitige issued-Positionen).
+- [x] **Kontokorrent-Geldschöpfung nur im Einzelhandel**: Geld entsteht in `WarengeldBank.finance_goods_purchase(...)` bei Warenankauf durch `RetailerAgent`.
+- [x] **Geldvernichtung beim Rückstrom zum Kontokorrent**: `RetailerAgent.auto_repay_contokorrent(...)` tilgt CC aus Sichtguthaben (M1 sinkt).
+- [x] **Kontogebühren statt Zinsen**: `WarengeldBank.charge_account_fees(...)` nutzt `base_account_fee + pos_fee_rate * max(0, sight) + neg_fee_rate * max(0, -sight)`; Plus ist teurer als Minus.
+- [x] **Clearing-Reserve-Grenzen korrekt**: Bugfix `reserve_bounds_min/max` (vorher falsche Feldnamen in `ClearingAgent`).
+- [x] **Zeitliche Granularität**: tägliche Transaktionen; monatliche Policies (Fees, Sichtfaktor/Decay); Audit im konfigurierten Intervall.
+- [x] **Örtliche Granularität**: `spatial.num_regions` → pro Region Hausbank (WarengeldBank), Sparkasse, Retailer, Haushalte.
+- [x] **Metriken + Plots**: Export pro Run; neue Global-Metriken `m1_proxy`, `m2_proxy`, `cc_exposure`, `inventory_value_total`, `velocity_proxy`; neuer Plot `monetary_system.png`.
 
 ---
 
-## 2) Offene Design-Entscheidungen (blockieren spätere Implementierung)
+## 2) Noch offene Design-Entscheidungen (simulationskritisch)
 
-- [ ] **Wo „existiert“ Geld im Zielmodell?**
-  - Nur Haushaltskonten? Auch Firmenkonten? Oder Firmen nur als „Inventory + Verbindlichkeit“?
-- [ ] **Wie werden Löhne/Einkommen modelliert, ohne wieder klassische Geldschöpfung einzuführen?**
-  - Temporär: Löhne deaktivieren/vereinfachen?
-  - Alternative: staatliche Transfers aus Steuern (aber dann muss auch Steuergeld-Quelle definiert sein).
-- [ ] **Wo findet Geldvernichtung statt?**
-  - Direkt im `sell_to_household` (vereinfacht, aber buchhalterisch „magisch“)
-  - Oder zentral über Bank/Clearing (empfohlen für saubere Buchhaltung)
+- [ ] **Kreditrahmen-Formel (`cc_limit`)**: Derzeit statisch aus YAML. Im Buch/Spezifikation: partnerschaftlich/unkündbar, aber Anpassung möglich.
+  - Vorschlag: `cc_limit = m * avg_monthly_cogs` (rollierend) mit Audit-Risk-Modifier.
 
----
+- [ ] **Warenbewertung & Abschreibung**:
+  - Welche Bewertungsregel (Einstand, Markt, Niederstwert)?
+  - Wann gilt Ware als „unverkaufbar“?
+  - Soll eine explizite `ware_value_adjustment_account`-Logik inkl. Befüllung aus Gewinnen eingeführt werden?
 
-## 3) Backlog: YAML-Konfiguration + Skalierung der Agentenzahlen
+- [ ] **Fraud/Wertberichtigung-Rechenregel**:
+  - Clearing erkennt Inventarbetrug → wie genau wird der Differenzbetrag vernichtet (Retailer haircut? Bankreserve? proportionaler Haircut bei Empfängern?)
+  - Wichtig, weil Makrodynamik stark davon abhängt.
 
-### Problem
-Agentenzahlen (Haushalte/Firmen) sind aktuell nur indirekt über Listen (`INITIAL_HOUSEHOLDS`, `INITIAL_COMPANIES`) steuerbar. Das ist für „viele Agenten“ unpraktisch.
-
-### Ziel
-- YAML als primäre Konfigurationsquelle
-- „Leicht konfigurierbar“ viele Haushalte/Firmen (Generator + Templates)
-- Validierung beim Einlesen (Pydantic)
-
-### Geplante Änderungen (noch NICHT umgesetzt)
-- [ ] YAML-Loader ergänzen (z.B. `load_simulation_config_from_yaml(...)`), der in `load_simulation_config(...)` validiert.
-- [ ] Config-Schema erweitern:
-  - [ ] `population.num_households`, `population.num_companies`
-  - [ ] `population.household_template`, `population.company_template`
-  - [ ] optional: seed/variations
-- [ ] `main.initialize_agents()` so erweitern, dass bei gesetzten `num_*` die Listen generiert werden.
+- [ ] **Sparkassen-Regeln (Spargrenze / Invest-Nachfrage-Kopplung)**:
+  - Das Buch nennt Spargrenzen als Steuerinstrument; derzeit gibt es nur `max_savings_per_account`.
+  - Minimalvorschlag: Cap an erwartete Kreditnachfrage koppeln und Überschüsse automatisch in Konsum/Abgabe umleiten.
 
 ---
 
-## 4) Backlog: Teststrategie für Warengeld (Regressionen früh erkennen)
+---
 
-### Problem
-Vorhandene Tests prüfen aktuell u.a. Warengeld-Kredit für Löhne (`tests/test_company_step_regression.py`). Das widerspricht dem Zielmodell.
+## 4) Code-Smells / Refactor-Vorschläge (schlank halten)
+- try .. except Blöcke verdecken Fehlerquellen; besser gezielt prüfen.
+---
 
-### Ziel
-Vor der Umstellung der Logik sollen Tests das Zielmodell „festnageln“:
-- Warengeld-Güterzyklus: Emission bei Warenfinanzierung / Vernichtung bei Warenverkauf
-- Geldmengen-Contract klar definieren
+## 5) Performance-Analyse & Optimierungsvorschläge
 
-### Geplante Tests (noch NICHT umgesetzt)
-- [ ] Neuer Test: **Warengeld-Güterzyklus (minimaler Integrationstest)**
-  - Arrange: Haushalt mit checking, Firma mit inventory, Bank mit Tracking
-  - Act: Haushalt kauft Ware
-  - Assert: Geldmenge/issued sinkt, Haushalt sinkt, Firma bekommt nicht einfach freien Geldzuwachs
-- [ ] Contract-Test: Definition von `total_money_supply` explizit dokumentieren
+### Performance-Profiling (Stand: 2026-01-31)
+
+**Testkonfiguration**: `configs/small_performance_test.yaml`
+- 1.000 Simulationsschritte (reduziert von 36.000)
+- 50 Haushalte, 12 Unternehmen, 4 Händler, 2 Regionen
+- **Gesamtlaufzeit**: 11,0 Sekunden
+- **Funktionsaufrufe**: 41.182.378
+
+#### Identifizierte Flaschenhälse
+
+1. **JSON-Metriken-Export (40,5% der Laufzeit)**
+   - `json.dump()`: 0,751s + `json/encoder.py:_iterencode_dict`: 2,318s
+   - **Problem**: Export von 3,2 Mio. Metrik-Einträgen mit Einrückung am Ende der Simulation
+   - **Gesamtauswirkung**: 4,46s (40,5% der Laufzeit)
+
+2. **Metrikensammlung (47% der Laufzeit)**
+   - `collect_household_metrics`: 0,198s (1.000 Aufrufe)
+   - `add_metric`: 0,228s (662.000 Aufrufe)
+   - **Problem**: 7 Metrikensammlungen pro Schritt × 1.000 Schritte = 7.000 Sammlungsoperationen
+   - **Gesamtauswirkung**: ~5,2s (47% der Laufzeit)
+
+3. **Logging-Overhead (21% der Laufzeit)**
+   - `logging.info`: 1,893s (62.722 Aufrufe)
+   - `logger.log`: 2,326s (90.848 Aufrufe)
+   - **Problem**: Ausführliches Logging mit Stack-Trace-Inspektion bei jedem Aufruf
+   - **Gesamtauswirkung**: ~2,3s (21% der Laufzeit)
+
+#### Leistungsaufschlüsselung nach Kategorien
+
+| Kategorie | Zeit (s) | Anteil | Hauptfunktionen |
+|-----------|---------|--------|-----------------|
+| **Metriken-Export** | 4,46 | 40,5% | `json.dump()`, `_iterencode_dict` |
+| **Metrikensammlung** | 1,80 | 16,4% | `collect_*_metrics`, `add_metric` |
+| **Logging** | 2,33 | 21,2% | `logger.log()`, `logging.info()` |
+| **Agentenverarbeitung** | 1,20 | 10,9% | `Household.step()`, `Company.step()` |
+| **CSV-Schreiben** | 0,56 | 5,1% | `csv.writer.writerow()` |
+| **Sonstiges** | 0,65 | 5,9% | Verschiedenes |
+
+#### Konkrete Optimierungsvorschläge
+
+**A. Pandas/Numpy-basierte Metriken-Optimierung (40-50% Verbesserungspotenzial)**
+
+1. **JSON-Elimination durch Pandas/Numpy**
+   ```python
+   # Statt: json.dump(self._metrics, f, indent=2)  # 4,46s
+   # Nutze: pandas DataFrames mit numpy Arrays
+   metrics_df = pd.DataFrame(metrics_data)
+   metrics_df.to_csv(output_file, index=False)  # <1s
+   ```
+   **Vorteile**:
+   - 40-50% Performance-Gewinn durch Elimination der JSON-Serialisierung
+   - Speichereffiziente numpy Arrays für Metrikenspeicherung
+   - Vektorisierte Operationen für schnelle Aggregationen
+   - Effizienter CSV-Export mit pandas.to_csv()
+
+   **Erwartete Auswirkung**: 4-5s eingespart (40-50% Verbesserung)
+
+2. **Pre-allocated numpy Arrays**
+   ```python
+   # Vorab-Allokation zu Simulationsbeginn
+   max_steps = config.simulation_steps
+   num_households = config.population.num_households
+   self.household_metrics = np.zeros((max_steps, num_households, num_metrics))
+   ```
+   **Erwartete Auswirkung**: 0,5-1s eingespart (5-10% Verbesserung)
+
+#### Implementierungspriorität
+
+| Priorität | Vorschlag | Erwartete Auswirkung | Komplexität |
+|-----------|-----------|----------------------|-------------|
+| 1 | Pandas/Numpy-basierte Metriken | 4-5s (40-50%) | Mittel |
+| 2 | Reduzierte Metrikensammelfrequenz | 1-1,5s (10-15%) | Niedrig |
+| 5 | Pre-allocated numpy Arrays | 0,5-1s (5-10%) | Mittel |
+
+#### Geschätztes Gesamtverbesserungspotenzial
+
+Mit allen Vorschlägen implementiert:
+- **Bestes Szenario**: ~8s eingespart (70% Verbesserung) → 3s Laufzeit
+- **Realistisches Szenario**: ~6s eingespart (55% Verbesserung) → 5s Laufzeit
+- **Konservatives Szenario**: ~4s eingespart (35% Verbesserung) → 7s Laufzeit
 
 ---
 
-## 5) Naming / Semantik: Standardisiertes Balance-Sheet Vokabular (Household/Company/Retailer)
+## 6) Empfohlene nächste Schritte (praktisch)
 
-- [ ] **Adopt a naming scheme commonly used in financial multi-agent simulations** (balance-sheet terms)
+1) **Pandas/Numpy-basierte Metriken implementieren** (hohe Auswirkung, mittlere Komplexität):
+   - JSON-Elimination durch pandas DataFrames
+   - Pre-allocated numpy Arrays für Metrikenspeicherung
+   - Effizienter CSV-Export mit pandas.to_csv()
 
-  **Problem**
-  Aktuell werden Begriffe wie `balance`, `checking_account`, `savings`, `inventory` teils als Geld-Stock, teils als Vermögens-/Netto-Größe verwendet. Das führt zu Missverständnissen (z.B. „negative savings“), und erschwert eine korrekte Warengeld-Buchführung.
+3) **Fraud/Wertberichtigung** als klare Buchungsregel implementieren (klein anfangen: Inventar-Delta → Retailer-Haircut + Bankreserve).
 
-  **Ziel / Soll**
-  Einheitliches, buchhalterisch klares Modell mit getrennten Stocks:
+4) **cc_limit-Policy** (rollierend, audit-basiert) ergänzen.
 
-  - `sight_balance` (Sichtguthaben / M1-Komponente)
-  - `savings_balance` (Sparguthaben bei der Sparkasse; kein negativer Stock)
-  - `loan_balance` (aus Spargeld vergebene Kredite; separater Schuldenstock)
-  - Retailer-spezifisch: `cc_balance`, `cc_limit`, `inventory_units`, `inventory_value`, `write_down_reserve`
-  - Producer/Company: `sight_balance` (statt `balance`), `finished_goods_units` (statt `inventory`)
+5) **Spargrenzen** (Kapitel 13) minimal implementieren + Szenarien (Spar-Invest-Mismatch) aus der Spezifikation.
 
-  **Konkrete Maßnahmen**
-  - [ ] Haushalte: `checking_account` -> `sight_balance` (alias, dann Migration); `savings` umbenennen in `local_savings` oder entfernen
-  - [ ] Sparkasse: Household-Sparen nur als `SavingsBank.savings_accounts[hid]` (als echter `savings_balance`)
-  - [ ] Schulden explizit machen: keine „negativen savings“ als Schuldenersatz
-  - [ ] Metriken: `total_money_supply` als M1-Prox sauber definieren (Summe positiver `sight_balance`), Schulden separat reporten
-
-  **Qualitätsgate**
-  - [ ] Invariant-/Contract-Tests: (a) Sparguthaben nie < 0; (b) Geldschöpfung nur über `WarengeldBank.finance_goods_purchase`.
-
----
-
-## 6) Tooling: legacy_scan als Ruff/Pre-Commit/CI-Linter integrieren?
-
-Aktuell wird `scripts/legacy_scan.py` via Pytest (`tests/test_legacy_scan.py`) ausgeführt.
-Das ist robust, aber etwas „hacky“ (Subprocess in Tests) und technisch kein Linter.
-
-Optionen:
-- Ruff als *ein* Gate nutzen (z.B. über ein Pre-Commit Hook), aber: Ruff kann ohne Plugin keine semantischen Projektregeln.
-- Beibehalten als eigenständiger Repo-Linter (empfohlen), aber in CI/Nox als eigener Schritt (`nox -s legacy_scan`) statt in Pytest.
-
-Entscheidungsvorschlag:
-- Mittelfristig: `legacy_scan.py` als **separaten Lint-Check** (Nox/CI/Pre-Commit), nicht als Unit-Test.
-
----
-
-## Nächste Schritte (kurz)
-- [ ] YAML-Konfig einführen + Agentenzahlen skalierbar machen
-- [ ] Tests für Warengeld-Güterzyklus hinzufügen (ohne die Produktions-/Lohnlogik schon umzubauen)
-- [ ] Erst danach: Warengeld-Mechanik implementieren und die bestehenden Regressionstests entsprechend anpassen
+6) Danach: Aufräumen der Root-Duplikate + Tests als Qualitätsnetz.

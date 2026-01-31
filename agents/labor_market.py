@@ -151,29 +151,53 @@ class LaborMarket(BaseAgent):
         )
 
     def match_workers_to_jobs(self) -> list[WorkerMatchResult]:
-        """
-        Match registered workers to available job positions.
+        """Match registered workers to available job positions.
 
-        For each job offer, available workers are assigned until all positions are filled
-        or no more workers are available. Each matched worker is marked as employed
-        and assigned their wage.
+        Current behavior aims to be fair across employers:
+        - shuffle offers and workers to avoid deterministic "first employer wins"
+        - allocate workers in a round-robin across offers until either workers or
+          positions are exhausted.
 
         Returns:
             List of successful matches as (worker, employer, wage) tuples
         """
         matches: list[WorkerMatchResult] = []
 
-        for offer in self.job_offers:
-            available_workers = [
-                w for w in self.registered_workers if not hasattr(w, "employed") or not w.employed
-            ]
-            num_matches = min(offer.positions, len(available_workers))
+        # Build pool of unemployed workers.
+        available_workers = [
+            w for w in self.registered_workers if not getattr(w, "employed", False)
+        ]
+        if not available_workers or not self.job_offers:
+            self.job_offers = []
+            return matches
 
-            for i in range(num_matches):
-                worker = available_workers[i]
+        # Randomize to avoid structural bias.
+        import random
+
+        offers = list(self.job_offers)
+        random.shuffle(offers)
+        random.shuffle(available_workers)
+
+        # Track remaining positions by offer.
+        remaining_positions = [max(0, int(o.positions)) for o in offers]
+
+        worker_idx = 0
+        # Round-robin through offers, consuming workers.
+        while worker_idx < len(available_workers) and any(p > 0 for p in remaining_positions):
+            for i, offer in enumerate(offers):
+                if worker_idx >= len(available_workers):
+                    break
+                if remaining_positions[i] <= 0:
+                    continue
+
+                worker = available_workers[worker_idx]
+                worker_idx += 1
+
                 worker.employed = True
                 worker.current_wage = offer.wage
                 offer.employer.add_employee_from_labor_market(worker, offer.wage)
+                remaining_positions[i] -= 1
+
                 matches.append((worker, offer.employer, offer.wage))
                 log(
                     f"LaborMarket {self.unique_id}: Matched worker {worker.unique_id} "
@@ -236,3 +260,32 @@ class LaborMarket(BaseAgent):
             f"{len(matches)} job matches made (unemployment {self.latest_unemployment_rate:.2%}).",
             level="INFO",
         )
+
+    def deregister_worker(self, worker: WorkerProtocol) -> bool:
+        """Remove a worker from the labor market registry.
+
+        Use this when a household leaves the simulation (death/turnover) to prevent
+        stale references from keeping 'zombie workers' alive in matching and
+        employer staffing logic.
+
+        Returns:
+            True if the worker was removed, False if it wasn't registered.
+        """
+        try:
+            self.registered_workers.remove(worker)
+            log(
+                f"LaborMarket {self.unique_id}: Deregistered worker {worker.unique_id}.",
+                level="INFO",
+            )
+            return True
+        except ValueError:
+            return False
+
+    def replace_worker(self, old_worker: WorkerProtocol, new_worker: WorkerProtocol) -> None:
+        """Replace a worker in-place (turnover helper).
+
+        Equivalent to deregistering the old worker (if present) and registering the
+        new worker.
+        """
+        self.deregister_worker(old_worker)
+        self.register_worker(new_worker)

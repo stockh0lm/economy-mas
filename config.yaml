@@ -10,6 +10,15 @@
 # Anzahl Simulationsschritte
 simulation_steps: 100
 
+# Zeitliche Granularität: tägliche Transaktionen, monatliche Policies.
+time:
+  days_per_month: 30
+
+# Räumliche Granularität: lokale Hausbanken und lokale Einzelhändler.
+spatial:
+  num_regions: 5
+  local_trade_bias: 0.8
+
 # Ergebnisablage: aktuell im Code nur dokumentiert ("both" ist Default)
 result_storage: both
 
@@ -70,8 +79,15 @@ company:
 
 # --- WarengeldBank-Parameter ---
 bank:
-  # Gebührenrate auf ausstehende Kreditlinien
-  fee_rate: 0.01
+  # Banken finanzieren sich über Kontogebühren (keine Zinsen).
+  # fee_rate is legacy and not used by the main loop anymore.
+  fee_rate: 0.0
+  base_account_fee: 1.0
+  # "Plus" soll teurer sein als "Minus".
+  positive_balance_fee_rate: 0.0002
+  negative_balance_fee_rate: 0.00005
+  # Geteilte Risikoprämie, proportional zur gesamten CC-Exposure.
+  risk_pool_rate: 0.0
   # Startliquidität der Bank
   initial_liquidity: 1000
   # Intervall für Inventory-Checks

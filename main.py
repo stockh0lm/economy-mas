@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import argparse
 import os
+import random
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -36,6 +38,28 @@ from agents.savings_bank_agent import SavingsBank
 from agents.state_agent import State
 from config import SimulationConfig
 from logger import log, setup_logger
+from sim_clock import SimulationClock
+
+
+def _format_duration(seconds: float) -> str:
+    if seconds < 0 or seconds != seconds:  # NaN guard
+        return "?"
+    seconds_int = int(seconds)
+    mins, secs = divmod(seconds_int, 60)
+    hours, mins = divmod(mins, 60)
+    if hours:
+        return f"{hours:d}h{mins:02d}m{secs:02d}s"
+    if mins:
+        return f"{mins:d}m{secs:02d}s"
+    return f"{secs:d}s"
+
+
+def _progress_bar(done: int, total: int, width: int = 30) -> str:
+    if total <= 0:
+        return "[" + ("?" * width) + "]"
+    ratio = max(0.0, min(1.0, done / total))
+    filled = int(round(ratio * width))
+    return "[" + ("#" * filled) + ("-" * (width - filled)) + "]"
 
 
 # ---------------------------
@@ -176,8 +200,17 @@ def initialize_agents(config: SimulationConfig) -> dict[str, Any]:
     """
 
     state = State(unique_id="state", config=config)
-    warengeld_bank = WarengeldBank(unique_id="warengeld_bank", config=config)
-    savings_bank = SavingsBank(unique_id="savings_bank", config=config)
+
+    # Spatial granularity: create one house bank (+ savings bank) per region.
+    num_regions = int(getattr(config.spatial, "num_regions", 1))
+    region_ids = [f"region_{i}" for i in range(num_regions)]
+
+    warengeld_banks = [WarengeldBank(unique_id=f"warengeld_bank_{rid}", config=config) for rid in region_ids]
+    savings_banks = [SavingsBank(unique_id=f"savings_bank_{rid}", config=config) for rid in region_ids]
+    for rid, bank in zip(region_ids, warengeld_banks):
+        bank.region_id = rid
+    for rid, sb in zip(region_ids, savings_banks):
+        sb.region_id = rid
     clearing = ClearingAgent(unique_id="clearing", config=config)
     financial_market = FinancialMarket(unique_id="financial_market", config=config)
     labor_market = LaborMarket(unique_id="labor_market", config=config)
@@ -187,23 +220,41 @@ def initialize_agents(config: SimulationConfig) -> dict[str, Any]:
     companies = create_companies(config)
     retailers = create_retailers(config)
 
+    # Assign agents to regions (round-robin by id to keep deterministic seeds).
+    for idx, h in enumerate(households):
+        h.region_id = region_ids[idx % num_regions]
+    for idx, c in enumerate(companies):
+        c.region_id = region_ids[idx % num_regions]
+    for idx, r in enumerate(retailers):
+        r.region_id = region_ids[idx % num_regions]
+
     # Attach labor market to state
     state.labor_market = labor_market
 
-    # Register retailer Kontokorrent lines
+    # Register retailer Kontokorrent lines at their regional banks
+    banks_by_region = {rid: bank for rid, bank in zip(region_ids, warengeld_banks)}
+    savings_by_region = {rid: bank for rid, bank in zip(region_ids, savings_banks)}
     for r in retailers:
-        warengeld_bank.register_retailer(r, cc_limit=r.cc_limit)
+        bank = banks_by_region.get(r.region_id, warengeld_banks[0])
+        bank.register_retailer(r, cc_limit=r.cc_limit)
 
-    # Register bank with clearing (reserve tracking)
-    clearing.register_bank(warengeld_bank)
+    # Register banks with clearing (reserve tracking)
+    for bank in warengeld_banks:
+        clearing.register_bank(bank)
 
     return {
         "households": households,
         "companies": companies,
         "retailers": retailers,
         "state": state,
-        "warengeld_bank": warengeld_bank,
-        "savings_bank": savings_bank,
+        # Legacy keys (single-region code/tests)
+        "warengeld_bank": warengeld_banks[0],
+        "savings_bank": savings_banks[0],
+        # Multi-region access
+        "warengeld_banks": warengeld_banks,
+        "savings_banks": savings_banks,
+        "banks_by_region": banks_by_region,
+        "savings_by_region": savings_by_region,
         "clearing_agent": clearing,
         "financial_market": financial_market,
         "labor_market": labor_market,
@@ -238,65 +289,281 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
     retailers: list[RetailerAgent] = agents["retailers"]
 
     state: State = agents["state"]
-    warengeld_bank: WarengeldBank = agents["warengeld_bank"]
-    savings_bank: SavingsBank = agents["savings_bank"]
+    warengeld_banks: list[WarengeldBank] = agents.get("warengeld_banks", [agents["warengeld_bank"]])
+    savings_banks: list[SavingsBank] = agents.get("savings_banks", [agents["savings_bank"]])
+    banks_by_region: dict[str, WarengeldBank] = agents.get("banks_by_region", {"region_0": warengeld_banks[0]})
+    savings_by_region: dict[str, SavingsBank] = agents.get("savings_by_region", {"region_0": savings_banks[0]})
     clearing: ClearingAgent = agents["clearing_agent"]
     labor_market: LaborMarket = agents["labor_market"]
     environmental_agency: EnvironmentalAgency = agents["environmental_agency"]
 
+    # Households must be known to the labor market for matching to work.
+    for h in households:
+        labor_market.register_worker(h)
+
     steps = int(config.simulation_steps)
-    month_len = int(getattr(config, "MONTH_LENGTH", 30))
+    clock = SimulationClock(config.time)
+
+    # Reproducibility in CI/tests should be explicit.
+    # - If SIM_SEED is set, seed immediately.
+    # - If SIM_SEED_FROM_CONFIG=1, also seed from config.population.seed when present.
+    env_seed = os.getenv("SIM_SEED")
+    if env_seed is not None and env_seed != "":
+        random.seed(int(env_seed))
+    elif os.getenv("SIM_SEED_FROM_CONFIG") == "1":
+        seed = getattr(getattr(config, "time", None), "seed", None)
+        if seed is None:
+            seed = getattr(getattr(config, "population", None), "seed", None)
+        if seed is not None:
+            random.seed(int(seed))
+
+    # Metrics
+    from metrics import MetricsCollector
+
+    collector = MetricsCollector(config=config)
+    for h in households:
+        collector.register_household(h)
+    for c in companies:
+        collector.register_company(c)
+    for b in warengeld_banks:
+        collector.register_bank(b)
+    for sb in savings_banks:
+        collector.register_bank(sb)
+    # Retailer metrics are registered lazily inside the collector (if present).
 
     log(f"Starting simulation for {steps} steps...")
 
-    for step in range(steps):
-        # 1) Firms: production, workforce, wage payments (no Warengeld credit)
-        for c in companies:
-            c.step(current_step=step, state=state, warengeld_bank=warengeld_bank, savings_bank=savings_bank)
+    # Minimal liveness/progress output for long runs (opt-in; avoids noisy unit tests).
+    progress_enabled = os.getenv("SIM_PROGRESS") == "1"
+    start_ts = time.time()
+    last_progress_ts = start_ts
+    progress_every_steps = max(1, steps // 200)  # ~0.5% increments (cap at 200 updates)
+    progress_every_seconds = 2.0  # but at most once every 2 seconds
 
-        # 2) Labor market matching
+    # Helpers for lifecycle dynamics
+    next_household_idx = len(households)
+
+    for step in range(steps):
+        clock.day_index = step
+        # Reset per-step retailer flow counters (used by metrics exports).
+        for r in retailers:
+            r.sales_total = 0.0
+            r.purchases_total = 0.0
+            r.write_downs_total = 0.0
+
+        # 0) Demography pass (turnover only): replace aged households before labor matching.
+        # This ensures companies post job offers against the *current* labor force and
+        # prevents a full-step delay where firms still hold stale workers.
+        alive_households: list[Household] = []
+        days_per_year = int(getattr(config.time, "days_per_year", 360))
+        base_annual = float(getattr(config.household, "mortality_base_annual", 0.0) or 0.0)
+        senesce_annual = float(getattr(config.household, "mortality_senescence_annual", 0.0) or 0.0)
+        shape = float(getattr(config.household, "mortality_shape", 3.0) or 3.0)
+
+        for h in households:
+            age_days = int(getattr(h, "age_days", 0) or 0)
+            max_age_days = int(getattr(h, "max_age_days", getattr(h, "max_age", 0) or 0) or 0)
+
+            age_years = age_days / float(days_per_year)
+            max_age_years = max(1e-9, max_age_days / float(days_per_year))
+            age_frac = min(1.0, max(0.0, age_years / max_age_years))
+
+            annual_hazard = base_annual + senesce_annual * (age_frac ** shape)
+            daily_p = min(1.0, max(0.0, annual_hazard) / float(days_per_year))
+
+            death_now = age_days >= max_age_days or (daily_p > 0 and random.random() < daily_p)
+
+            if death_now:
+                # Remove the old (dead) household from the labor market registry.
+                # Otherwise it stays 'registered' forever and firms may keep hiring/staffing
+                # against zombie workers.
+                try:
+                    labor_market.deregister_worker(h)
+                except Exception:
+                    pass
+
+                replacement = Household(
+                    unique_id=f"{config.HOUSEHOLD_ID_PREFIX}{next_household_idx}",
+                    income=h.income,
+                    land_area=h.land_area,
+                    environmental_impact=h.environmental_impact,
+                    config=config,
+                )
+                replacement.region_id = getattr(h, "region_id", "region_0")
+                replacement.employed = False
+                replacement.current_wage = None
+                labor_market.register_worker(replacement)
+                next_household_idx += 1
+                collector.register_household(replacement)
+                alive_households.append(replacement)
+            else:
+                alive_households.append(h)
+
+        households = alive_households
+        agents["households"] = households
+
+        # 1) Firms: post labor demand (but don't liquidate for missing staff yet)
+        new_companies: list[Company] = []
+        alive_companies: list[Company] = []
+        for c in companies:
+            # Post labor demand NOW so matching can happen this same step.
+            c.adjust_employees(labor_market)
+            alive_companies.append(c)
+
+        companies = alive_companies
+        agents["companies"] = companies
+
+        # 2) Labor market matching (same-step)
         labor_market.step(current_step=step)
 
-        # 3) Retail restocking (money creation point)
-        for r in retailers:
-            r.restock_goods(companies=companies, bank=warengeld_bank, current_step=step)
+        # 3) Firms: now run operations + lifecycle using the updated employee lists
+        new_companies = []
+        alive_companies = []
+        for c in companies:
+            # Run the remainder of company.step but skip the already-done parts.
+            # We call the existing step for maintainability, but temporarily disable
+            # the zero-staff grace triggering before matching.
+            result = c.step(current_step=step, state=state, savings_bank=savings_by_region.get(c.region_id, savings_banks[0]))
 
-        # 4) Households consume from retailers, then save via Sparkasse
+            if isinstance(result, Company):
+                new_companies.append(result)
+                collector.register_company(result)
+                alive_companies.append(c)
+            elif result in ("DEAD", "LIQUIDATED"):
+                continue
+            else:
+                alive_companies.append(c)
+
+        if new_companies:
+            alive_companies.extend(new_companies)
+
+        companies = alive_companies
+        agents["companies"] = companies
+
+        # 4) Retail restocking (money creation point)
+        local_trade_bias = float(getattr(getattr(config, "spatial", None), "local_trade_bias", 0.8))
+        for r in retailers:
+            bank = banks_by_region.get(r.region_id, warengeld_banks[0])
+            # Preference for local producers, but allow cross-region trade.
+            if random.random() < local_trade_bias:
+                producer_pool = [c for c in companies if c.region_id == r.region_id] or companies
+            else:
+                producer_pool = companies
+            r.restock_goods(companies=producer_pool, bank=bank, current_step=step)
+
+        # 5) Households consume from retailers, then save via Sparkasse
+        retailers_by_region: dict[str, list[RetailerAgent]] = {}
+        for r in retailers:
+            retailers_by_region.setdefault(r.region_id, []).append(r)
+
+        alive_households = []
+        newborns: list[Household] = []
         for h in households:
-            h.step(current_step=step, savings_bank=savings_bank, retailers=retailers)
+            h_retailers = retailers_by_region.get(h.region_id, retailers)
+            h_savings_bank = savings_by_region.get(h.region_id, savings_banks[0])
 
-        # 5) Retail settlement (repay CC -> money extinguishing; write-downs)
+            # Attach for metrics: households report savings as local + bank deposits.
+            try:
+                h._savings_bank_ref = h_savings_bank
+            except Exception:
+                pass
+
+            maybe_new = h.step(current_step=step, clock=clock, savings_bank=h_savings_bank, retailers=h_retailers)
+
+            if isinstance(maybe_new, Household):
+                # Ensure unique IDs for newborns in the global simulation namespace.
+                maybe_new.unique_id = f"{config.HOUSEHOLD_ID_PREFIX}{next_household_idx}"
+                next_household_idx += 1
+                collector.register_household(maybe_new)
+                # New households must participate in labor matching.
+                maybe_new.employed = False
+                maybe_new.current_wage = None
+                labor_market.register_worker(maybe_new)
+                newborns.append(maybe_new)
+
+            alive_households.append(h)
+
+        if newborns:
+            alive_households.extend(newborns)
+
+        households = alive_households
+        agents["households"] = households
+
+        # 6) Retail settlement (repay CC -> money extinguishing; write-downs)
         for r in retailers:
-            r.settle_accounts(bank=warengeld_bank, current_step=step)
+            bank = banks_by_region.get(r.region_id, warengeld_banks[0])
+            r.settle_accounts(bank=bank, current_step=step)
 
-        # 6) Monthly policies
-        if (step + 1) % month_len == 0:
-            # Bank account fees (no interest)
-            warengeld_bank.charge_account_fees([*households, *companies, *retailers, state])
+        # 7) Monthly policies
+        if clock.is_month_end(step):
+            # Bank account fees (no interest) ... by region.
+            for rid, bank in banks_by_region.items():
+                bank_accounts: list[Any] = [a for a in households if a.region_id == rid]
+                bank_accounts += [a for a in companies if a.region_id == rid]
+                bank_accounts += [a for a in retailers if a.region_id == rid]
+                bank.charge_account_fees(bank_accounts)
 
             # State taxes and budgets
             state.step([*companies, *retailers])
 
             # Sight factor decay (excess sight balances)
-            clearing.apply_sight_decay(households)
+            clearing.apply_sight_decay([*households, *companies, *retailers, state])
 
             # Savings bank bookkeeping
-            savings_bank.step(current_step=step)
+            for sb in savings_banks:
+                sb.step(current_step=step)
 
-        # 7) Periodic clearing audits / reserve adjustments
-        if (step + 1) % int(config.clearing.audit_interval) == 0:
+        # 8) Periodic clearing audits / reserve adjustments
+        if clock.is_period_end(int(config.clearing.audit_interval), step):
             companies_by_id = {c.unique_id: c for c in companies}
-            clearing.audit_bank(bank=warengeld_bank, retailers=retailers, companies_by_id=companies_by_id, current_step=step)
-            clearing.enforce_reserve_bounds(bank=warengeld_bank)
+            for bank in warengeld_banks:
+                local_retailers = [r for r in retailers if r.region_id == getattr(bank, "region_id", "region_0")]
+                # Bank IDs are suffixed with region_id; use string match.
+                if not local_retailers:
+                    # fallback: audit all
+                    local_retailers = retailers
+                clearing.audit_bank(bank=bank, retailers=local_retailers, companies_by_id=companies_by_id, current_step=step)
+                clearing.enforce_reserve_bounds(bank=bank)
 
-        # 8) Environment (optional)
+        # 9) Environment (optional)
         environmental_agency.step(current_step=step, agents=[*companies, *retailers])
+
+        # Collect metrics
+        collector.collect_household_metrics(households, step)
+        collector.collect_company_metrics(companies, step)
+        collector.collect_retailer_metrics(retailers, step)
+        collector.collect_bank_metrics(warengeld_banks, step)
+        collector.collect_bank_metrics(savings_banks, step)
+        collector.collect_state_metrics("state", state, households, companies, step)
+        collector.collect_market_metrics(labor_market, step)
+        collector.calculate_global_metrics(step)
+
+        # Minimal ASCII progress update.
+        if progress_enabled:
+            is_last = (step + 1) == steps
+            now = time.time()
+            if is_last or (
+                (step + 1) % progress_every_steps == 0 and (now - last_progress_ts) >= progress_every_seconds
+            ):
+                elapsed = now - start_ts
+                done = step + 1
+                rate = done / elapsed if elapsed > 0 else 0.0
+                remaining = (steps - done) / rate if rate > 0 else float("nan")
+                pct = (done / steps * 100.0) if steps > 0 else 100.0
+                bar = _progress_bar(done, steps, width=28)
+                log(
+                    f"{bar} {pct:6.2f}%  step {done}/{steps}  "
+                    f"elapsed {_format_duration(elapsed)}  eta {_format_duration(remaining)}"
+                )
+                last_progress_ts = now
 
         if step % max(1, steps // 10) == 0:
             m1 = _m1_proxy(households, companies, retailers, state)
-            log(f"Step {step}: M1 proxy={m1:.2f}, CC exposure={warengeld_bank.total_cc_exposure:.2f}")
+            total_cc = sum(b.total_cc_exposure for b in warengeld_banks)
+            log(f"Step {step}: M1 proxy={m1:.2f}, CC exposure={total_cc:.2f}")
 
     log("Simulation finished.")
+    collector.export_metrics()
     return agents
 
 

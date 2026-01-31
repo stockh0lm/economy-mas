@@ -1,5 +1,6 @@
 # logger.py
 import logging
+from pathlib import Path
 from typing import Literal
 
 from config import CONFIG_MODEL
@@ -30,6 +31,15 @@ def setup_logger(
     config_level = level or CONFIG_MODEL.logging_level
     config_file = log_file or CONFIG_MODEL.log_file
     config_format = log_format or CONFIG_MODEL.log_format
+
+    # Ensure the log directory exists (fresh checkouts often miss /output).
+    try:
+        log_path = Path(config_file)
+        if log_path.parent and str(log_path.parent) != ".":
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        # If anything goes wrong, proceed and let logging raise a clear error.
+        pass
 
     # Convert string level to logging constant
     level_map: dict[str, int] = {

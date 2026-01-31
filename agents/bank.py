@@ -69,6 +69,8 @@ class WarengeldBank(BaseAgent):
         # Bank income is collected via fees into a sight account.
         self.sight_balance: float = 0.0
         self.fee_income: float = 0.0
+        # Diagnostic: portion of fee income attributable to shared risk premium.
+        self.risk_pool_collected: float = 0.0
 
         # Reserve deposit at clearing (purchasing power immobilized)
         self.clearing_reserve_deposit: float = 0.0
@@ -214,9 +216,9 @@ class WarengeldBank(BaseAgent):
         outstanding credit and increases bank liquidity, capped by the outstanding
         amount and the requested amount.
 
-        If a client has a `balance`/`sight_balance`, we debit it up to what's
-        available. If not (or if insufficient), we still allow repayment up to
-        outstanding; this matches unit tests that don't model borrower balances.
+        Spec behavior: if the borrower has a sight balance, repayment debits it
+        (money is extinguished). For Kontokorrent clients we also move `cc_balance`
+        toward zero by the paid amount.
         """
 
         if amount <= 0:
@@ -228,24 +230,30 @@ class WarengeldBank(BaseAgent):
             return 0.0
 
         repay = min(float(amount), outstanding)
+        paid = 0.0
 
         # If the borrower has a cash-like balance, try to debit it.
         if hasattr(retailer, "balance"):
             bal = float(getattr(retailer, "balance", 0.0))
             if bal > 0:
-                debit = min(bal, repay)
-                retailer.balance = bal - debit
+                paid = min(bal, repay)
+                retailer.balance = bal - paid
+                if hasattr(retailer, "cc_balance"):
+                    retailer.cc_balance = float(getattr(retailer, "cc_balance", 0.0)) + paid
         elif hasattr(retailer, "sight_balance"):
             bal = float(getattr(retailer, "sight_balance", 0.0))
             if bal > 0:
-                debit = min(bal, repay)
-                retailer.sight_balance = bal - debit
-                cc_balance = float(getattr(retailer, "cc_balance", 0.0))
-                retailer.cc_balance = cc_balance + debit
+                paid = min(bal, repay)
+                retailer.sight_balance = bal - paid
+                if hasattr(retailer, "cc_balance"):
+                    retailer.cc_balance = float(getattr(retailer, "cc_balance", 0.0)) + paid
 
-        self.credit_lines[rid] = outstanding - repay
-        self.liquidity += repay
-        return float(repay)
+        # Legacy tests: repayment is allowed even if no explicit cash is modeled.
+        repayment_amount = paid if paid > 0 else repay
+
+        self.credit_lines[rid] = outstanding - repayment_amount
+        self.liquidity += repayment_amount
+        return float(repayment_amount)
 
     # --- Fees (legacy test API) ---
     def calculate_fees(self, merchants: Iterable[Any]) -> float:
@@ -279,14 +287,74 @@ class WarengeldBank(BaseAgent):
         return float(total)
 
     def charge_account_fees(self, accounts: Iterable[Any]) -> float:
-        """Charge periodic account fees.
+        """Charge periodic account fees (spec-aligned).
 
-        The repo historically used `calculate_fees()` (fee on outstanding credit lines).
-        The simulation loop calls `charge_account_fees()` as the monthly policy hook.
-        For now, the fee model remains the same: proportional to outstanding credit.
+        In the *visionary Warengeld* model, banks do not charge interest on the
+        Kontokorrent. Operating costs and shared risk premiums are paid via
+        account fees.
+
+        Fee model:
+        - base_account_fee (flat)
+        - positive_balance_fee_rate * max(0, sight_balance)
+        - negative_balance_fee_rate * max(0, -sight_balance)
+          (usually lower than the positive rate; "Plus" should be more expensive)
+        - risk_pool_rate * total_cc_exposure distributed equally across accounts
+
+        The legacy `calculate_fees()` remains for tests, but the simulation uses
+        this method.
         """
 
-        return self.calculate_fees(accounts)
+        accounts_list = list(accounts)
+        if not accounts_list:
+            return 0.0
+
+        base_fee = float(self.config.bank.base_account_fee)
+        pos_rate = float(self.config.bank.positive_balance_fee_rate)
+        neg_rate = float(self.config.bank.negative_balance_fee_rate)
+
+        # Shared risk premium (not interest): proportional to total exposure, shared evenly.
+        risk_pool_rate = float(getattr(self.config.bank, "risk_pool_rate", 0.0))
+        risk_fee_total = risk_pool_rate * float(self.total_cc_exposure)
+        risk_fee_per_account = risk_fee_total / len(accounts_list) if accounts_list else 0.0
+
+        total_collected = 0.0
+        for acc in accounts_list:
+            # Best-effort retrieval of a sight balance-like field.
+            if hasattr(acc, "sight_balance"):
+                bal = float(getattr(acc, "sight_balance"))
+                setter = lambda v, _acc=acc: setattr(_acc, "sight_balance", v)
+            elif hasattr(acc, "checking_account"):
+                bal = float(getattr(acc, "checking_account"))
+                setter = lambda v, _acc=acc: setattr(_acc, "checking_account", v)
+            elif hasattr(acc, "balance"):
+                bal = float(getattr(acc, "balance"))
+                setter = lambda v, _acc=acc: setattr(_acc, "balance", v)
+            else:
+                continue
+
+            fee = base_fee
+            fee += pos_rate * max(0.0, bal)
+            fee += neg_rate * max(0.0, -bal)
+            fee += risk_fee_per_account
+
+            if fee <= 0:
+                continue
+
+            paid = min(max(0.0, bal), fee)
+            if paid <= 0:
+                continue
+
+            setter(bal - paid)
+            # Fees are a transfer to the bank's own sight account.
+            # They must NOT destroy money.
+            self.sight_balance += paid
+            self.fee_income += paid
+            total_collected += paid
+
+        # Bookkeeping only; does not affect money supply metrics.
+        self.risk_pool_collected += min(total_collected, risk_fee_total)
+        self.collected_fees += total_collected
+        return float(total_collected)
 
     # --- Inventory control (legacy test API) ---
     def check_inventories(self, retailers: Iterable[Any], current_step: int | None = None):

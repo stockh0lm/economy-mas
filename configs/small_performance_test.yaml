@@ -1,0 +1,19 @@
+# Small performance test configuration
+# Reduced scale for faster execution and performance profiling
+simulation_steps: 1000  # Much shorter than 36000
+
+time:
+  days_per_month: 30
+
+spatial:
+  num_regions: 2  # Reduced from 12
+  local_trade_bias: 0.8
+
+population:
+  num_households: 50  # Reduced from 500
+  num_companies: 12   # Reduced from 120
+  num_retailers: 4    # Reduced from 48
+  seed: 42
+
+# Enable progress tracking for performance monitoring
+logging_level: INFO

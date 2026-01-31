@@ -40,6 +40,17 @@ class SavingsBank(BaseAgent):
         # Risk reserve (can be used to absorb write-offs)
         self.risk_reserve: float = float(self.config.savings_bank.initial_liquidity * 0.05)
 
+    # --- Spec vocabulary aliases ---
+    @property
+    def savings_pool(self) -> float:
+        """Total savings deposits (liability side)."""
+        return float(self.total_savings)
+
+    @property
+    def loan_book(self) -> float:
+        """Outstanding principal of the Sparkasse loan book."""
+        return float(sum(self.active_loans.values()))
+
 
     # --- Backwards-compatible alias ---
     @property
@@ -56,16 +67,24 @@ class SavingsBank(BaseAgent):
         if amount <= 0:
             return 0.0
 
-        hid = str(getattr(household, 'unique_id', 'household'))
+        hid = str(getattr(household, "unique_id", "household"))
         amount = float(amount)
-        self.savings_accounts[hid] = self.savings_accounts.get(hid, 0.0) + amount
-        self.available_funds += amount
+
+        # Enforce per-account cap (prevents unbounded accumulation in small sims)
+        cap = float(getattr(self.config.savings_bank, "max_savings_per_account", 1e18) or 1e18)
+        current = float(self.savings_accounts.get(hid, 0.0))
+        depositable = max(0.0, min(amount, cap - current))
+        if depositable <= 0:
+            return 0.0
+
+        self.savings_accounts[hid] = current + depositable
+        self.available_funds += depositable
 
         log(
-            f"SavingsBank: deposit {amount:.2f} from {hid}. savings_balance={self.savings_accounts[hid]:.2f}",
+            f"SavingsBank: deposit {depositable:.2f} from {hid}. savings_balance={self.savings_accounts[hid]:.2f}",
             level="INFO",
         )
-        return amount
+        return depositable
 
     def withdraw_savings(self, household: Any, amount: float) -> float:
         if amount <= 0:
@@ -168,3 +187,9 @@ class SavingsBank(BaseAgent):
     def step(self, current_step: int) -> None:
         # Intentionally minimal: interest/defaults can be added later.
         return
+
+    @property
+    def total_savings(self) -> float:
+        """Total savings deposits held at the bank (liability side)."""
+        return float(sum(self.savings_accounts.values()))
+

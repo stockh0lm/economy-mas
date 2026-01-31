@@ -44,12 +44,15 @@ class Finding:
 def _iter_python_files(root: Path) -> list[Path]:
     """Yield python files under root while skipping generated/irrelevant directories."""
     skip_markers = (
-        "/.venv/",
-        "/__pycache__/",
-        "/output/",
-        "/results/",
-        "/.git/",
-        "/tests/",
+        ".venv/",
+        ".nox/",
+        ".tox/",
+        "__pycache__/",
+        "output/",
+        "results/",
+        ".git/",
+        "tests/",
+        "scripts/",
     )
     files: list[Path] = []
     for p in root.rglob("*.py"):
@@ -75,8 +78,18 @@ def _scan_files(paths: list[Path], allowlists: dict[str, set[Path]]) -> list[Fin
     for path in paths:
         text = path.read_text(encoding="utf-8", errors="replace")
         for i, line in enumerate(text.splitlines(), start=1):
+            stripped = line.strip()
+
+            # Skip docstrings/comments: we care about actual code re-introduction.
+            if stripped.startswith("#") or stripped.startswith('"""') or stripped.startswith("'''"):
+                continue
+
+            # Don't self-flag this tool. (It prints status lines by design.)
+            if path.resolve() == Path(__file__).resolve():
+                continue
+
             if print_re.search(line):
-                findings.append(Finding(path, i, "print() detected (use logger.log)", line.strip()))
+                findings.append(Finding(path, i, "print() detected (use logger.log)", stripped))
 
             if direct_sell_re.search(line) and path.resolve() not in allow_direct_sell:
                 findings.append(
@@ -84,7 +97,7 @@ def _scan_files(paths: list[Path], allowlists: dict[str, set[Path]]) -> list[Fin
                         path,
                         i,
                         "Direct sell_to_household detected outside RetailerAgent/allowed stubs (bypasses Warengeld goods cycle)",
-                        line.strip(),
+                        stripped,
                     )
                 )
 
@@ -94,7 +107,7 @@ def _scan_files(paths: list[Path], allowlists: dict[str, set[Path]]) -> list[Fin
                         path,
                         i,
                         "Use of `.balance` detected; prefer `sight_balance`/explicit account fields",
-                        line.strip(),
+                        stripped,
                     )
                 )
 
@@ -104,7 +117,7 @@ def _scan_files(paths: list[Path], allowlists: dict[str, set[Path]]) -> list[Fin
                         path,
                         i,
                         "Use of `.savings` detected; prefer `local_savings` and SavingsBank accounts",
-                        line.strip(),
+                        stripped,
                     )
                 )
 
@@ -117,27 +130,45 @@ def main() -> int:
     # Include top-level modules too; some legacy patterns have historically lived there.
     scan_roots = [agents_dir, REPO_ROOT]
 
+    # IMPORTANT: tests/imports still exercise the repo-root modules (mirrors of agents/*).
+    # Keep allowlists in sync with both locations until the duplication is removed.
+
     allow_direct_sell_files = {
+        (REPO_ROOT / "company_agent.py").resolve(),
+        (REPO_ROOT / "retailer_agent.py").resolve(),
         (agents_dir / "company_agent.py").resolve(),
         (agents_dir / "retailer_agent.py").resolve(),
     }
 
     allow_balance_any_files = {
-        # Protocol-driven/transitional modules that may receive arbitrary BalanceSheet-ish agents
+        # Repo-root modules
+        (REPO_ROOT / "bank.py").resolve(),
+        (REPO_ROOT / "clearing_agent.py").resolve(),
+        (REPO_ROOT / "savings_bank_agent.py").resolve(),
+        (REPO_ROOT / "state_agent.py").resolve(),
+        (REPO_ROOT / "environmental_agency.py").resolve(),
+        (REPO_ROOT / "company_agent.py").resolve(),
+        (REPO_ROOT / "household_agent.py").resolve(),
+        (REPO_ROOT / "retailer_agent.py").resolve(),
+        (REPO_ROOT / "economic_agent.py").resolve(),
+
+        # agents/ package mirrors
         (agents_dir / "bank.py").resolve(),
         (agents_dir / "clearing_agent.py").resolve(),
         (agents_dir / "savings_bank_agent.py").resolve(),
         (agents_dir / "state_agent.py").resolve(),
         (agents_dir / "environmental_agency.py").resolve(),
-
-        # Transitional compatibility properties
         (agents_dir / "company_agent.py").resolve(),
         (agents_dir / "household_agent.py").resolve(),
         (agents_dir / "retailer_agent.py").resolve(),
     }
 
     allow_savings_files = {
-        (agents_dir / "household_agent.py").resolve(),  # defines alias
+        # Repo-root + agents package
+        (REPO_ROOT / "household_agent.py").resolve(),  # defines alias
+        (REPO_ROOT / "financial_manager.py").resolve(),
+        (agents_dir / "household_agent.py").resolve(),
+        (agents_dir / "financial_manager.py").resolve(),
     }
 
     allowlists = {

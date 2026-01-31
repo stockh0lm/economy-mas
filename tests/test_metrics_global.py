@@ -179,8 +179,9 @@ def test_calculate_global_metrics_gini_and_blended_price_pressure() -> None:
         metrics = collector.global_metrics[1]
 
         assert math.isclose(metrics["gini_coefficient"], -0.2564102564, rel_tol=1e-6)
-        assert math.isclose(metrics["price_pressure"], 3.0749999998, rel_tol=1e-9)
-        assert math.isclose(metrics["price_index"], 110.3749999992, rel_tol=1e-9)
+        # Blended mode uses the historical 75/25 blend on M1 pressure vs consumption pressure.
+        assert math.isclose(metrics["price_pressure"], 3.4749999998, rel_tol=1e-9)
+        assert math.isclose(metrics["price_index"], 112.374999999, rel_tol=1e-9)
     finally:
         CONFIG_MODEL.market.price_index_pressure_ratio = original_ratio
 

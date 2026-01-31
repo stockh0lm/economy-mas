@@ -66,8 +66,8 @@ class ClearingAgent(BaseAgent):
         if exposure <= 0:
             return
 
-        min_ratio = float(self.config.clearing.reserve_ratio_min)
-        max_ratio = float(self.config.clearing.reserve_ratio_max)
+        min_ratio = float(self.config.clearing.reserve_bounds_min)
+        max_ratio = float(self.config.clearing.reserve_bounds_max)
 
         current = float(self.bank_reserves.get(bank_id, 0.0))
         min_reserve = exposure * min_ratio
@@ -244,24 +244,33 @@ class ClearingAgent(BaseAgent):
         return corrected
 
     # --- Sight balance decay (Sichtfaktor) ---
-    def apply_sight_decay(self, households: Iterable[Any]) -> float:
-        """Apply monthly decay to excess sight balances for households."""
+    def apply_sight_decay(self, accounts: Iterable[Any]) -> float:
+        """Apply monthly decay to excess sight balances.
+
+        Spec intent: limit "too large" sight balances without blanket demurrage.
+        - For households we estimate the allowance from rolling consumption history.
+        - For other agent types, we default to a high allowance so we only affect
+          extreme hoarding, keeping the core model stable.
+        """
         factor = float(self.config.clearing.sight_excess_decay_rate)
         k = float(self.config.clearing.sight_allowance_multiplier)
         if factor <= 0 or k <= 0:
             return 0.0
 
         destroyed_total = 0.0
-        for h in households:
+        hyperwealth = float(getattr(self.config.clearing, "hyperwealth_threshold", 0.0))
+        for h in accounts:
             if not hasattr(h, "sight_balance"):
                 continue
             spend_hist = getattr(h, "consumption_history", [])
             if spend_hist:
                 avg_spend = sum(spend_hist) / len(spend_hist)
             else:
+                # Fallback: for non-households this should not constantly burn
+                # operational balances; only act on extreme hoarding.
                 avg_spend = float(getattr(h, "income", 0.0))
 
-            allowance = k * avg_spend
+            allowance = max(hyperwealth, k * avg_spend)
             excess = max(0.0, float(h.sight_balance) - allowance)
             if excess <= 0:
                 continue

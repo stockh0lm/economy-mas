@@ -82,6 +82,11 @@ class RetailerAgent(BaseAgent):
         self.last_unit_cost: float = self.config.company.production_base_price
         self.last_unit_price: float = self.last_unit_cost * (1 + self.config.retailer.price_markup)
 
+        # Flow metrics (cumulative, reset each simulation step by main loop if desired)
+        self.sales_total: float = 0.0
+        self.purchases_total: float = 0.0
+        self.write_downs_total: float = 0.0
+
     # --- Convenience adapters (compatibility with legacy code/tests) ---
     @property
     def balance(self) -> float:
@@ -149,6 +154,7 @@ class RetailerAgent(BaseAgent):
         # Inventory increases at cost.
         self.inventory_units += sold_qty
         self.inventory_value += financed
+        self.purchases_total += financed
 
         log(
             f"Retailer {self.unique_id}: Restocked goods value={financed:.2f} units={sold_qty:.2f} from {producer.unique_id}.",
@@ -190,6 +196,7 @@ class RetailerAgent(BaseAgent):
             cost_value = qty * unit_cost
 
         self.sight_balance += sale_value
+        self.sales_total += sale_value
 
         # Inventory reduction at cost
         self.inventory_units -= qty
@@ -240,6 +247,7 @@ class RetailerAgent(BaseAgent):
             return 0.0
 
         self.inventory_value = max(0.0, self.inventory_value - write_down)
+        self.write_downs_total += write_down
 
         destroyed = 0.0
         use_reserve = min(self.write_down_reserve, write_down)

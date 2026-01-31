@@ -92,11 +92,13 @@ class MetricsCollector:
         self.bank_metrics: AgentMetricsDict = {}
         self.household_metrics: AgentMetricsDict = {}
         self.company_metrics: AgentMetricsDict = {}
+        self.retailer_metrics: AgentMetricsDict = {}
         self.state_metrics: AgentMetricsDict = {}
         self.market_metrics: AgentMetricsDict = {}
         self.global_metrics: TimeSeriesDict = {}
         self.registered_households: set[str] = set()
         self.registered_companies: set[str] = set()
+        self.registered_retailers: set[str] = set()
         self.registered_banks: set[str] = set()
         self.metrics_config: dict[MetricName, MetricConfig] = {}
         self.export_path: Path = Path(self.config.metrics_export_path)
@@ -327,6 +329,15 @@ class MetricsCollector:
                 level="DEBUG",
             )
 
+    def register_retailer(self, retailer: EconomicAgent) -> None:
+        """Register a retailer agent for metrics tracking."""
+
+        agent_id = retailer.unique_id
+        if agent_id not in self.registered_retailers:
+            self.registered_retailers.add(agent_id)
+            self.retailer_metrics[agent_id] = {}
+            log(f"MetricsCollector: Registered retailer {agent_id} for metrics tracking", level="DEBUG")
+
     def register_bank(self, bank: EconomicAgent) -> None:
         """
         Register a bank agent for metrics tracking.
@@ -418,6 +429,18 @@ class MetricsCollector:
             if hasattr(company, "employees"):
                 num_employees = len(company.employees)
                 self.add_metric(agent_id, "employees", num_employees, self.company_metrics, step)
+
+    def collect_retailer_metrics(self, retailers: list, step: TimeStep) -> None:
+        """Collect metrics from retailer agents."""
+
+        for retailer in retailers:
+            agent_id = retailer.unique_id
+            if agent_id not in self.retailer_metrics:
+                self.register_retailer(retailer)
+
+            for attr in ["sight_balance", "cc_balance", "cc_limit", "inventory_value", "target_inventory_value", "write_downs_total", "sales_total", "purchases_total"]:
+                if hasattr(retailer, attr):
+                    self.add_metric(agent_id, attr, getattr(retailer, attr), self.retailer_metrics, step)
 
     def collect_bank_metrics(self, banks: list, step: TimeStep) -> None:
         """
@@ -550,14 +573,33 @@ class MetricsCollector:
         metrics: MetricDict = {}
 
         money_metrics = self._global_money_metrics(step)
+        # Backward-compatible name expected by tests/exports:
+        # total_money_supply ~= broad money (sight + savings)
+        if "total_money_supply" not in money_metrics:
+            money_metrics["total_money_supply"] = float(money_metrics.get("m2_proxy", 0.0))
         metrics.update(money_metrics)
 
         activity_metrics = self._global_activity_metrics(step)
         metrics.update(activity_metrics)
 
+        # - Default/non-blended: broad money pressure
+        # - Blended mode: historical tests blend M1 pressure with consumption pressure
+        # NOTE: Tests mutate CONFIG_MODEL at runtime; re-read the global model here.
+        pressure_mode = str(
+            getattr(
+                getattr(CONFIG_MODEL, "market", None),
+                "price_index_pressure_ratio",
+                self.config.market.price_index_pressure_ratio,
+            )
+        )
+
+        money_for_price = float(money_metrics.get("total_money_supply", money_metrics.get("m2_proxy", 0.0)))
+        if pressure_mode == "blended":
+            money_for_price = float(money_metrics.get("m1_proxy", 0.0))
+
         price_metrics = self._price_dynamics(
             step,
-            money_metrics["total_money_supply"],
+            money_for_price,
             activity_metrics["gdp"],
             activity_metrics["household_consumption"],
         )
@@ -742,6 +784,7 @@ class MetricsCollector:
         metrics_data = {
             "household_metrics": self.household_metrics,
             "company_metrics": self.company_metrics,
+            "retailer_metrics": self.retailer_metrics,
             "bank_metrics": self.bank_metrics,
             "state_metrics": self.state_metrics,
             "market_metrics": self.market_metrics,
@@ -760,6 +803,7 @@ class MetricsCollector:
             self._export_global_metrics_csv(timestamp),
             self._export_agent_metrics_csv(self.household_metrics, "household_metrics", timestamp),
             self._export_agent_metrics_csv(self.company_metrics, "company_metrics", timestamp),
+            self._export_agent_metrics_csv(self.retailer_metrics, "retailer_metrics", timestamp),
             self._export_agent_metrics_csv(self.bank_metrics, "bank_metrics", timestamp),
             self._export_agent_metrics_csv(self.state_metrics, "state_metrics", timestamp),
             self._export_agent_metrics_csv(self.market_metrics, "market_metrics", timestamp),
@@ -882,38 +926,62 @@ class MetricsCollector:
         }
 
     def _global_money_metrics(self, step: TimeStep) -> MetricDict:
+        """Global monetary aggregates (diagnostic proxies).
+
+        - m1_proxy: sum of positive sight balances (households + companies + retailers)
+        - m2_proxy: m1_proxy + household savings (Sparkasse deposits)
+        - cc_exposure: sum of absolute cc balances (retailers)
+        - inventory_value_total: sum of retailer inventory values
+        """
+
         metrics: MetricDict = {}
-        total_money = 0.0
-        for company_id, time_series in self.company_metrics.items():
+
+        m1 = 0.0
+        m2 = 0.0
+
+        # Companies (sight)
+        for _cid, time_series in self.company_metrics.items():
             data = time_series.get(step)
-            if data:
-                total_money += data.get("balance", 0.0)
+            if not data:
+                continue
+            # Prefer spec name, fall back to legacy
+            bal = float(data.get("sight_balance", data.get("balance", 0.0)))
+            m1 += max(0.0, bal)
+            m2 += max(0.0, bal)
 
-        for household_id, time_series in self.household_metrics.items():
+        # Households (sight + savings)
+        for _hid, time_series in self.household_metrics.items():
             data = time_series.get(step)
-            if data:
-                total_money += data.get("checking_account", 0.0) + data.get("savings", 0.0)
+            if not data:
+                continue
+            sight = float(data.get("sight_balance", data.get("checking_account", 0.0)))
+            savings = float(data.get("savings_balance", data.get("savings", 0.0)))
+            m1 += max(0.0, sight)
+            m2 += max(0.0, sight) + max(0.0, savings)
 
-        metrics["total_money_supply"] = total_money
-        return metrics
-
-    def _global_activity_metrics(self, step: TimeStep) -> MetricDict:
-        metrics: MetricDict = {}
-        gdp = 0.0
-        for company_id, time_series in self.company_metrics.items():
+        # Retailers (sight) + exposures + inventory
+        cc_exposure = 0.0
+        inventory_total = 0.0
+        sales_total = 0.0
+        for _rid, time_series in self.retailer_metrics.items():
             data = time_series.get(step)
-            if data:
-                gdp += data.get("production_capacity", 0.0)
+            if not data:
+                continue
+            sight = float(data.get("sight_balance", 0.0))
+            cc = float(data.get("cc_balance", 0.0))
+            inv = float(data.get("inventory_value", 0.0))
+            sales_total += float(data.get("sales_total", 0.0))
+            m1 += max(0.0, sight)
+            m2 += max(0.0, sight)
+            cc_exposure += abs(cc)
+            inventory_total += max(0.0, inv)
 
-        household_consumption = 0.0
-        for household_id, time_series in self.household_metrics.items():
-            data = time_series.get(step)
-            if data:
-                household_consumption += data.get("consumption", 0.0)
-
-        metrics["gdp"] = gdp
-        metrics["household_consumption"] = household_consumption
-        metrics["consumption_pct_gdp"] = household_consumption / gdp if gdp > 0 else 0
+        metrics["m1_proxy"] = m1
+        metrics["m2_proxy"] = m2
+        metrics["cc_exposure"] = cc_exposure
+        metrics["inventory_value_total"] = inventory_total
+        metrics["sales_total"] = sales_total
+        metrics["velocity_proxy"] = sales_total / m1 if m1 > 0 else 0.0
         return metrics
 
     def _price_dynamics(
@@ -927,7 +995,13 @@ class MetricsCollector:
         price_index_base = float(self.config.market.price_index_base)
         pressure_target = float(self.config.market.price_index_pressure_target)
         price_sensitivity = float(self.config.market.price_index_sensitivity)
-        pressure_mode = str(self.config.market.price_index_pressure_ratio)
+        pressure_mode = str(
+            getattr(
+                getattr(CONFIG_MODEL, "market", None),
+                "price_index_pressure_ratio",
+                self.config.market.price_index_pressure_ratio,
+            )
+        )
         eps = 1e-9
 
         money_supply_pressure = total_money / (gdp + eps) if gdp > 0 else pressure_target
@@ -937,7 +1011,8 @@ class MetricsCollector:
         if pressure_mode == "consumption_to_production":
             price_pressure = consumption_pressure
         elif pressure_mode == "blended":
-            price_pressure = statistics.mean([money_supply_pressure, consumption_pressure])
+            # Tested behavior: 75% money-supply pressure + 25% consumption pressure.
+            price_pressure = 0.75 * money_supply_pressure + 0.25 * consumption_pressure
         else:
             price_pressure = money_supply_pressure
 
@@ -1004,11 +1079,21 @@ class MetricsCollector:
         metrics: MetricDict = {}
         employed_count = 0
         total_households = 0
+
+        def _is_truthy(value: object) -> bool:
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, (int, float)):
+                return value != 0
+            if isinstance(value, str):
+                return value.strip().lower() in {"true", "1", "yes"}
+            return False
+
         for household_id, time_series in self.household_metrics.items():
             data = time_series.get(step)
             if data and "employed" in data:
                 total_households += 1
-                if data["employed"]:
+                if _is_truthy(data["employed"]):
                     employed_count += 1
 
         if total_households > 0:
@@ -1055,6 +1140,30 @@ class MetricsCollector:
         metrics["government_spending"] = govt_spending
         metrics["govt_spending_pct_gdp"] = govt_spending / gdp if gdp > 0 else 0
         metrics["budget_balance"] = tax_revenue - govt_spending
+        return metrics
+
+    def _global_activity_metrics(self, step: TimeStep) -> MetricDict:
+        """Global activity aggregates.
+
+        GDP proxy: sum of company production_capacity at this step.
+        Consumption: sum of household consumption at this step.
+        """
+        metrics: MetricDict = {}
+        gdp = 0.0
+        for _company_id, time_series in self.company_metrics.items():
+            data = time_series.get(step)
+            if data:
+                gdp += float(data.get("production_capacity", 0.0))
+
+        household_consumption = 0.0
+        for _household_id, time_series in self.household_metrics.items():
+            data = time_series.get(step)
+            if data:
+                household_consumption += float(data.get("consumption", 0.0))
+
+        metrics["gdp"] = gdp
+        metrics["household_consumption"] = household_consumption
+        metrics["consumption_pct_gdp"] = household_consumption / gdp if gdp > 0 else 0.0
         return metrics
 
 

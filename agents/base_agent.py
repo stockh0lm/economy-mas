@@ -9,7 +9,7 @@ from logger import log
 class BaseAgent(HasUniqueID):
     """Enhanced base agent class providing common functionality for all agents."""
 
-    def __init__(self, unique_id: str, config: SimulationConfig | None = None) -> None:
+    def __init__(self, unique_id: str, config: SimulationConfig | None = None, *, region_id: str | None = None) -> None:
         """
         Initialize a base agent with common attributes.
 
@@ -19,6 +19,10 @@ class BaseAgent(HasUniqueID):
         """
         self.unique_id: str = unique_id
         self.config: SimulationConfig = config or CONFIG_MODEL
+
+        # Geographic partitioning ("Hausbanken"/regional markets).
+        # Keep this as a simple string tag so the core model stays lightweight.
+        self.region_id: str = str(region_id) if region_id is not None else "region_0"
 
         # Initialize enhanced logging system
         self._logger = create_agent_logger(unique_id, self.__class__.__name__)

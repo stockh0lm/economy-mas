@@ -5,6 +5,7 @@ import math
 from agents.household_agent import Household
 from agents.savings_bank_agent import SavingsBank
 from config import CONFIG_MODEL
+from sim_clock import SimulationClock
 
 
 def test_household_child_costs_only_during_growth_phase() -> None:
@@ -33,7 +34,8 @@ def test_household_growth_phase_triggers_from_bank_savings() -> None:
     household.income = 0.0
     bank.deposit_savings(household, CONFIG_MODEL.household.savings_growth_trigger + 100.0)
 
-    result = household.step(current_step=1, savings_bank=bank)
+    clock = SimulationClock(CONFIG_MODEL.time)
+    result = household.step(current_step=1, clock=clock, savings_bank=bank)
 
     assert result is None
     assert household.growth_phase

@@ -2,7 +2,6 @@
 import random
 from typing import ClassVar, Literal
 
-from agents.bank import WarengeldBank
 from agents.base_agent import BaseAgent
 from agents.household_agent import Household
 from agents.labor_market import LaborMarket
@@ -192,7 +191,24 @@ class Company(BaseAgent, LineageMixin):
         )
 
     def adjust_employees(self, labor_market: LaborMarket) -> None:
-        """Advertise labor demand and release surplus employees via labor market."""
+        """Advertise labor demand and release surplus employees via labor market.
+
+        Also removes stale employee references (e.g., after household turnover) so
+        staffing decisions are based on live workers.
+        """
+        # Drop stale references: only if the labor market exposes a worker registry.
+        registered_workers = getattr(labor_market, "registered_workers", None)
+        if self.employees and isinstance(registered_workers, list):
+            live_set = set(registered_workers)
+            stale = [e for e in self.employees if e not in live_set]
+            if stale:
+                for e in stale:
+                    try:
+                        labor_market.release_worker(e)
+                    except Exception:
+                        pass
+                self.employees = [e for e in self.employees if e in live_set]
+
         employee_capacity_ratio: float = self.config.company.employee_capacity_ratio
         required_employees: int = int(self.production_capacity / employee_capacity_ratio)
         current_count = len(self.employees)
@@ -222,6 +238,7 @@ class Company(BaseAgent, LineageMixin):
             for _ in range(to_release):
                 if self.employees:
                     employee = self.employees.pop()
+                    # Use labor market helper to keep worker state consistent.
                     labor_market.release_worker(employee)
                     log(
                         f"Company {self.unique_id} released worker {employee.unique_id}.",
@@ -426,73 +443,6 @@ class Company(BaseAgent, LineageMixin):
             return True
         return False
 
-    def _ensure_wage_liquidity(self, warengeld_bank: WarengeldBank | None) -> None:
-        """Ensure enough liquidity to pay wages, using a short-term WarengeldBank line.
-
-        The simulation spec distinguishes retailer Kontokorrent from producer finance.
-        However, the unit tests in this repository model a simplified setup where
-        companies can temporarily draw bank credit to cover the wage bill.
-
-        This method is deliberately small and deterministic:
-        - If there are no employees or no bank, do nothing.
-        - Compute a target liquidity based on the planned wage bill and a buffer ratio.
-        - Request exactly the shortfall via `warengeld_bank.grant_credit`.
-        """
-
-        if warengeld_bank is None or not self.employees:
-            return
-
-        planned_wage_bill = sum(
-            float(getattr(worker, "current_wage", self.config.labor_market.starting_wage) or 0.0)
-            for worker in self.employees
-        )
-        if planned_wage_bill <= 0:
-            return
-
-        buffer_ratio = float(self.config.company.liquidity_buffer_ratio)
-        target_liquidity = planned_wage_bill * (1.0 + buffer_ratio)
-        shortfall = max(0.0, target_liquidity - float(self.sight_balance))
-        if shortfall <= 0:
-            return
-
-        granted = warengeld_bank.grant_credit(self, shortfall)
-        if granted <= 0:
-            # tests expect we tried (grant_calls recorded by stub).
-            log(
-                f"Company {self.unique_id} credit request denied (requested {shortfall:.2f}).",
-                level="WARNING",
-            )
-
-    def _service_warengeld_credit(self, warengeld_bank: WarengeldBank | None) -> None:
-        """Repay any outstanding short-term WarengeldBank credit.
-
-        Tests use lightweight bank stubs that don't necessarily expose `credit_lines`.
-        We therefore:
-        - infer outstanding via bank.credit_lines when present
-        - otherwise attempt a single repayment call using all available funds above buffer
-        """
-
-        if warengeld_bank is None:
-            return
-
-        buffer = float(self.config.company.min_working_capital_buffer)
-        repay_budget = max(0.0, float(self.sight_balance) - buffer)
-        if repay_budget <= 0:
-            return
-
-        outstanding = None
-        credit_lines = getattr(warengeld_bank, "credit_lines", None)
-        if isinstance(credit_lines, dict):
-            outstanding = float(credit_lines.get(self.unique_id, 0.0))
-
-        amount = repay_budget if outstanding is None else min(outstanding, repay_budget)
-        if amount <= 0:
-            return
-
-        repaid = warengeld_bank.process_repayment(self, amount)
-        if repaid > 0:
-            self.sight_balance = max(buffer, float(self.sight_balance) - repaid)
-
     def _handle_rd_cycle(self) -> None:
         """Process the invest -> innovate cycle."""
         self.invest_in_rd()
@@ -564,6 +514,16 @@ class Company(BaseAgent, LineageMixin):
             f"Company {self.unique_id} forcibly liquidated after {self._zero_staff_steps} steps without employees.",
             level="WARNING",
         )
+        # Release any remaining employees back to the labor market.
+        if state and getattr(state, "labor_market", None):
+            for e in list(self.employees):
+                try:
+                    state.labor_market.release_worker(e)
+                except Exception:
+                    pass
+            self.employees = []
+            self.pending_hires = 0
+
         payout_share = self.config.company.zero_staff_liquidation_state_share
         payout = max(0.0, self.sight_balance * payout_share)
         if payout > 0 and state is not None:
@@ -575,7 +535,6 @@ class Company(BaseAgent, LineageMixin):
         self,
         current_step: int,
         state: State | None = None,
-        warengeld_bank: WarengeldBank | None = None,
         savings_bank: SavingsBank | None = None,
         #labor_market: LaborMarket | None = None,
     ) -> "Company | None":
@@ -583,17 +542,15 @@ class Company(BaseAgent, LineageMixin):
         Execute one simulation step for the company.
 
         During each step, the company:
-        1. Ensures liquidity for operations
-        2. Handles R&D and innovation
-        3. Manages workforce and staffing
-        4. Runs core business operations
-        5. Manages growth and investment
-        6. Handles company lifecycle events (splits, bankruptcy)
+        1. Handles R&D and innovation
+        2. Manages workforce and staffing
+        3. Runs core business operations (produce, sell, pay wages)
+        4. Manages growth and investment
+        5. Handles company lifecycle events (splits, bankruptcy)
 
         Args:
             current_step: Current simulation step number
             state: State agent providing regulation and markets
-            warengeld_bank: Warengeld bank for financing
             savings_bank: Savings bank for long-term financing
 
         Returns:
@@ -604,10 +561,7 @@ class Company(BaseAgent, LineageMixin):
         """
         self._log_step_start(current_step)
 
-        # Phase 1: Financial Preparation
-        self._ensure_wage_liquidity(warengeld_bank)
-
-        # Phase 2: Innovation & R&D
+        # Phase 1: Innovation & R&D
         self._handle_rd_cycle()
 
         # Phase 3: Workforce Management
@@ -625,13 +579,7 @@ class Company(BaseAgent, LineageMixin):
         # Phase 6: Lifecycle Events
         lifecycle_result = self._handle_lifecycle_events(state)
         if lifecycle_result is not None:
-            # Even if we split (and return a new company), the current company should
-            # still settle its short-term credit lines for this step.
-            self._service_warengeld_credit(warengeld_bank)
             return lifecycle_result
-
-        # Phase 7: Financial Cleanup
-        self._service_warengeld_credit(warengeld_bank)
 
         self._log_step_completion(current_step)
         return None
@@ -657,6 +605,16 @@ class Company(BaseAgent, LineageMixin):
             return new_company
 
         if self.check_bankruptcy():
+            # Release employees back into the labor market so they can be re-matched.
+            if lm is not None:
+                for e in list(self.employees):
+                    try:
+                        lm.release_worker(e)
+                    except Exception:
+                        pass
+            self.employees = []
+            self.pending_hires = 0
+
             log(
                 f"Company {self.unique_id} is removed from simulation due to bankruptcy.",
                 level="WARNING",

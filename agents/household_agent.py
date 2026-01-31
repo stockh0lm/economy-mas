@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 
 from config import CONFIG_MODEL, SimulationConfig
 from logger import log
+from sim_clock import SimulationClock
 
 from .base_agent import BaseAgent
 
@@ -51,9 +52,16 @@ class Household(BaseAgent):
         self.environmental_impact: float = float(environmental_impact if environmental_impact is not None else 0.0)
 
         # Lifecycle
+        # Internal time-base: simulation steps are days.
+        self.age_days: int = 0
+        self.max_age_years: int = int(self.config.household.max_age)
+        self.max_age_days: int = int(self.max_age_years * getattr(self.config.time, "days_per_year", 360))
+
+        # Backwards-compatible: expose age as whole years.
         self.age: int = 0
-        self.max_age: int = self.config.household.max_age
-        self.generation: int = 0
+        self.max_age: int = self.max_age_years
+        # Generation bookkeeping: start at 1 for initial households.
+        self.generation: int = 1
         self.max_generation: int = self.config.household.max_generation
 
         # Labor
@@ -71,6 +79,23 @@ class Household(BaseAgent):
 
         # Child cost handling
         self.child_cost_covered: bool = False
+
+        # Optional reference used only for reporting aggregate household savings.
+        # The authoritative deposits live inside the SavingsBank.
+        self._savings_bank_ref: SavingsBank | None = None
+
+        # Monthly accounting (authoritative)
+        self.income_received_this_month: float = 0.0
+        self.consumption_this_month: float = 0.0
+
+        # Backwards-compatible aliases (deprecated)
+        self.last_income_received: float = 0.0
+        self.last_consumption: float = 0.0
+
+        # Month-end snapshots (after month counters are reset)
+        self.last_month_income: float = 0.0
+        self.last_month_consumption: float = 0.0
+        self.last_month_saved: float = 0.0
 
     # --- Balance-sheet vocabulary ---
     @property
@@ -91,6 +116,26 @@ class Household(BaseAgent):
         self._sight_balance = float(value)
 
     @property
+    def savings(self) -> float:
+        """Backwards-compatible 'savings' metric.
+
+        Returns total household savings = local_savings + SavingsBank deposits
+        (if we have a SavingsBank reference attached by the scheduler).
+
+        This keeps household_metrics meaningful when savings are held at the bank
+        (which is the Warengeld-consistent model).
+        """
+        bank_part = 0.0
+        if self._savings_bank_ref is not None:
+            bank_part = float(self._savings_bank_ref.savings_accounts.get(self.unique_id, 0.0))
+        return float(self.local_savings + bank_part)
+
+    @savings.setter
+    def savings(self, value: float) -> None:
+        # Setter kept only for older tests; it maps to local_savings.
+        self.local_savings = float(value)
+
+    @property
     def savings_balance(self) -> float:
         """Balance of savings deposits at the SavingsBank.
 
@@ -102,14 +147,6 @@ class Household(BaseAgent):
         """
         return float(self.local_savings)
 
-    # Backwards-compatible alias for older tests
-    @property
-    def savings(self) -> float:
-        return float(self.local_savings)
-
-    @savings.setter
-    def savings(self, value: float) -> None:
-        self.local_savings = float(value)
 
     @property
     def balance(self) -> float:
@@ -133,26 +170,65 @@ class Household(BaseAgent):
 
         IMPORTANT: This method does not create money by itself; the caller
         must book the corresponding debit on the payer side.
+
+        Note: `self.income` is treated as a baseline/structural income parameter
+        (used as household type/template). Wage payments are recorded via
+        `self.current_wage` and increases in `sight_balance`, not by mutating
+        `self.income` each step.
         """
         if amount <= 0:
             return
         self.sight_balance += amount
-        self.income = amount
+        self.income_received_this_month += float(amount)
+        self.last_income_received += float(amount)
         log(f"Household {self.unique_id}: received income {amount:.2f}.", level="INFO")
 
     # --- Savings bank interactions ---
 
     def save(self, savings_bank: SavingsBank | None) -> float:
-        """Move remaining sight balance into savings.
+        """Move part of monthly surplus into savings.
 
-        If a SavingsBank is provided, savings are deposited there.
-        Without a bank, savings are held locally in `self.local_savings`.
+        We interpret saving as allocating a fraction of the *monthly surplus*
+        (income received during the month minus consumption during the month)
+        into SavingsBank deposits at month-end.
+
+        The scheduler controls *when* this method is allowed to save (month-end).
         """
-        saved_amount = max(0.0, self.sight_balance)
-        if saved_amount <= 0:
+        save_rate = float(getattr(self.config.household, "savings_rate", 0.0))
+        save_rate = max(0.0, min(1.0, save_rate))
+
+        income = float(self.income_received_this_month)
+        consumption = float(self.consumption_this_month)
+
+        # Month-end snapshot (kept after we reset the counters)
+        self.last_month_income = income
+        self.last_month_consumption = consumption
+
+        # Monthly surplus = income received - consumption during month.
+        surplus = max(0.0, income - consumption)
+
+        # Reset counters for the next month.
+        self.income_received_this_month = 0.0
+        self.consumption_this_month = 0.0
+        self.last_income_received = 0.0
+        self.last_consumption = 0.0
+
+        if save_rate <= 0 or surplus <= 0:
+            self.last_month_saved = 0.0
             return 0.0
 
-        # Remove from sight balances
+        # Keep a small liquid buffer.
+        buffer = float(getattr(self.config.household, "transaction_buffer", 0.0))
+        max_affordable = max(0.0, float(self.sight_balance) - buffer)
+        if max_affordable <= 0:
+            self.last_month_saved = 0.0
+            return 0.0
+
+        saved_amount = min(max_affordable, surplus * save_rate)
+        if saved_amount <= 0:
+            self.last_month_saved = 0.0
+            return 0.0
+
         self.sight_balance -= saved_amount
 
         if savings_bank is None:
@@ -160,8 +236,9 @@ class Household(BaseAgent):
         else:
             savings_bank.deposit_savings(self, saved_amount)
 
+        self.last_month_saved = float(saved_amount)
         log(f"Household {self.unique_id}: Saved {saved_amount:.2f}.", level="INFO")
-        return saved_amount
+        return float(saved_amount)
 
 
     def _repay_savings_loans(self, savings_bank: SavingsBank | None) -> float:
@@ -216,6 +293,8 @@ class Household(BaseAgent):
 
     # --- Consumption ---
     def consume(self, consumption_rate: float, retailers: list[RetailerAgent]) -> float:
+        # If no retailers are present, we simply can't consume this step.
+        # This should not reset growth lifecycle flags.
         if consumption_rate <= 0 or not retailers:
             self.consumption = 0.0
             return 0.0
@@ -229,6 +308,8 @@ class Household(BaseAgent):
         result = retailer.sell_to_household(self, budget)
         spent = result.sale_value
         self.consumption = spent
+        self.consumption_this_month += float(spent)
+        self.last_consumption += float(spent)
 
         # Maintain rolling consumption history (used by Clearing for sight allowance).
         self.consumption_history.append(float(spent))
@@ -236,44 +317,136 @@ class Household(BaseAgent):
         if window > 0 and len(self.consumption_history) > window:
             self.consumption_history = self.consumption_history[-window:]
 
-        # Consumption indicates regular phase
-        self.growth_phase = False
         return spent
+
+    # --- Household splitting ---
+    def split_household(self, *, savings_bank: "SavingsBank") -> "Household | None":
+        """Create a new household (child) funded from this household's savings.
+
+        This is the canonical replacement for the legacy top-level `household_agent.py`
+        behavior. It is designed to be Warengeld-consistent:
+        - No money creation: funding comes from withdrawing existing savings OR
+          splitting existing sight balances.
+
+        Returns the new Household instance if a split happened, else None.
+        """
+
+        # Total savings = local + SavingsBank deposits
+        bank_savings = float(savings_bank.savings_accounts.get(self.unique_id, 0.0))
+        local_savings = float(self.local_savings)
+        total_savings = bank_savings + local_savings
+
+        # If we don't have savings, we can still split by allocating part of our
+        # disposable sight balance to the child (this is a pure transfer).
+        if total_savings <= 0:
+            disposable = max(
+                0.0,
+                float(self.sight_balance) - float(getattr(self.config.household, "transaction_buffer", 0.0)),
+            )
+            if disposable <= 0:
+                return None
+            transfer = 0.5 * disposable
+            if transfer <= 0:
+                return None
+            # Deduct from parent sight balance.
+            self.sight_balance -= transfer
+
+            child = Household(
+                unique_id=f"{self.unique_id}_child_{self.generation + 1}",
+                income=self.income,
+                land_area=self.land_area,
+                environmental_impact=self.environmental_impact,
+                config=self.config,
+            )
+            child.region_id = getattr(self, "region_id", "region_0")
+            child.generation = int(self.generation + 1)
+            child.sight_balance = float(transfer)
+
+            self.growth_phase = False
+            self.growth_counter = 0
+            self.child_cost_covered = False
+            return child
+
+        transfer = 0.8 * total_savings
+        if transfer <= 0:
+            return None
+
+        # Withdraw preferentially from SavingsBank, then from local.
+        from_bank = 0.0
+        if bank_savings > 0:
+            from_bank = savings_bank.withdraw_savings(self, min(bank_savings, transfer))
+
+        remaining = max(0.0, transfer - from_bank)
+        from_local = min(remaining, max(0.0, local_savings))
+        self.local_savings = max(0.0, local_savings - from_local)
+
+        child = Household(
+            unique_id=f"{self.unique_id}_child_{self.generation + 1}",
+            income=self.income,
+            land_area=self.land_area,
+            environmental_impact=self.environmental_impact,
+            config=self.config,
+        )
+        child.region_id = getattr(self, "region_id", "region_0")
+        child.generation = int(self.generation + 1)
+        child.sight_balance = float(from_bank + from_local)
+
+        # Reset parent's growth bookkeeping
+        self.growth_phase = False
+        self.growth_counter = 0
+        self.child_cost_covered = False
+
+        return child
 
     # --- Lifecycle / step ---
     def step(
         self,
         current_step: int,
         *,
-        savings_bank: SavingsBank,
-        retailers: list[RetailerAgent] | None = None,
-    ) -> None:
+        clock: SimulationClock,
+        savings_bank: "SavingsBank",
+        retailers: list["RetailerAgent"] | None = None,
+    ) -> "Household | None":
         """Run one household step.
 
-        Note: No endogenous money creation. Income must be received via transfers.
-
-        Test/legacy note:
-        Unit tests for this repo treat growth-phase child costs as a bookkeeping
-        trigger (withdraw to checking and mark covered) without reducing total
-        wealth during the same step.
+        Returns:
+            - A newly created Household when a split occurs.
+            - None otherwise.
         """
-        self.age += 1
+        # Advance time
+        self.age_days += 1
+        days_per_year = int(getattr(self.config.time, "days_per_year", 360))
+        self.age = self.age_days // max(1, days_per_year)
 
-        # Determine growth phase based on total savings (local + SavingsBank account).
-        total_savings = self.local_savings + savings_bank.savings_accounts.get(self.unique_id, 0.0)
-        if total_savings >= self.config.household.savings_growth_trigger:
+        # Determine growth phase.
+        # Primary trigger: total savings (local + SavingsBank account).
+        bank_savings = float(savings_bank.savings_accounts.get(self.unique_id, 0.0))
+        total_savings = float(self.local_savings) + bank_savings
+
+        # Secondary trigger: sustained disposable sight balances when saving is low.
+        # This prevents a systemic "no growth" outcome when savings_rate=0.
+        disposable_sight = max(0.0, float(self.sight_balance) - float(self.config.household.transaction_buffer))
+        wealth_trigger = float(getattr(self.config.household, "sight_growth_trigger", 0.0) or 0.0)
+        if wealth_trigger <= 0:
+            # Default heuristic: 5x base_income
+            wealth_trigger = 5.0 * float(self.config.household.base_income)
+
+        if total_savings >= float(self.config.household.savings_growth_trigger) or disposable_sight >= wealth_trigger:
             self.growth_phase = True
             self.child_cost_covered = False
         else:
             self.growth_phase = False
 
         if self.growth_phase:
+            self.growth_counter += 1
             # Align with tests: withdraw the child-rearing amount into checking and
             # mark the cost as covered, but don't spend it here.
             cost = float(self.config.household.child_rearing_cost)
             if cost > 0 and not self.child_cost_covered:
                 _ = savings_bank.withdraw_savings(self, cost)
                 self.child_cost_covered = True
+        else:
+            self.growth_counter = 0
 
         self._repay_savings_loans(savings_bank)
 
@@ -285,10 +458,18 @@ class Household(BaseAgent):
         if retailers:
             self.consume(rate, retailers)
 
-        # Save remaining checking.
-        self.save(savings_bank)
+        # Monthly saving decision happens deterministically on month-end.
+        if clock.is_month_end(current_step):
+            self.save(savings_bank)
 
-        # Aging / lifecycle end
-        if self.age >= self.max_age:
+        newborn: Household | None = None
+        if self.growth_phase and self.growth_counter >= self.growth_threshold:
+            # Limit generations if configured.
+            if int(self.generation) < int(self.max_generation):
+                newborn = self.split_household(savings_bank=savings_bank)
+
+        # Aging / lifecycle end (handled by scheduler; we only log here)
+        if self.age_days >= self.max_age_days:
             log(f"Household {self.unique_id}: reached max age.", level="INFO")
-            return
+
+        return newborn
