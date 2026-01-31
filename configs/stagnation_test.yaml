@@ -1,0 +1,16 @@
+# Long-run test to detect stagnation / collapse (money supply + demographics)
+# Keep the agent counts small to keep runtime reasonable.
+simulation_steps: 3600
+
+population:
+  num_households: 30
+  num_companies: 8
+  num_retailers: 3
+  seed: 42
+
+spatial:
+  num_regions: 1
+  local_trade_bias: 1.0
+
+logging_level: INFO
+log_file: output/simulation.log

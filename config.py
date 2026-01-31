@@ -342,7 +342,8 @@ class SpatialConfig(BaseConfigModel):
 
 class SimulationConfig(BaseConfigModel):
     simulation_steps: PositiveInt = 100
-    result_storage: str = Field("both")
+    # JSON export was removed for performance; CSV is the canonical output.
+    result_storage: str = Field("csv")
     tax_rates: TaxRates = Field(default_factory=TaxRates)
     household: HouseholdConfig = Field(default_factory=HouseholdConfig)
     company: CompanyConfig = Field(default_factory=CompanyConfig)
@@ -410,7 +411,9 @@ class SimulationConfig(BaseConfigModel):
     @classmethod
     def _validate_result_storage(cls, value: str) -> str:
         """Validate result storage option."""
-        valid_options = ["both", "file", "memory", "none"]
+        # Historical options included 'file'/'memory'. The current codebase
+        # uses CSV as the canonical persisted output format.
+        valid_options = ["csv", "both", "file", "memory", "none", "json"]
         if value not in valid_options:
             raise ValueError(f"result_storage must be one of {valid_options}, got {value}")
         return value

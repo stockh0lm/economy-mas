@@ -74,9 +74,11 @@ class LaborMarket(BaseAgent):
         """Mark a worker as unemployed so they can be matched again."""
         worker.employed = False
         worker.current_wage = None
+        if hasattr(worker, "employer_id"):
+            worker.employer_id = None  # type: ignore[attr-defined]
         log(
             f"LaborMarket {self.unique_id}: Worker {worker.unique_id} released back to market.",
-            level="INFO",
+            level="DEBUG",
         )
 
     def register_job_offer(
@@ -95,7 +97,7 @@ class LaborMarket(BaseAgent):
         log(
             f"LaborMarket {self.unique_id}: Registered job offer from employer {employer.unique_id} "
             f"with wage {wage:.2f} and {positions} positions.",
-            level="INFO",
+            level="DEBUG",
         )
 
     def register_worker(self, worker: WorkerProtocol) -> None:
@@ -108,7 +110,7 @@ class LaborMarket(BaseAgent):
         if worker not in self.registered_workers:
             self.registered_workers.append(worker)
             log(
-                f"LaborMarket {self.unique_id}: Registered worker {worker.unique_id}.", level="INFO"
+                f"LaborMarket {self.unique_id}: Registered worker {worker.unique_id}.", level="DEBUG"
             )
 
     def compute_unemployment_rate(self) -> float:
@@ -130,7 +132,7 @@ class LaborMarket(BaseAgent):
             self.default_wage = max(self.minimum_wage_floor, wage_override)
             log(
                 f"LaborMarket {self.unique_id}: Default wage overridden to {self.default_wage:.2f} from external signal.",
-                level="INFO",
+                level="DEBUG",
             )
             return
         price_reference = price_index if price_index is not None else 100.0
@@ -147,7 +149,7 @@ class LaborMarket(BaseAgent):
         self.default_wage = adjusted_wage
         log(
             f"LaborMarket {self.unique_id}: Adjusted default wage to {self.default_wage:.2f} (price_index={price_reference:.2f}, unemployment={unemployment:.2%}).",
-            level="INFO",
+            level="DEBUG",
         )
 
     def match_workers_to_jobs(self) -> list[WorkerMatchResult]:
@@ -202,7 +204,7 @@ class LaborMarket(BaseAgent):
                 log(
                     f"LaborMarket {self.unique_id}: Matched worker {worker.unique_id} "
                     f"with employer {offer.employer.unique_id} at wage {offer.wage:.2f}.",
-                    level="INFO",
+                    level="DEBUG",
                 )
 
         # Clear job offers after matching
@@ -248,7 +250,7 @@ class LaborMarket(BaseAgent):
             :param unemployment_rate:
             :param price_index:
         """
-        log(f"LaborMarket {self.unique_id} starting step {current_step}.", level="INFO")
+        log(f"LaborMarket {self.unique_id} starting step {current_step}.", level="DEBUG")
 
         matches = self.match_workers_to_jobs()
         self.latest_unemployment_rate = self.compute_unemployment_rate()
@@ -258,7 +260,7 @@ class LaborMarket(BaseAgent):
         log(
             f"LaborMarket {self.unique_id} completed step {current_step}. "
             f"{len(matches)} job matches made (unemployment {self.latest_unemployment_rate:.2%}).",
-            level="INFO",
+            level="DEBUG",
         )
 
     def deregister_worker(self, worker: WorkerProtocol) -> bool:
@@ -275,7 +277,7 @@ class LaborMarket(BaseAgent):
             self.registered_workers.remove(worker)
             log(
                 f"LaborMarket {self.unique_id}: Deregistered worker {worker.unique_id}.",
-                level="INFO",
+                    level="DEBUG",
             )
             return True
         except ValueError:

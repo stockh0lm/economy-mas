@@ -27,7 +27,8 @@ def test_simulation_company_and_household_turnover() -> None:
     assert len(set(ids)) == len(ids)
 
     initial_count = cfg.population.num_households or len(cfg.INITIAL_HOUSEHOLDS)
-    assert any(int(h.unique_id.strip(cfg.HOUSEHOLD_ID_PREFIX)) >= int(initial_count) for h in households)
+    prefix = cfg.HOUSEHOLD_ID_PREFIX
+    assert any(int(h.unique_id.replace(prefix, "", 1)) >= int(initial_count) for h in households)
 
 
 def test_household_growth_can_create_new_households() -> None:

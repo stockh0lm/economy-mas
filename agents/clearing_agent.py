@@ -236,6 +236,9 @@ class ClearingAgent(BaseAgent):
                 self._sync_bank_reserve_attr(bank)
 
         corrected = float(amount) - remaining
+        # Keep CC exposure consistent with extinguished deposits.
+        if corrected > 0 and hasattr(bank, "write_down_cc"):
+            bank.write_down_cc(retailer, corrected, reason="clearing_value_correction")
         log(
             f"Clearing: value correction triggered for retailer {getattr(retailer,'unique_id','retailer')}: "
             f"requested {amount:.2f}, extinguished {corrected:.2f}.",

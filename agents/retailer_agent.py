@@ -276,8 +276,14 @@ class RetailerAgent(BaseAgent):
         This is where the *extinguishing* side of the Warengeld cycle primarily happens.
         """
         repaid = self.auto_repay_kontokorrent(bank)
-        write_down = self.apply_obsolescence_write_down(current_step or 0)
-        return {"repaid": repaid, "inventory_write_down": write_down}
+        destroyed = self.apply_obsolescence_write_down(current_step or 0)
+
+        # Inventory value corrections must also reduce outstanding CC exposure,
+        # otherwise retailers accumulate permanent debt and eventually stop ordering.
+        if destroyed > 0:
+            bank.write_down_cc(self, destroyed, reason="inventory_obsolescence")
+
+        return {"repaid": repaid, "inventory_write_down": destroyed}
 
 
     def step(

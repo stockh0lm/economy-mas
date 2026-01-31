@@ -1,0 +1,31 @@
+# Long-run test tuned to trigger births/growth events.
+simulation_steps: 3600
+
+population:
+  num_households: 30
+  num_companies: 8
+  num_retailers: 3
+  seed: 43
+
+spatial:
+  num_regions: 1
+  local_trade_bias: 1.0
+
+household:
+  savings_rate: 0.08
+  consumption_rate_normal: 0.45
+  consumption_rate_growth: 0.55
+  savings_growth_trigger: 250
+  sight_growth_trigger: 200
+  growth_threshold: 4
+
+company:
+  investment_threshold: 300
+  growth_threshold: 10
+
+retailer:
+  target_inventory_value: 120
+  reorder_point_ratio: 0.6
+
+logging_level: INFO
+log_file: output/simulation.log

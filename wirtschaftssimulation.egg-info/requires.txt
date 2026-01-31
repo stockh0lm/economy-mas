@@ -1,0 +1,13 @@
+pydantic>=2.7.4
+PyYAML>=6.0.2
+
+[dev]
+nox
+pytest
+mypy
+ruff
+black
+isort
+vulture
+radon
+matplotlib

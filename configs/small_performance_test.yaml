@@ -1,19 +1,21 @@
-# Small performance test configuration
-# Reduced scale for faster execution and performance profiling
-simulation_steps: 1000  # Much shorter than 36000
+# Performance micro-benchmark config
+# 1 step = 1 day (360 days/year)
+# This config is intentionally small enough to allow running under cProfile.
+simulation_steps: 360
 
 time:
   days_per_month: 30
 
 spatial:
-  num_regions: 2  # Reduced from 12
-  local_trade_bias: 0.8
+  num_regions: 2
+  local_trade_bias: 0.85
 
 population:
-  num_households: 50  # Reduced from 500
-  num_companies: 12   # Reduced from 120
-  num_retailers: 4    # Reduced from 48
-  seed: 42
+  num_households: 120
+  num_companies: 40
+  num_retailers: 12
+  seed: 123
 
-# Enable progress tracking for performance monitoring
-logging_level: INFO
+# Logging is extremely expensive; keep it quiet for perf baselines.
+logging_level: ERROR
+log_file: output/simulation.log

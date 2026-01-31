@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import shutil
-from collections.abc import Callable
+from collections import defaultdict
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import pandas as pd
-import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 METRICS_DIR = REPO_ROOT / "output" / "metrics"
@@ -61,162 +62,90 @@ def detect_latest_run_id(metrics_dir: Path) -> str:
 
 
 def load_csv_rows(path: Path, skip_fields: Iterable[str] | None = None) -> pd.DataFrame:
-    """Load CSV data
+    """Load a metrics CSV into a DataFrame.
 
-    Args:
-        path: Path to CSV file
-        skip_fields: Fields to skip numeric conversion on
-
-    Returns:
-        DataFrame with loaded data
+    Tests (and downstream plotting helpers) expect a pandas.DataFrame.
     """
+
     skip_fields = set(skip_fields or [])
+    parsed_rows: list[dict[str, object]] = []
 
-    df = pd.read_csv(path)
-    # Convert time_step to int
-    df['time_step'] = pd.to_numeric(df['time_step'], errors='coerce').fillna(0).astype(int)
+    with path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        for raw in reader:
+            parsed: dict[str, object] = {}
+            for key, value in raw.items():
+                if key == "time_step":
+                    parsed[key] = int(value) if value not in (None, "") else 0
+                elif key in skip_fields:
+                    parsed[key] = value
+                else:
+                    parsed[key] = try_float(value)
+            parsed_rows.append(parsed)
 
-    # Convert numeric columns, skip specified fields
-    numeric_cols = [col for col in df.columns if col not in skip_fields and col != 'time_step']
-    for col in numeric_cols:
-        df[col] = pd.to_numeric(df[col], errors='coerce')
-
-    return df
-
-
-def try_float(value: str | None) -> float | None:
-    if value is None or value == "":
-        return None
-    try:
-        return float(value)
-    except ValueError:
-        return None
+    return pd.DataFrame(parsed_rows)
 
 
-def ensure_dirs(run_dir: Path) -> Path:
-    run_dir.mkdir(parents=True, exist_ok=True)
-    latest_dir = run_dir.parent / "latest"
-    latest_dir.mkdir(parents=True, exist_ok=True)
-    return latest_dir
+def _rows_to_dicts(rows: pd.DataFrame | list[dict[str, object]]) -> list[dict[str, object]]:
+    """Normalize either a DataFrame or list-of-dicts into list-of-dicts."""
 
-
-def save_figure(
-    fig: plt.Figure,
-    filename: str,
-    run_dir: Path,
-    latest_dir: Path,
-    close_figure: bool = True,
-) -> None:
-    target = run_dir / filename
-    fig.savefig(target, dpi=150, bbox_inches="tight")
-    shutil.copy2(target, latest_dir / filename)
-    if close_figure:
-        plt.close(fig)
+    if isinstance(rows, pd.DataFrame):
+        return rows.to_dict(orient="records")
+    return rows
 
 
 def extract_series(
-    df: pd.DataFrame, *columns: str
+    rows: pd.DataFrame | list[dict[str, object]], *columns: str
 ) -> tuple[list[int], dict[str, list[float]]]:
-    """Extract time series data
-
-    Args:
-        df: DataFrame with data
-        columns: Column names to extract
-
-    Returns:
-        Tuple of (time_steps, {column: values})
-    """
-    # Sort by time_step
-    df_sorted = df.sort_values('time_step')
-
-    # Extract time steps
-    steps = df_sorted['time_step'].tolist()
-
-    # Extract series data, filling missing values with 0.0
+    dict_rows = _rows_to_dicts(rows)
+    ordered = sorted(dict_rows, key=lambda row: int(row["time_step"]))
+    steps = [int(row["time_step"]) for row in ordered]
     series: dict[str, list[float]] = {}
     for column in columns:
-        # Only include columns that exist in the dataframe
-        if column in df_sorted.columns:
-            # Use pandas vectorized operations
-            col_data = df_sorted[column].fillna(0.0).tolist()
-            series[column] = col_data
-        else:
-            # Fill with zeros if column doesn't exist
-            series[column] = [0.0] * len(steps)
-
+        values: list[float] = []
+        for row in ordered:
+            v = row.get(column)
+            # pandas uses NaN floats for missing values; normalize to 0.0
+            if v is None or (isinstance(v, float) and pd.isna(v)):
+                values.append(0.0)
+            else:
+                values.append(float(v))
+        series[column] = values
     return steps, series
 
 
 def aggregate_company_metrics(
-    df: pd.DataFrame
+    rows: pd.DataFrame | list[dict[str, object]]
 ) -> tuple[list[int], dict[str, list[float]]]:
-    """Aggregate company metrics using pandas DataFrame operations.
-
-    Args:
-        df: DataFrame with company data
-
-    Returns:
-        Tuple of (time_steps, aggregated_metrics)
-    """
-    # Ensure time_step is int
-    df['time_step'] = df['time_step'].astype(int)
-
-    # Only aggregate columns that exist in the dataframe
-    agg_columns = {
-        'balance': 'sum',
-        'rd_investment': 'sum',
-        'production_capacity': 'sum'
-    }
-
-    # Filter to only include columns that exist
-    existing_columns = {col: func for col, func in agg_columns.items() if col in df.columns}
-    if not existing_columns:
-        # Return empty results if no valid columns
-        return [], {}
-
-    # Group by time_step and sum numeric columns
-    aggregated_df = df.groupby('time_step', as_index=False).agg(existing_columns).fillna(0.0)
-
-    # Sort by time_step
-    aggregated_df = aggregated_df.sort_values('time_step')
-
-    # Convert to output format
-    steps = aggregated_df['time_step'].tolist()
+    dict_rows = _rows_to_dicts(rows)
+    totals: defaultdict[int, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    for row in dict_rows:
+        step = int(row["time_step"])
+        for key in ("balance", "rd_investment", "production_capacity"):
+            value = row.get(key)
+            if isinstance(value, (int, float)) and value is not None:
+                totals[step][key] += float(value)
+    steps = sorted(totals)
     aggregated = {
-        col: aggregated_df[col].tolist() for col in existing_columns.keys()
+        key: [totals[step].get(key, 0.0) for step in steps]
+        for key in ("balance", "rd_investment", "production_capacity")
     }
     return steps, aggregated
 
 
-def count_agents_per_step(df: pd.DataFrame) -> tuple[list[int], list[int]]:
-    """Count agents per time step using pandas DataFrame operations.
-
-    Args:
-        df: DataFrame with agent data
-
-    Returns:
-        Tuple of (time_steps, agent_counts)
-    """
-    # Ensure time_step is int
-    df['time_step'] = df['time_step'].astype(int)
-
-    # Check if agent_id column exists
-    if 'agent_id' not in df.columns:
-        # Return empty results if no agent_id column
-        return [], []
-
-    # Count unique agents per time step
-    count_df = df.groupby('time_step')['agent_id'].nunique().reset_index()
-    count_df = count_df.sort_values('time_step')
-
-    steps = count_df['time_step'].tolist()
-    values = count_df['agent_id'].tolist()
+def count_agents_per_step(rows: pd.DataFrame | list[dict[str, object]]) -> tuple[list[int], list[int]]:
+    dict_rows = _rows_to_dicts(rows)
+    counts: defaultdict[int, set[str]] = defaultdict(set)
+    for row in dict_rows:
+        counts[int(row["time_step"])].add(str(row.get("agent_id", "")))
+    steps = sorted(counts)
+    values = [len(counts[step]) for step in steps]
     return steps, values
 
 
-def plot_global_output(global_df: pd.DataFrame) -> tuple[plt.Figure, str]:
+def plot_global_output(global_rows: pd.DataFrame | list[dict[str, object]]) -> tuple[plt.Figure, str]:
     steps, data = extract_series(
-        global_df,
+        global_rows,
         "gdp",
         "household_consumption",
         "government_spending",
@@ -233,11 +162,11 @@ def plot_global_output(global_df: pd.DataFrame) -> tuple[plt.Figure, str]:
     return fig, "global_output.png"
 
 
-def plot_monetary_system(global_df: pd.DataFrame) -> tuple[plt.Figure, str]:
+def plot_monetary_system(global_rows: pd.DataFrame | list[dict[str, object]]) -> tuple[plt.Figure, str]:
     """Diagnostics for the core Warengeld mechanism."""
 
     steps, data = extract_series(
-        global_df,
+        global_rows,
         "m1_proxy",
         "m2_proxy",
         "cc_exposure",
@@ -266,9 +195,9 @@ def plot_monetary_system(global_df: pd.DataFrame) -> tuple[plt.Figure, str]:
     return fig, "monetary_system.png"
 
 
-def plot_labor_market(global_df: pd.DataFrame) -> tuple[plt.Figure, str]:
+def plot_labor_market(global_rows: pd.DataFrame | list[dict[str, object]]) -> tuple[plt.Figure, str]:
     steps, data = extract_series(
-        global_df,
+        global_rows,
         "employment_rate",
         "unemployment_rate",
         "bankruptcy_rate",
@@ -286,14 +215,14 @@ def plot_labor_market(global_df: pd.DataFrame) -> tuple[plt.Figure, str]:
     return fig, "labor_market.png"
 
 
-def plot_prices_and_wages(global_df: pd.DataFrame) -> tuple[plt.Figure, str]:
+def plot_prices_and_wages(global_rows: pd.DataFrame | list[dict[str, object]]) -> tuple[plt.Figure, str]:
     steps, wage_series = extract_series(
-        global_df,
+        global_rows,
         "average_nominal_wage",
         "average_real_wage",
     )
-    _, price_series = extract_series(global_df, "price_index")
-    _, inflation_series = extract_series(global_df, "inflation_rate")
+    _, price_series = extract_series(global_rows, "price_index")
+    _, inflation_series = extract_series(global_rows, "inflation_rate")
 
     fig, ax_wage = plt.subplots(figsize=(10, 6))
     ax_wage.plot(steps, wage_series["average_nominal_wage"], label="Nominal Wage")
@@ -325,9 +254,9 @@ def plot_prices_and_wages(global_df: pd.DataFrame) -> tuple[plt.Figure, str]:
     return fig, "prices_and_wages.png"
 
 
-def plot_state_budgets(state_df: pd.DataFrame) -> tuple[plt.Figure, str]:
+def plot_state_budgets(state_rows: pd.DataFrame | list[dict[str, object]]) -> tuple[plt.Figure, str]:
     steps, data = extract_series(
-        state_df,
+        state_rows,
         "environment_budget",
         "infrastructure_budget",
         "social_budget",
@@ -344,18 +273,8 @@ def plot_state_budgets(state_df: pd.DataFrame) -> tuple[plt.Figure, str]:
     return fig, "state_budgets.png"
 
 
-def plot_company_health(company_df: pd.DataFrame) -> tuple[plt.Figure, str]:
-    steps, data = aggregate_company_metrics(company_df)
-
-    # Handle case where no valid columns were found
-    if not steps or not data:
-        fig, ax_balance = plt.subplots(figsize=(10, 6))
-        ax_balance.set_title("Company Health Indicators - No Data Available")
-        ax_balance.set_xlabel("Time Step")
-        ax_balance.set_ylabel("Value")
-        ax_balance.grid(True, alpha=0.3)
-        return fig, "company_health.png"
-
+def plot_company_health(company_rows: pd.DataFrame | list[dict[str, object]]) -> tuple[plt.Figure, str]:
+    steps, data = aggregate_company_metrics(company_rows)
     fig, ax_balance = plt.subplots(figsize=(10, 6))
     ax_balance.plot(steps, data["balance"], label="Aggregate Balance", color="tab:blue")
     ax_balance.set_xlabel("Time Step")
@@ -387,8 +306,8 @@ def plot_company_health(company_df: pd.DataFrame) -> tuple[plt.Figure, str]:
     return fig, "company_health.png"
 
 
-def plot_household_population(household_df: pd.DataFrame) -> tuple[plt.Figure, str]:
-    steps, counts = count_agents_per_step(household_df)
+def plot_household_population(household_rows: pd.DataFrame | list[dict[str, object]]) -> tuple[plt.Figure, str]:
+    steps, counts = count_agents_per_step(household_rows)
     fig, ax = plt.subplots(figsize=(10, 4))
     ax.plot(steps, counts, color="tab:blue")
     ax.set_title("Active Households")
@@ -398,8 +317,8 @@ def plot_household_population(household_df: pd.DataFrame) -> tuple[plt.Figure, s
     return fig, "households_count.png"
 
 
-def plot_company_population(company_df: pd.DataFrame) -> tuple[plt.Figure, str]:
-    steps, counts = count_agents_per_step(company_df)
+def plot_company_population(company_rows: pd.DataFrame | list[dict[str, object]]) -> tuple[plt.Figure, str]:
+    steps, counts = count_agents_per_step(company_rows)
     fig, ax = plt.subplots(figsize=(10, 4))
     ax.plot(steps, counts, color="tab:green")
     ax.set_title("Active Companies")
@@ -489,6 +408,15 @@ def add_linked_cursor(axes: list[plt.Axes]) -> Callable[[object], None]:
             canvas.draw_idle()
 
     return on_move
+
+
+def try_float(value: str | None) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        return None
 
 
 if __name__ == "__main__":

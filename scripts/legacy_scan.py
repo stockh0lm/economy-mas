@@ -53,6 +53,9 @@ def _iter_python_files(root: Path) -> list[Path]:
         ".git/",
         "tests/",
         "scripts/",
+        "wirtschaft/",
+        "/wirtschaft/",
+        "wirtschaftssimulation.egg-info/",
     )
     files: list[Path] = []
     for p in root.rglob("*.py"):

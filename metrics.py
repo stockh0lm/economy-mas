@@ -6,8 +6,6 @@ This module tracks key economic indicators across different agent types,
 calculates aggregate statistics, and provides data for visualization.
 """
 
-import csv
-import json
 import statistics
 from collections import defaultdict
 from datetime import datetime
@@ -104,6 +102,14 @@ class MetricsCollector:
         self.export_path: Path = Path(self.config.metrics_export_path)
         self.latest_labor_metrics = {}
         self.latest_global_metrics = {}
+        # Cached DataFrames (materialized on export)
+        self.household_metrics_df: pd.DataFrame | None = None
+        self.company_metrics_df: pd.DataFrame | None = None
+        self.retailer_metrics_df: pd.DataFrame | None = None
+        self.bank_metrics_df: pd.DataFrame | None = None
+        self.state_metrics_df: pd.DataFrame | None = None
+        self.market_metrics_df: pd.DataFrame | None = None
+        self.global_metrics_df: pd.DataFrame | None = None
         self.__post_init__()
 
     def __post_init__(self) -> None:
@@ -373,6 +379,8 @@ class MetricsCollector:
             if agent_id not in self.household_metrics:
                 self.register_household(household)
 
+            step_metrics: dict[str, ValueType] = {}
+
             # Collect metrics if they exist on the household object
             for attr in [
                 "checking_account",
@@ -386,16 +394,15 @@ class MetricsCollector:
                 "environmental_impact",
             ]:
                 if hasattr(household, attr):
-                    value = getattr(household, attr)
-                    self.add_metric(
-                        agent_id, attr, value, self.household_metrics, step
-                    )  # Pass the specific metric dict
+                    step_metrics[attr] = cast(ValueType, getattr(household, attr))
 
-            # Calculate derived metrics
-            total_wealth = getattr(household, "checking_account", 0.0) + getattr(
-                household, "savings", 0.0
+            # Calculate derived metrics (kept for backwards compatibility)
+            total_wealth = float(getattr(household, "checking_account", 0.0)) + float(
+                getattr(household, "savings", 0.0)
             )
-            self.add_metric(agent_id, "total_wealth", total_wealth, self.household_metrics, step)
+            step_metrics["total_wealth"] = total_wealth
+
+            self.household_metrics.setdefault(agent_id, {})[step] = step_metrics
 
     def collect_company_metrics(self, companies: list[Company], step: TimeStep) -> None:
         """
@@ -410,6 +417,8 @@ class MetricsCollector:
             if agent_id not in self.company_metrics:
                 self.register_company(company)
 
+            step_metrics: dict[str, ValueType] = {}
+
             # Collect metrics if they exist on the company object
             for attr in [
                 "balance",
@@ -422,13 +431,13 @@ class MetricsCollector:
                 "resource_usage",
             ]:
                 if hasattr(company, attr):
-                    value = getattr(company, attr)
-                    self.add_metric(agent_id, attr, value, self.company_metrics, step)
+                    step_metrics[attr] = cast(ValueType, getattr(company, attr))
 
             # Count employees if available
             if hasattr(company, "employees"):
-                num_employees = len(company.employees)
-                self.add_metric(agent_id, "employees", num_employees, self.company_metrics, step)
+                step_metrics["employees"] = int(len(company.employees))
+
+            self.company_metrics.setdefault(agent_id, {})[step] = step_metrics
 
     def collect_retailer_metrics(self, retailers: list, step: TimeStep) -> None:
         """Collect metrics from retailer agents."""
@@ -438,9 +447,20 @@ class MetricsCollector:
             if agent_id not in self.retailer_metrics:
                 self.register_retailer(retailer)
 
-            for attr in ["sight_balance", "cc_balance", "cc_limit", "inventory_value", "target_inventory_value", "write_downs_total", "sales_total", "purchases_total"]:
+            step_metrics: dict[str, ValueType] = {}
+            for attr in [
+                "sight_balance",
+                "cc_balance",
+                "cc_limit",
+                "inventory_value",
+                "target_inventory_value",
+                "write_downs_total",
+                "sales_total",
+                "purchases_total",
+            ]:
                 if hasattr(retailer, attr):
-                    self.add_metric(agent_id, attr, getattr(retailer, attr), self.retailer_metrics, step)
+                    step_metrics[attr] = cast(ValueType, getattr(retailer, attr))
+            self.retailer_metrics.setdefault(agent_id, {})[step] = step_metrics
 
     def collect_bank_metrics(self, banks: list, step: TimeStep) -> None:
         """
@@ -455,21 +475,22 @@ class MetricsCollector:
             if agent_id not in self.bank_metrics:
                 self.register_bank(bank)
 
-            liquidity = bank.liquidity
-            self.add_metric(agent_id, "liquidity", liquidity, self.bank_metrics, step)
+            step_metrics: dict[str, ValueType] = {}
+            step_metrics["liquidity"] = float(getattr(bank, "liquidity", 0.0))
 
             if hasattr(bank, "credit_lines"):
-                total_credit = sum(bank.credit_lines.values())
-                num_borrowers = len(bank.credit_lines)
-                self.add_metric(agent_id, "total_credit", total_credit, self.bank_metrics, step)
-                self.add_metric(agent_id, "num_borrowers", num_borrowers, self.bank_metrics, step)
+                credit_lines = getattr(bank, "credit_lines")
+                total_credit = float(sum(credit_lines.values()))
+                step_metrics["total_credit"] = total_credit
+                step_metrics["num_borrowers"] = int(len(credit_lines))
 
             if hasattr(bank, "total_savings"):
-                total_savings = bank.total_savings
-                self.add_metric(agent_id, "total_savings", total_savings, self.bank_metrics, step)
+                total_savings = float(getattr(bank, "total_savings"))
+                step_metrics["total_savings"] = total_savings
                 if hasattr(bank, "savings_accounts"):
-                    num_accounts = len(bank.savings_accounts)
-                    self.add_metric(agent_id, "num_accounts", num_accounts, self.bank_metrics, step)
+                    step_metrics["num_accounts"] = int(len(getattr(bank, "savings_accounts")))
+
+            self.bank_metrics.setdefault(agent_id, {})[step] = step_metrics
 
     def collect_state_metrics(self, state_id: str, state, households, companies, step: TimeStep):
         """
@@ -481,15 +502,12 @@ class MetricsCollector:
             households: List of household agents
             companies: List of company agents
         """
-        # Collect basic state budget metrics
-        self.add_metric(state_id, "tax_revenue", state.tax_revenue, self.state_metrics, step)
-        self.add_metric(
-            state_id, "infrastructure_budget", state.infrastructure_budget, self.state_metrics, step
-        )
-        self.add_metric(state_id, "social_budget", state.social_budget, self.state_metrics, step)
-        self.add_metric(
-            state_id, "environment_budget", state.environment_budget, self.state_metrics, step
-        )
+        step_metrics: dict[str, ValueType] = {
+            "tax_revenue": float(getattr(state, "tax_revenue", 0.0)),
+            "infrastructure_budget": float(getattr(state, "infrastructure_budget", 0.0)),
+            "social_budget": float(getattr(state, "social_budget", 0.0)),
+            "environment_budget": float(getattr(state, "environment_budget", 0.0)),
+        }
 
         # Calculate aggregate economic metrics
         total_household_savings = sum(
@@ -503,14 +521,11 @@ class MetricsCollector:
         )
         employment_rate = total_employment / len(households) if households else 0
 
-        # Add aggregate metrics
-        self.add_metric(
-            state_id, "total_household_savings", total_household_savings, self.state_metrics, step
-        )
-        self.add_metric(
-            state_id, "total_company_balance", total_company_balance, self.state_metrics, step
-        )
-        self.add_metric(state_id, "employment_rate", employment_rate, self.state_metrics, step)
+        step_metrics["total_household_savings"] = float(total_household_savings)
+        step_metrics["total_company_balance"] = float(total_company_balance)
+        step_metrics["employment_rate"] = float(employment_rate)
+
+        self.state_metrics.setdefault(state_id, {})[step] = step_metrics
 
     def collect_market_metrics(self, market: EconomicAgent, step: TimeStep) -> None:
         """
@@ -523,31 +538,25 @@ class MetricsCollector:
         if agent_id not in self.market_metrics:
             self.market_metrics[agent_id] = {}
 
+        step_metrics: dict[str, ValueType] = {}
+
         # Labor market metrics
         if hasattr(market, "registered_workers"):
             labor_market = cast(LaborMarketMetricsSource, market)
             num_registered_workers = len(labor_market.registered_workers)
-            self.add_metric(
-                agent_id,
-                "registered_workers",
-                float(num_registered_workers),
-                self.market_metrics,
-                step,
-            )
+            step_metrics["registered_workers"] = float(num_registered_workers)
 
             employed_workers = sum(
                 1
                 for w in labor_market.registered_workers
                 if hasattr(w, "employed") and w.employed
             )
-            self.add_metric(
-                agent_id, "employed_workers", float(employed_workers), self.market_metrics, step
-            )
+            step_metrics["employed_workers"] = float(employed_workers)
 
             employment_rate = (
                 employed_workers / num_registered_workers if num_registered_workers > 0 else 0
             )
-            self.add_metric(agent_id, "employment_rate", employment_rate, self.market_metrics, step)
+            step_metrics["employment_rate"] = float(employment_rate)
             self.latest_labor_metrics = {
                 "registered_workers": float(num_registered_workers),
                 "employed_workers": float(employed_workers),
@@ -560,13 +569,14 @@ class MetricsCollector:
         if hasattr(market, "list_of_assets"):
             financial_market = cast(FinancialMarketMetricsSource, market)
             num_assets = len(financial_market.list_of_assets)
-            self.add_metric(agent_id, "num_assets", float(num_assets), self.market_metrics, step)
+            step_metrics["num_assets"] = float(num_assets)
 
             if financial_market.list_of_assets:
                 average_asset_price = statistics.mean(financial_market.list_of_assets.values())
-                self.add_metric(
-                    agent_id, "average_asset_price", average_asset_price, self.market_metrics, step
-                )
+                step_metrics["average_asset_price"] = float(average_asset_price)
+
+        if step_metrics:
+            self.market_metrics.setdefault(agent_id, {})[step] = step_metrics
 
     def calculate_global_metrics(self, step: TimeStep) -> None:
         """Calculate global economic metrics aggregated across all agents."""
@@ -761,52 +771,21 @@ class MetricsCollector:
         return snapshot
 
     def export_metrics(self) -> None:
-        """Persist metrics according to CONFIG['result_storage']."""
-        storage_mode = str(self.config.result_storage).lower()
-        allowed_modes = {"json", "csv", "both"}
-        if storage_mode not in allowed_modes:
-            log(
-                f"MetricsCollector: Unknown result_storage '{storage_mode}', defaulting to JSON",
-                level="WARNING",
-            )
-            storage_mode = "json"
-
-        if storage_mode in ("json", "both"):
-            self.export_metrics_to_json()
-        if storage_mode in ("csv", "both"):
-            self.export_time_series_to_csv()
-
-    def export_metrics_to_json(self) -> None:
-        """Export all collected metrics to JSON format"""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_file = self.export_path / f"metrics_{timestamp}.json"
-
-        metrics_data = {
-            "household_metrics": self.household_metrics,
-            "company_metrics": self.company_metrics,
-            "retailer_metrics": self.retailer_metrics,
-            "bank_metrics": self.bank_metrics,
-            "state_metrics": self.state_metrics,
-            "market_metrics": self.market_metrics,
-            "global_metrics": self.global_metrics,
-        }
-
-        with open(output_file, "w") as f:
-            json.dump(metrics_data, f, indent=2)
-
-        log(f"MetricsCollector: Exported metrics to {output_file}", level="INFO")
+        """Persist metrics to CSV (JSON export removed for performance)."""
+        self.export_time_series_to_csv()
 
     def export_time_series_to_csv(self) -> None:
-        """Export time series of metrics to structured CSV files."""
+        """Export time series of metrics to structured CSV files using pandas."""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
         exports = [
-            self._export_global_metrics_csv(timestamp),
-            self._export_agent_metrics_csv(self.household_metrics, "household_metrics", timestamp),
-            self._export_agent_metrics_csv(self.company_metrics, "company_metrics", timestamp),
-            self._export_agent_metrics_csv(self.retailer_metrics, "retailer_metrics", timestamp),
-            self._export_agent_metrics_csv(self.bank_metrics, "bank_metrics", timestamp),
-            self._export_agent_metrics_csv(self.state_metrics, "state_metrics", timestamp),
-            self._export_agent_metrics_csv(self.market_metrics, "market_metrics", timestamp),
+            self._export_global_metrics_df(timestamp),
+            self._export_agent_metrics_df(self.household_metrics, "household_metrics", timestamp),
+            self._export_agent_metrics_df(self.company_metrics, "company_metrics", timestamp),
+            self._export_agent_metrics_df(self.retailer_metrics, "retailer_metrics", timestamp),
+            self._export_agent_metrics_df(self.bank_metrics, "bank_metrics", timestamp),
+            self._export_agent_metrics_df(self.state_metrics, "state_metrics", timestamp),
+            self._export_agent_metrics_df(self.market_metrics, "market_metrics", timestamp),
         ]
 
         written = [path for path in exports if path is not None]
@@ -819,28 +798,34 @@ class MetricsCollector:
         else:
             log("MetricsCollector: No metrics available for CSV export", level="WARNING")
 
-    def _export_global_metrics_csv(self, timestamp: str) -> Path | None:
+    def _export_global_metrics_df(self, timestamp: str) -> Path | None:
         if not self.global_metrics:
             return None
 
-        metric_names: set[str] = set()
-        for data in self.global_metrics.values():
-            metric_names.update(data.keys())
+        import pandas as pd
 
-        fieldnames = ["time_step"] + sorted(metric_names)
+        rows: list[dict[str, ValueType]] = []
+        for step, metrics in self.global_metrics.items():
+            row: dict[str, ValueType] = {"time_step": int(step)}
+            row.update(metrics)
+            rows.append(row)
+
+        df = pd.DataFrame.from_records(rows)
+        if not df.empty and "time_step" in df.columns:
+            df = df.sort_values("time_step")
+
         output_file = self.export_path / f"global_metrics_{timestamp}.csv"
+        import warnings
 
-        with open(output_file, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            for step in sorted(self.global_metrics.keys()):
-                row = {"time_step": step}
-                row.update(self.global_metrics[step])
-                writer.writerow(row)
-
+        with warnings.catch_warnings():
+            # pandas may warn about dtype casts when writing NaNs in mixed-type frames.
+            warnings.simplefilter("ignore", RuntimeWarning)
+            df.to_csv(output_file, index=False)
+        # Cache for interactive/debug use
+        self.global_metrics_df = df
         return output_file
 
-    def _export_agent_metrics_csv(
+    def _export_agent_metrics_df(
         self,
         agent_metrics: AgentMetricsDict,
         filename_prefix: str,
@@ -849,28 +834,42 @@ class MetricsCollector:
         if not agent_metrics:
             return None
 
-        metric_names: set[str] = set()
-        has_rows = False
-        for time_series in agent_metrics.values():
-            if time_series:
-                has_rows = True
-            for metrics in time_series.values():
-                metric_names.update(metrics.keys())
+        import pandas as pd
 
-        if not has_rows:
+        rows: list[dict[str, ValueType]] = []
+        for agent_id, time_series in agent_metrics.items():
+            for step, metrics in time_series.items():
+                row: dict[str, ValueType] = {"time_step": int(step), "agent_id": str(agent_id)}
+                row.update(metrics)
+                rows.append(row)
+
+        if not rows:
             return None
 
-        fieldnames = ["time_step", "agent_id"] + sorted(metric_names)
-        output_file = self.export_path / f"{filename_prefix}_{timestamp}.csv"
+        df = pd.DataFrame.from_records(rows)
+        if not df.empty and "time_step" in df.columns:
+            df = df.sort_values(["time_step", "agent_id"])  # stable output
 
-        with open(output_file, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            for agent_id, time_series in agent_metrics.items():
-                for step in sorted(time_series.keys()):
-                    row = {"time_step": step, "agent_id": agent_id}
-                    row.update(time_series[step])
-                    writer.writerow(row)
+        output_file = self.export_path / f"{filename_prefix}_{timestamp}.csv"
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            df.to_csv(output_file, index=False)
+
+        # Cache for interactive/debug use
+        if filename_prefix.startswith("household"):
+            self.household_metrics_df = df
+        elif filename_prefix.startswith("company"):
+            self.company_metrics_df = df
+        elif filename_prefix.startswith("retailer"):
+            self.retailer_metrics_df = df
+        elif filename_prefix.startswith("bank"):
+            self.bank_metrics_df = df
+        elif filename_prefix.startswith("state"):
+            self.state_metrics_df = df
+        elif filename_prefix.startswith("market"):
+            self.market_metrics_df = df
 
         return output_file
 

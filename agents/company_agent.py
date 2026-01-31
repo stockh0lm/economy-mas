@@ -181,13 +181,16 @@ class Company(BaseAgent, LineageMixin):
         """Receive a worker assignment from the labor market."""
         worker.employed = True  # type: ignore[attr-defined]
         worker.current_wage = wage  # type: ignore[attr-defined]
+        # Optional backlink for clean worker removal.
+        if hasattr(worker, "employer_id"):
+            worker.employer_id = self.unique_id  # type: ignore[attr-defined]
         self.employees.append(worker)
         if self.pending_hires > 0:
             self.pending_hires -= 1
         log(
             f"Company {self.unique_id} accepted worker {worker.unique_id} at wage {wage:.2f}. "
             f"Total employees: {len(self.employees)}.",
-            level="INFO",
+            level="DEBUG",
         )
 
     def adjust_employees(self, labor_market: LaborMarket) -> None:
@@ -203,10 +206,7 @@ class Company(BaseAgent, LineageMixin):
             stale = [e for e in self.employees if e not in live_set]
             if stale:
                 for e in stale:
-                    try:
-                        labor_market.release_worker(e)
-                    except Exception:
-                        pass
+                    labor_market.release_worker(e)
                 self.employees = [e for e in self.employees if e in live_set]
 
         employee_capacity_ratio: float = self.config.company.employee_capacity_ratio
@@ -231,7 +231,7 @@ class Company(BaseAgent, LineageMixin):
                     )
                     log(
                         f"Company {self.unique_id} requested {new_positions} workers via labor market.",
-                        level="INFO",
+                        level="DEBUG",
                     )
         elif required_employees < current_count:
             to_release = current_count - required_employees
@@ -242,7 +242,7 @@ class Company(BaseAgent, LineageMixin):
                     labor_market.release_worker(employee)
                     log(
                         f"Company {self.unique_id} released worker {employee.unique_id}.",
-                        level="INFO",
+                        level="DEBUG",
                     )
 
     def get_unit_price(self) -> float:
@@ -303,7 +303,7 @@ class Company(BaseAgent, LineageMixin):
             Total wages paid
         """
         if not self.employees:
-            log(f"Company {self.unique_id} has no employees to pay wages.", level="WARNING")
+            log(f"Company {self.unique_id} has no employees to pay wages.", level="DEBUG")
             return 0.0
 
         # Compute planned wage bill
@@ -327,7 +327,7 @@ class Company(BaseAgent, LineageMixin):
         if available <= 0.0:
             log(
                 f"Company {self.unique_id} cannot pay wages (balance {self.sight_balance:.2f}, buffer {buffer:.2f}).",
-                level="WARNING",
+                level="DEBUG",
             )
             return 0.0
 
@@ -337,7 +337,7 @@ class Company(BaseAgent, LineageMixin):
             log(
                 f"Company {self.unique_id}: wage bill {planned_wage_bill:.2f} exceeds available {available:.2f}; "
                 f"paying pro-rata at {pay_ratio:.2%}.",
-                level="WARNING",
+                level="INFO",
             )
 
         total_paid: float = 0.0
@@ -517,10 +517,7 @@ class Company(BaseAgent, LineageMixin):
         # Release any remaining employees back to the labor market.
         if state and getattr(state, "labor_market", None):
             for e in list(self.employees):
-                try:
-                    state.labor_market.release_worker(e)
-                except Exception:
-                    pass
+                state.labor_market.release_worker(e)
             self.employees = []
             self.pending_hires = 0
 
@@ -587,12 +584,12 @@ class Company(BaseAgent, LineageMixin):
     def _log_step_start(self, current_step: int) -> None:
         """Log the start of a company step."""
         self.log_metric("step_start", current_step)
-        log(f"Company {self.unique_id} starting step {current_step}.", level="INFO")
+        log(f"Company {self.unique_id} starting step {current_step}.", level="DEBUG")
 
     def _log_step_completion(self, current_step: int) -> None:
         """Log the completion of a company step."""
         self.log_metric("step_completion", current_step)
-        log(f"Company {self.unique_id} completed step {current_step}.", level="INFO")
+        log(f"Company {self.unique_id} completed step {current_step}.", level="DEBUG")
 
     def _handle_lifecycle_events(self, state: State | None) -> "Company | None":
         """Handle company lifecycle events (bankruptcy, splits)."""
@@ -608,10 +605,7 @@ class Company(BaseAgent, LineageMixin):
             # Release employees back into the labor market so they can be re-matched.
             if lm is not None:
                 for e in list(self.employees):
-                    try:
-                        lm.release_worker(e)
-                    except Exception:
-                        pass
+                    lm.release_worker(e)
             self.employees = []
             self.pending_hires = 0
 

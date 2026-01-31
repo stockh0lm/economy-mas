@@ -67,6 +67,8 @@ class Household(BaseAgent):
         # Labor
         self.employed: bool = False
         self.current_wage: float | None = None
+        # Optional backlink used by the main loop to remove workers cleanly on death.
+        self.employer_id: str | None = None
 
         # Consumption / phase
         self.growth_phase: bool = False

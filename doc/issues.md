@@ -1,6 +1,6 @@
 # Issues / Backlog (Warengeld-Simulation)
 
-Stand: **2026-01-24**
+Stand: **2026-02-01**
 
 Dieses Dokument ist ein Arbeits- und Fortschrittslog: offene Punkte, erledigte Fixes,
 und konkrete nächste Schritte – mit Fokus auf **Schlankheit, Verständlichkeit, saubere Buchführung**.
@@ -14,138 +14,159 @@ und konkrete nächste Schritte – mit Fokus auf **Schlankheit, Verständlichkei
 
 ## 1) Compliance-Fixes (gegen Buch/Spezifikation)
 
-- [x] **Kontokorrent-Geldschöpfung nur im Einzelhandel**: Geld entsteht in `WarengeldBank.finance_goods_purchase(...)` bei Warenankauf durch `RetailerAgent`.
-- [x] **Geldvernichtung beim Rückstrom zum Kontokorrent**: `RetailerAgent.auto_repay_contokorrent(...)` tilgt CC aus Sichtguthaben (M1 sinkt).
-- [x] **Kontogebühren statt Zinsen**: `WarengeldBank.charge_account_fees(...)` nutzt `base_account_fee + pos_fee_rate * max(0, sight) + neg_fee_rate * max(0, -sight)`; Plus ist teurer als Minus.
-- [x] **Clearing-Reserve-Grenzen korrekt**: Bugfix `reserve_bounds_min/max` (vorher falsche Feldnamen in `ClearingAgent`).
-- [x] **Zeitliche Granularität**: tägliche Transaktionen; monatliche Policies (Fees, Sichtfaktor/Decay); Audit im konfigurierten Intervall.
-- [x] **Örtliche Granularität**: `spatial.num_regions` → pro Region Hausbank (WarengeldBank), Sparkasse, Retailer, Haushalte.
-- [x] **Metriken + Plots**: Export pro Run; neue Global-Metriken `m1_proxy`, `m2_proxy`, `cc_exposure`, `inventory_value_total`, `velocity_proxy`; neuer Plot `monetary_system.png`.
 
 ---
 
-## 2) Noch offene Design-Entscheidungen (simulationskritisch)
+## 2) Abweichungen / Spec-Lücken (simulationskritisch)
 
-- [ ] **Kreditrahmen-Formel (`cc_limit`)**: Derzeit statisch aus YAML. Im Buch/Spezifikation: partnerschaftlich/unkündbar, aber Anpassung möglich.
-  - Vorschlag: `cc_limit = m * avg_monthly_cogs` (rollierend) mit Audit-Risk-Modifier.
+- [ ] **cc_limit-Policy / partnerschaftlicher Rahmen**: `cc_limit` ist aktuell (meist) statisch aus Config/Template. Spec: nicht einseitig kündbar, aber abgestimmt anpassbar.
+  - Vorschlag: `cc_limit = m * avg_monthly_cogs` (rollierend) + Audit-Risk-Modifier.
 
-- [ ] **Warenbewertung & Abschreibung**:
-  - Welche Bewertungsregel (Einstand, Markt, Niederstwert)?
-  - Wann gilt Ware als „unverkaufbar“?
-  - Soll eine explizite `ware_value_adjustment_account`-Logik inkl. Befüllung aus Gewinnen eingeführt werden?
+- [~] **Warenbewertung & Abschreibung**:
+  - Status: Es existiert eine einfache Inventarbewertung "at cost" (`RetailerAgent.inventory_value`) + ein pauschaler Obsoleszenz-Write-down (`obsolescence_rate`).
+  - Offene Spec-Fragen: Bewertungsregel (Einstand/Markt/Niederstwert), “unverkaufbar”-Kriterium, Artikelgruppen.
 
-- [ ] **Fraud/Wertberichtigung-Rechenregel**:
-  - Clearing erkennt Inventarbetrug → wie genau wird der Differenzbetrag vernichtet (Retailer haircut? Bankreserve? proportionaler Haircut bei Empfängern?)
-  - Wichtig, weil Makrodynamik stark davon abhängt.
+- [~] **Fraud/Wertberichtigung-Rechenregel**:
+  - Status: Clearing hat eine implementierte, einfache Verlustallokation in `_apply_value_correction(...)` (Reserve → Retailer-Sicht → Empfänger-Haircut (pro-rata via Bank-Ledger) → Bankreserve).
+  - Offene Spec-Fragen: exakte Rechts-/Buchungslogik, wie Haircuts fair/robust verteilt werden sollen.
 
 - [ ] **Sparkassen-Regeln (Spargrenze / Invest-Nachfrage-Kopplung)**:
-  - Das Buch nennt Spargrenzen als Steuerinstrument; derzeit gibt es nur `max_savings_per_account`.
-  - Minimalvorschlag: Cap an erwartete Kreditnachfrage koppeln und Überschüsse automatisch in Konsum/Abgabe umleiten.
+  - Status: Es gibt derzeit nur `max_savings_per_account` als rein technische Obergrenze.
+  - Spec: Spargrenzen sollen politisches Steuerinstrument sein, gekoppelt an erwartete Kreditnachfrage.
+
+- [ ] **Staat als realer Nachfrager im Warenkreislauf**:
+  - Status: Staat sammelt Steuern/verteilt Budgets (`state.step()` + `state.spend_budgets(...)`), aber es gibt **keinen** expliziten Mechanismus "Staat kauft Waren beim Retailer" (Warenfluss + Inventarabbau).
+  - TODO: Staat soll Budget (insb. Infrastruktur/Soziales) direkt bei `RetailerAgent` ausgeben (Procurement/Transfers über Retailkäufe), damit Budgets nicht nur als reine Transfers wirken.
 
 ---
 
----
+## 3) Tests / Validierung
 
-## 4) Code-Smells / Refactor-Vorschläge (schlank halten)
-- try .. except Blöcke verdecken Fehlerquellen; besser gezielt prüfen.
----
+- [ ] **Golden-run Snapshot**
+  - Ein kurzer Seeded-Run (z.B. 30 Tage) mit erwarteten Makro-Kennzahlen-Bändern.
 
-## 5) Performance-Analyse & Optimierungsvorschläge
+- [ ] **Neuer Test: Staat kauft Waren bei Retailern**
+  - Referenz: Abschnitt **2) Abweichungen / Spec-Lücken → „Staat als realer Nachfrager…“**
+  - Arrange: Retailer hat Inventory; State hat Budget.
+  - Act: State procurement → `RetailerAgent.sell_to_state(...)` (oder Reuse `sell_to_household` mit State als Käufer-Protokoll).
+  - Assert: Inventory sinkt, Retailer.sight steigt, State.sight sinkt, keine Geldschöpfung/Vernichtung.
 
-### Performance-Profiling (Stand: 2026-01-31)
+- [ ] **Neuer Test: Sparkassen-Kredit -> Investition -> Produktivität**
+  - Referenz: Abschnitt **5) Neue ToDos → „Firmen sollen bei der Sparkasse Geld leihen…“**
+  - Arrange: Company ohne ausreichendes Sight, Sparkasse mit Savings-Pool.
+  - Act: Company *kann, muss nicht* Sparkassenkredit für Investition nehmen; Produktivität/Capacity steigt.
+  - Assert: `production_capacity` steigt, `active_loans` steigt, Logging-Event vorhanden.
 
-**Testkonfiguration**: `configs/small_performance_test.yaml`
-- 1.000 Simulationsschritte (reduziert von 36.000)
-- 50 Haushalte, 12 Unternehmen, 4 Händler, 2 Regionen
-- **Gesamtlaufzeit**: 11,0 Sekunden
-- **Funktionsaufrufe**: 41.182.378
-
-#### Identifizierte Flaschenhälse
-
-1. **JSON-Metriken-Export (40,5% der Laufzeit)**
-   - `json.dump()`: 0,751s + `json/encoder.py:_iterencode_dict`: 2,318s
-   - **Problem**: Export von 3,2 Mio. Metrik-Einträgen mit Einrückung am Ende der Simulation
-   - **Gesamtauswirkung**: 4,46s (40,5% der Laufzeit)
-
-2. **Metrikensammlung (47% der Laufzeit)**
-   - `collect_household_metrics`: 0,198s (1.000 Aufrufe)
-   - `add_metric`: 0,228s (662.000 Aufrufe)
-   - **Problem**: 7 Metrikensammlungen pro Schritt × 1.000 Schritte = 7.000 Sammlungsoperationen
-   - **Gesamtauswirkung**: ~5,2s (47% der Laufzeit)
-
-3. **Logging-Overhead (21% der Laufzeit)**
-   - `logging.info`: 1,893s (62.722 Aufrufe)
-   - `logger.log`: 2,326s (90.848 Aufrufe)
-   - **Problem**: Ausführliches Logging mit Stack-Trace-Inspektion bei jedem Aufruf
-   - **Gesamtauswirkung**: ~2,3s (21% der Laufzeit)
-
-#### Leistungsaufschlüsselung nach Kategorien
-
-| Kategorie | Zeit (s) | Anteil | Hauptfunktionen |
-|-----------|---------|--------|-----------------|
-| **Metriken-Export** | 4,46 | 40,5% | `json.dump()`, `_iterencode_dict` |
-| **Metrikensammlung** | 1,80 | 16,4% | `collect_*_metrics`, `add_metric` |
-| **Logging** | 2,33 | 21,2% | `logger.log()`, `logging.info()` |
-| **Agentenverarbeitung** | 1,20 | 10,9% | `Household.step()`, `Company.step()` |
-| **CSV-Schreiben** | 0,56 | 5,1% | `csv.writer.writerow()` |
-| **Sonstiges** | 0,65 | 5,9% | Verschiedenes |
-
-#### Konkrete Optimierungsvorschläge
-
-**A. Pandas/Numpy-basierte Metriken-Optimierung (40-50% Verbesserungspotenzial)**
-
-1. **JSON-Elimination durch Pandas/Numpy**
-   ```python
-   # Statt: json.dump(self._metrics, f, indent=2)  # 4,46s
-   # Nutze: pandas DataFrames mit numpy Arrays
-   metrics_df = pd.DataFrame(metrics_data)
-   metrics_df.to_csv(output_file, index=False)  # <1s
-   ```
-   **Vorteile**:
-   - 40-50% Performance-Gewinn durch Elimination der JSON-Serialisierung
-   - Speichereffiziente numpy Arrays für Metrikenspeicherung
-   - Vektorisierte Operationen für schnelle Aggregationen
-   - Effizienter CSV-Export mit pandas.to_csv()
-
-   **Erwartete Auswirkung**: 4-5s eingespart (40-50% Verbesserung)
-
-2. **Pre-allocated numpy Arrays**
-   ```python
-   # Vorab-Allokation zu Simulationsbeginn
-   max_steps = config.simulation_steps
-   num_households = config.population.num_households
-   self.household_metrics = np.zeros((max_steps, num_households, num_metrics))
-   ```
-   **Erwartete Auswirkung**: 0,5-1s eingespart (5-10% Verbesserung)
-
-#### Implementierungspriorität
-
-| Priorität | Vorschlag | Erwartete Auswirkung | Komplexität |
-|-----------|-----------|----------------------|-------------|
-| 1 | Pandas/Numpy-basierte Metriken | 4-5s (40-50%) | Mittel |
-| 2 | Reduzierte Metrikensammelfrequenz | 1-1,5s (10-15%) | Niedrig |
-| 5 | Pre-allocated numpy Arrays | 0,5-1s (5-10%) | Mittel |
-
-#### Geschätztes Gesamtverbesserungspotenzial
-
-Mit allen Vorschlägen implementiert:
-- **Bestes Szenario**: ~8s eingespart (70% Verbesserung) → 3s Laufzeit
-- **Realistisches Szenario**: ~6s eingespart (55% Verbesserung) → 5s Laufzeit
-- **Konservatives Szenario**: ~4s eingespart (35% Verbesserung) → 7s Laufzeit
+- [ ] **Neuer Test: Dienstleistungs-Sektor (geldmengenneutral) sichtbar**
+  - Referenz: Abschnitt **5) Neue ToDos → „Dienstleistungs‑Wertschöpfung…“**
+  - Arrange: Haushalte haben Dienstleistungsbudget, zahlen an Company/ServiceProvider.
+  - Act: Service-Transaktionen werden gebucht.
+  - Assert: `service_tx_volume` > 0, `issuance_volume` unverändert (≈0 Effekt), nur Verteilung ändert sich.
 
 ---
 
-## 6) Empfohlene nächste Schritte (praktisch)
+## 4) Code-Smells / Komplexität / Refactor-Vorschläge (schlank halten)
 
-1) **Pandas/Numpy-basierte Metriken implementieren** (hohe Auswirkung, mittlere Komplexität):
-   - JSON-Elimination durch pandas DataFrames
-   - Pre-allocated numpy Arrays für Metrikenspeicherung
-   - Effizienter CSV-Export mit pandas.to_csv()
+- [~] **Legacy-Bankpfade widersprechen dem Spec-Narrativ**
+  - `WarengeldBank.grant_credit(...)`, `calculate_fees(...)` und `check_inventories(current_step=None)` existieren primär für alte Tests.
+  - Risiko: Neue Features greifen versehentlich auf diese Pfade zu (Geldschöpfung außerhalb Retailer-Güterkauf).
+  - Vorschlag: klar als deprecated markieren + in der Simulation-Pipeline nicht verwenden (oder per Flag hart deaktivieren).
 
-3) **Fraud/Wertberichtigung** als klare Buchungsregel implementieren (klein anfangen: Inventar-Delta → Retailer-Haircut + Bankreserve).
+- [x] **Einheitliche Balance-Sheet-Namen (Haushalte)**
+  - Erledigt: `Household` nutzt `sight_balance` als Canonical und bietet `checking_account` als Alias.
 
-4) **cc_limit-Policy** (rollierend, audit-basiert) ergänzen.
+- [ ] **Einheitliche Balance-Sheet-Namen (Company/Producer)**
+  - TODO: konsistent `sight_balance` statt gemischter Namen.
 
-5) **Spargrenzen** (Kapitel 13) minimal implementieren + Szenarien (Spar-Invest-Mismatch) aus der Spezifikation.
+- [ ] **Konfig-Konsistenz**
+  - `bank.fee_rate` ist legacy (nur für Tests); im Spec ist `charge_account_fees` maßgeblich.
+  - Vorschlag: deprecate/aus YAML entfernen oder sehr deutlich als legacy markieren.
 
-6) Danach: Aufräumen der Root-Duplikate + Tests als Qualitätsnetz.
+- [ ] **FinancialMarket abschalten**
+  - Spec-Interpretation: Börsenschließung / Finanzmarkt stark reduziert.
+  - Status: `FinancialMarket` existiert noch als Agent; prüfen, ob er in `main.py` tatsächlich Einfluss hat oder nur noop ist.
+
+---
+
+## 5) Neue ToDos (aus aktuellem Review)
+
+- [ ] **Agent-IDs auf einfache Finance-Sim-Konvention standardisieren (`household_<n>`, `company_<n>`, `retailer_<n>`)**
+  - Ziel: IDs sollen den üblichen Standards in Finanz-/ABM-Simulationen folgen: string-prefix + laufende Nummer.
+  - Status:
+    - Prefixe existieren bereits in `config.py`: `HOUSEHOLD_ID_PREFIX="household_"`, `COMPANY_ID_PREFIX="company_"`, `RETAILER_ID_PREFIX="retailer_"`.
+    - Aber: Es gibt noch abweichende Sonder-IDs (`state`, `warengeld_bank_<region>` etc.) und Stellen, die IDs umbenennen (Births/Turnover).
+  - TODO:
+    - Sicherstellen, dass **alle** erzeugten Agenten-IDs strikt diesem Muster folgen (inkl. Neugeborene/Splits).
+    - Für „singleton“-Agenten (state, clearing, labor_market) eine klare, ebenfalls standardisierte Notation festlegen (z.B. `state_0`, `clearing_0`, `labor_market_0`) oder bewusst als Ausnahme markieren.
+
+- [ ] **Dienstleistungs-Wertschöpfung (~75% im heutigen System) abbilden/tracken**
+  - Problem/Spec-Spannung:
+    - In realen Volkswirtschaften entsteht ein sehr großer Teil der Wertschöpfung im **Dienstleistungssektor**.
+    - Im Warengeld-Modell soll **Geldschöpfung nur bei Waren(finanzierung) im Einzelhandel** stattfinden.
+    - Dienstleistungen sind im Spec *geldmengenneutral*: sie ändern die Geldmenge nicht, nur die Verteilung.
+  - Ziel: In der Simulation soll sichtbar werden können, welche Konsequenzen ein hoher Service-Anteil hat, **wenn 3/4 der Wertschöpfung keine Geldschöpfung triggert**.
+  - Vorschlag (minimal-invasive Umsetzung, messbar):
+    1) **Service-Output / Service-GDP** separat erfassen:
+       - Metriken: `service_value_total`, `goods_value_total`, `service_share_of_output`.
+       - Proxy: Service-Transaktionen (z.B. Haushalte zahlen „Dienstleistungsbudget“ an Companies/ServiceProvider) zählen in GDP/Output, aber **ohne** Inventarfluss.
+    2) **Money-Interaction-Tracking**:
+       - Metriken: `service_tx_volume` (Summe Service-Zahlungen), `goods_tx_volume` (Summe Warenverkäufe an Haushalte),
+         `issuance_volume` (nur aus `finance_goods_purchase`), `extinguish_volume` (nur CC-Tilgung + Wertberichtigungen).
+       - Erwartung/Check: `service_tx_volume` beeinflusst `issuance_volume` nicht (≈0 Wirkung).
+    3) **Folgen sichtbar machen** (Beobachtbarkeit statt sofort „richtiges“ Modell):
+       - Korrelationen/Plots: `service_share_of_output` vs
+         - `m1_proxy` / `cc_exposure`
+         - `velocity_proxy`
+         - „Absatzstockung“-Proxies (Retail-Inventar steigt, Umschlag sinkt)
+         - Lohn-/Preis-Proxies
+    4) Optional (später): eigener `ServiceProviderAgent` oder Flag in `Company` (goods vs services),
+       damit Entscheidungen/Investitionen getrennt modelliert werden können.
+
+- [ ] **Firmen: Produktivität/Capacity-Steigerung durch Investitionen prüfen (Tests + Logging)**
+  - Code-Status: Es gibt `Company.invest_in_rd()` + `Company.innovate()` (stochastisch), aber **kein** explizites “Investitionsprojekt” mit Sparkassenfinanzierung.
+  - TODO:
+    - Test hinzufügen, der deterministisch eine Kapazitäts-/Produktivitätssteigerung auslöst.
+    - Logging-Message/Ereignis standardisieren (z.B. `investment:` / `productivity:`).
+
+- [ ] **Firmen sollen bei der Sparkasse Geld leihen können für Investitionen und Produktivität steigern**
+  - Status: `SavingsBank.allocate_credit(...)` funktioniert bereits generisch für Borrower, aber Company hat keinen klaren Pfad:
+    - wann beantragt Company Kredit,
+    - wie wird aus Kredit produktives Kapital (capacity/innovation),
+    - wie werden Tilgung/Zins/Defaults modelliert.
+  - TODO: Minimal-Policy definieren (Trigger, max. loan-to-capacity, repayment rule) + Tests.
+
+- [ ] **scripts/plot_metrics.py** anpassen, um neue Metriken (Güter-/Dienstleistungs-Output, Velocity-Proxies) zu plotten.
+  - [ ] **scripts/plot_metrics.py** intern vollständig auf pandas umstellen um performance zu steigern (DataFrame-basiert statt dict-basiert). eventuell noch numpy, wenns hilft.
+
+---
+
+## 6) Prompt-Meilensteine (für das nächste große 2h-LLM-Arbeitspaket)
+
+**Wichtig:** Wenn ein Milestone in einem LLM-Run abgeschlossen ist, muss diese Datei (`doc/issues.md`) direkt aktualisiert werden:
+- Den entsprechenden Punkt auf `[x]` setzen.
+- Wenn der Punkt vollständig erledigt ist, in eine „Done / Erledigt“-Sektion verschieben oder entfernen.
+- Verweise/Tests dabei konsistent halten.
+
+- [ ] **M1: Staat kauft Waren bei Retailern (Realwirtschaftliche Rückkopplung)**
+  - Bezug: Abschnitt **2) → „Staat als realer Nachfrager im Warenkreislauf“** und Abschnitt **3) → Test „Staat kauft Waren…“**.
+
+- [ ] **M2: Sparkassen‑Investitionskredite für Companies (Policy + deterministischer Test + Logging)**
+  - Bezug: Abschnitt **5) → „Firmen sollen bei der Sparkasse Geld leihen…“** und Abschnitt **3) → Test „Sparkassen‑Kredit → Investition…“**.
+
+- [ ] **M3: Dienstleistungs‑Sektor transparent machen (Metriken + Buchung ohne Geldschöpfung)**
+  - Bezug: Abschnitt **5) → „Dienstleistungs‑Wertschöpfung…“** und Abschnitt **3) → Test „Dienstleistungs‑Sektor…“**.
+
+- [ ] **M4: Tech‑Debt klein – Legacy‑Bankpfade härter deprecaten / unbenutzt machen**
+  - Bezug: Abschnitt **4) → „Legacy‑Bankpfade…“**.
+
+- [ ] **M5: Tech‑Debt klein – Company Balance‑Sheet Naming auf `sight_balance` konsolidieren**
+  - Bezug: Abschnitt **4) → „Einheitliche Balance-Sheet-Namen (Company/Producer)“**.
+
+---
+
+## 7) Empfohlene nächste Schritte (praktisch)
+
+1) **State-Procurement via Retailer** einführen (+ Test), damit Budgets realwirtschaftlich rückgekoppelt sind.
+2) **Sparkassen-Investitionskredite** für Companies minimal implementieren (deterministisch testbar) + Logging.
+3) **Dienstleistungssektor transparent machen** (Metriken + money-neutral booking).
+4) Danach: `cc_limit-Policy` (rollierend, audit-basiert) ergänzen.

@@ -154,6 +154,55 @@ class State(BaseAgent):
         # Reset tax revenue after distribution
         self.tax_revenue = 0.0
 
+    def spend_budgets(self, households: Sequence[TaxableAgent], companies: Sequence[TaxableAgent], retailers: Sequence[TaxableAgent]) -> None:
+        """Recirculate state budgets back into the economy.
+
+        Without an explicit spending rule, taxes and environmental levies accumulate
+        on the State balance and can stall circulation. This method models simple,
+        money-neutral redistribution:
+
+        - social_budget -> equal per-household transfers
+        - infrastructure_budget -> equal per-company spending (procurement)
+        - environment_budget -> equal per-retailer spending
+
+        Transfers do not create or destroy money; they only change distribution.
+        """
+
+        # Social transfers
+        if self.social_budget > 0 and households:
+            per_h = float(self.social_budget) / float(len(households))
+            for h in households:
+                if hasattr(h, "sight_balance"):
+                    h.sight_balance = float(getattr(h, "sight_balance")) + per_h
+                else:
+                    h.balance = float(getattr(h, "balance")) + per_h
+            self.social_budget = 0.0
+
+        # Infrastructure procurement
+        if self.infrastructure_budget > 0 and companies:
+            per_c = float(self.infrastructure_budget) / float(len(companies))
+            for c in companies:
+                if hasattr(c, "sight_balance"):
+                    c.sight_balance = float(getattr(c, "sight_balance")) + per_c
+                else:
+                    c.balance = float(getattr(c, "balance")) + per_c
+            self.infrastructure_budget = 0.0
+
+        # Environmental spending
+        if self.environment_budget > 0 and retailers:
+            per_r = float(self.environment_budget) / float(len(retailers))
+            for r in retailers:
+                if hasattr(r, "sight_balance"):
+                    r.sight_balance = float(getattr(r, "sight_balance")) + per_r
+                else:
+                    r.balance = float(getattr(r, "balance")) + per_r
+            self.environment_budget = 0.0
+
+        log(
+            f"State {self.unique_id} spent budgets back into the economy.",
+            level="INFO",
+        )
+
     def receive_hyperwealth(self, amount: float) -> None:
         """Add externally collected hyperwealth to tax revenue."""
         self.tax_revenue += amount

@@ -341,7 +341,23 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
     progress_every_seconds = 2.0  # but at most once every 2 seconds
 
     # Helpers for lifecycle dynamics
-    next_household_idx = len(households)
+    # Newborn IDs must be globally unique and should start at the initially configured
+    # population size (not just len(households), which can differ depending on config paths).
+    configured_initial = int(getattr(getattr(config, "population", None), "num_households", 0) or 0)
+    next_household_idx = configured_initial if configured_initial > 0 else len(households)
+
+    # Ensure we never reuse an existing suffix even if initial agents were created from explicit lists.
+    try:
+        existing_suffixes = [
+            int(str(h.unique_id).replace(str(config.HOUSEHOLD_ID_PREFIX), ""))
+            for h in households
+            if str(h.unique_id).startswith(str(config.HOUSEHOLD_ID_PREFIX))
+        ]
+        if existing_suffixes:
+            next_household_idx = max(next_household_idx, max(existing_suffixes) + 1)
+    except Exception:
+        # Safe fallback: keep computed next_household_idx.
+        pass
 
     for step in range(steps):
         clock.day_index = step
@@ -351,10 +367,14 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
             r.purchases_total = 0.0
             r.write_downs_total = 0.0
 
-        # 0) Demography pass (turnover only): replace aged households before labor matching.
-        # This ensures companies post job offers against the *current* labor force and
-        # prevents a full-step delay where firms still hold stale workers.
+        # 0) Demography pass: households can die (shrink) and households can split (grow).
+        # We apply death before labor matching to avoid a full-step delay.
         alive_households: list[Household] = []
+        deaths_this_step = 0
+        births_this_step = 0
+        company_births_this_step = 0
+        company_deaths_this_step = 0
+        companies_by_id = {c.unique_id: c for c in companies}
         days_per_year = int(getattr(config.time, "days_per_year", 360))
         base_annual = float(getattr(config.household, "mortality_base_annual", 0.0) or 0.0)
         senesce_annual = float(getattr(config.household, "mortality_senescence_annual", 0.0) or 0.0)
@@ -374,30 +394,50 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
             death_now = age_days >= max_age_days or (daily_p > 0 and random.random() < daily_p)
 
             if death_now:
-                # Remove the old (dead) household from the labor market registry.
-                # Otherwise it stays 'registered' forever and firms may keep hiring/staffing
-                # against zombie workers.
-                try:
-                    labor_market.deregister_worker(h)
-                except Exception:
-                    pass
+                deaths_this_step += 1
+                labor_market.deregister_worker(h)
+                # Also remove from its current employer (if any).
+                employer_id = getattr(h, "employer_id", None)
+                if employer_id:
+                    employer = companies_by_id.get(str(employer_id))
+                    if employer is not None and h in getattr(employer, "employees", []):
+                        employer.employees = [e for e in employer.employees if e is not h]
+                log(
+                    f"death: household {h.unique_id} age_days={age_days} at step={step}",
+                    level="INFO",
+                )
 
+                # Immediate replacement keeps the system from silently collapsing
+                # and makes turnover observable even in short runs.
                 replacement = Household(
                     unique_id=f"{config.HOUSEHOLD_ID_PREFIX}{next_household_idx}",
-                    income=h.income,
-                    land_area=h.land_area,
-                    environmental_impact=h.environmental_impact,
                     config=config,
                 )
                 replacement.region_id = getattr(h, "region_id", "region_0")
-                replacement.employed = False
-                replacement.current_wage = None
-                labor_market.register_worker(replacement)
                 next_household_idx += 1
                 collector.register_household(replacement)
+                labor_market.register_worker(replacement)
                 alive_households.append(replacement)
-            else:
-                alive_households.append(h)
+                births_this_step += 1
+                log(
+                    f"birth: household {replacement.unique_id} (replacement for {h.unique_id}) at step={step}",
+                    level="INFO",
+                )
+                continue
+
+            alive_households.append(h)
+
+        # Ensure simulation doesn't end up with an empty labor force.
+        if not alive_households:
+            seed_household = Household(
+                unique_id=f"{config.HOUSEHOLD_ID_PREFIX}{next_household_idx}",
+                config=config,
+            )
+            seed_household.region_id = "region_0"
+            labor_market.register_worker(seed_household)
+            collector.register_household(seed_household)
+            next_household_idx += 1
+            alive_households.append(seed_household)
 
         households = alive_households
         agents["households"] = households
@@ -426,10 +466,20 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
             result = c.step(current_step=step, state=state, savings_bank=savings_by_region.get(c.region_id, savings_banks[0]))
 
             if isinstance(result, Company):
+                company_births_this_step += 1
+                log(
+                    f"growth: company split parent={c.unique_id} child={result.unique_id} at step={step}",
+                    level="INFO",
+                )
                 new_companies.append(result)
                 collector.register_company(result)
                 alive_companies.append(c)
             elif result in ("DEAD", "LIQUIDATED"):
+                company_deaths_this_step += 1
+                log(
+                    f"bankruptcy: company {c.unique_id} removed (status={result}) at step={step}",
+                    level="WARNING",
+                )
                 continue
             else:
                 alive_companies.append(c)
@@ -463,14 +513,12 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
             h_savings_bank = savings_by_region.get(h.region_id, savings_banks[0])
 
             # Attach for metrics: households report savings as local + bank deposits.
-            try:
-                h._savings_bank_ref = h_savings_bank
-            except Exception:
-                pass
+            h._savings_bank_ref = h_savings_bank
 
             maybe_new = h.step(current_step=step, clock=clock, savings_bank=h_savings_bank, retailers=h_retailers)
 
             if isinstance(maybe_new, Household):
+                births_this_step += 1
                 # Ensure unique IDs for newborns in the global simulation namespace.
                 maybe_new.unique_id = f"{config.HOUSEHOLD_ID_PREFIX}{next_household_idx}"
                 next_household_idx += 1
@@ -480,6 +528,10 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
                 maybe_new.current_wage = None
                 labor_market.register_worker(maybe_new)
                 newborns.append(maybe_new)
+                log(
+                    f"birth: household {maybe_new.unique_id} parent={h.unique_id} at step={step}",
+                    level="INFO",
+                )
 
             alive_households.append(h)
 
@@ -505,6 +557,8 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
 
             # State taxes and budgets
             state.step([*companies, *retailers])
+            # Spend state budgets back into the economy to keep circulation alive.
+            state.spend_budgets(households, companies, retailers)
 
             # Sight factor decay (excess sight balances)
             clearing.apply_sight_decay([*households, *companies, *retailers, state])
@@ -525,8 +579,9 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
                 clearing.audit_bank(bank=bank, retailers=local_retailers, companies_by_id=companies_by_id, current_step=step)
                 clearing.enforce_reserve_bounds(bank=bank)
 
-        # 9) Environment (optional)
-        environmental_agency.step(current_step=step, agents=[*companies, *retailers])
+        # 9) Environment (optional) - run monthly to match the global calendar.
+        if clock.is_month_end(step):
+            environmental_agency.step(current_step=step, agents=[*companies, *retailers], state=state)
 
         # Collect metrics
         collector.collect_household_metrics(households, step)
@@ -537,6 +592,20 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
         collector.collect_state_metrics("state", state, households, companies, step)
         collector.collect_market_metrics(labor_market, step)
         collector.calculate_global_metrics(step)
+
+        # Inject live counts + lifecycle events into macro metrics.
+        if step in collector.global_metrics:
+            collector.global_metrics[step].update(
+                {
+                    "total_households": len(households),
+                    "total_companies": len(companies),
+                    "total_retailers": len(retailers),
+                    "deaths": deaths_this_step,
+                    "births": births_this_step,
+                    "company_births": company_births_this_step,
+                    "company_deaths": company_deaths_this_step,
+                }
+            )
 
         # Minimal ASCII progress update.
         if progress_enabled:
@@ -564,6 +633,8 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
 
     log("Simulation finished.")
     collector.export_metrics()
+    # Expose for validation/analysis scripts.
+    agents["metrics_collector"] = collector
     return agents
 
 

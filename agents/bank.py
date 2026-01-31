@@ -78,6 +78,9 @@ class WarengeldBank(BaseAgent):
         # Internal: last inventory check step
         self.last_inventory_check_step: int = -1
 
+        # Diagnostics / reporting
+        self.cc_write_downs_total: float = 0.0
+
     # --- Config-backed convenience properties (tests expect attributes) ---
     @property
     def fee_rate(self) -> float:  # tests expect bank.fee_rate
@@ -254,6 +257,43 @@ class WarengeldBank(BaseAgent):
         self.credit_lines[rid] = outstanding - repayment_amount
         self.liquidity += repayment_amount
         return float(repayment_amount)
+
+    def write_down_cc(self, retailer: Any, amount: float, *, reason: str = "write_down") -> float:
+        """Write down a retailer's outstanding Kontokorrent exposure.
+
+        In the Warengeld model, money destruction happens when deposits are debited.
+        After a value correction (inventory write-down / clearing audit), the
+        corresponding credit exposure must be reduced as well, otherwise the system
+        accumulates permanent CC debt that can freeze retailer activity.
+
+        This method only adjusts credit exposure (cc_balance + bank ledger). Callers
+        are responsible for extinguishing deposits elsewhere (ClearingAgent, retailer
+        write-down reserve/sight, etc.).
+
+        Returns the applied write-down amount.
+        """
+        if amount <= 0:
+            return 0.0
+
+        rid = str(getattr(retailer, "unique_id", "client"))
+        outstanding = float(self.credit_lines.get(rid, 0.0))
+        if outstanding <= 0:
+            return 0.0
+
+        applied = min(float(amount), outstanding)
+        # Reduce bank exposure.
+        self.credit_lines[rid] = outstanding - applied
+
+        # Reduce borrower CC liability (move toward zero).
+        if hasattr(retailer, "cc_balance"):
+            retailer.cc_balance = float(getattr(retailer, "cc_balance", 0.0)) + applied
+
+        self.cc_write_downs_total += applied
+        log(
+            f"WarengeldBank: CC write-down {applied:.2f} for {rid} (reason={reason}).",
+            level="INFO",
+        )
+        return float(applied)
 
     # --- Fees (legacy test API) ---
     def calculate_fees(self, merchants: Iterable[Any]) -> float:
