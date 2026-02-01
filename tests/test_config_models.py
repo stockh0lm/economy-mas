@@ -12,7 +12,11 @@ def test_simulation_config_structure_defaults() -> None:
     assert cfg.household.max_age == 70
     assert cfg.company.base_wage == 5.0
     assert cfg.labor_market.starting_wage == 10.0
-    assert cfg.bank.fee_rate == 0.01
+    # Removed legacy fee_rate assertion - use modern account fee parameters instead
+    assert cfg.bank.base_account_fee == 0.0
+    assert cfg.bank.positive_balance_fee_rate == 0.0
+    assert cfg.bank.negative_balance_fee_rate == 0.0
+    assert cfg.bank.risk_pool_rate == 0.0
     assert cfg.tax_rates.bodensteuer == 0.05
 
 

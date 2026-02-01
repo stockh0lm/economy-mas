@@ -87,6 +87,9 @@ class RetailerAgent(BaseAgent):
         self.sales_total: float = 0.0
         self.purchases_total: float = 0.0
         self.write_downs_total: float = 0.0
+        # Explicit money-destruction tracking (reset each step by main loop)
+        self.repaid_total: float = 0.0
+        self.inventory_write_down_extinguished_total: float = 0.0
 
     # --- Convenience adapters (compatibility with legacy code/tests) ---
     @property
@@ -297,6 +300,8 @@ class RetailerAgent(BaseAgent):
             return 0.0
 
         repaid = bank.process_repayment(self, repay)
+        if repaid > 0:
+            self.repaid_total += float(repaid)
         return repaid
 
     def apply_obsolescence_write_down(self, current_step: int) -> float:
@@ -330,6 +335,7 @@ class RetailerAgent(BaseAgent):
             destroyed += use_sight
 
         if destroyed > 0:
+            self.inventory_write_down_extinguished_total += destroyed
             log(
                 f"Retailer {self.unique_id}: Inventory write-down={write_down:.2f}, extinguished={destroyed:.2f} at step {current_step}.",
                 level="INFO",

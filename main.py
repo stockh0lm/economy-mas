@@ -21,6 +21,7 @@ import os
 import random
 import sys
 import time
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -103,6 +104,23 @@ def load_config(config_path: str | Path) -> SimulationConfig:
 
     path = Path(config_path)
     data = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else {}
+
+    # Konfig-Konsistenz: `bank.fee_rate` is legacy-only and must not be used for
+    # the spec-aligned simulation path (which uses WarengeldBank.charge_account_fees).
+    # Referenz: doc/issues.md Abschnitt 4 -> „Konfig-Konsistenz“.
+    if isinstance(data, dict):
+        bank_cfg = data.get("bank")
+        if isinstance(bank_cfg, dict) and "fee_rate" in bank_cfg:
+            warnings.warn(
+                "Config key 'bank.fee_rate' is deprecated (legacy tests only). "
+                "Remove it from YAML and configure account fees via 'bank.base_account_fee', "
+                "'bank.positive_balance_fee_rate', 'bank.negative_balance_fee_rate' and 'bank.risk_pool_rate'.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            # Remove the legacy fee_rate from config to prevent it from being used
+            del bank_cfg["fee_rate"]
+
     return SimulationConfig(**(data or {}))
 
 
@@ -399,6 +417,16 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
             r.sales_total = 0.0
             r.purchases_total = 0.0
             r.write_downs_total = 0.0
+            # Money-destruction flow counters (explicit for metrics)
+            if hasattr(r, "repaid_total"):
+                r.repaid_total = 0.0
+            if hasattr(r, "inventory_write_down_extinguished_total"):
+                r.inventory_write_down_extinguished_total = 0.0
+
+        # Reset per-step company service flow counters.
+        for c in companies:
+            if hasattr(c, "service_sales_total"):
+                c.service_sales_total = 0.0
 
         # 0) Demography pass: households can die (shrink) and households can split (grow).
         # We apply death before labor matching to avoid a full-step delay.

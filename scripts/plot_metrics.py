@@ -373,6 +373,138 @@ def plot_company_population(company_rows: pd.DataFrame) -> tuple[plt.Figure, str
     return fig, "companies_count.png"
 
 
+def plot_overview_dashboard(data_by_scope: dict[str, pd.DataFrame]) -> tuple[plt.Figure, str]:
+    """Create a compact dashboard (2x3 grid) combining key metrics so fewer figures are needed.
+
+    Panels:
+      0,0 - Global output (GDP, consumption, government spending)
+      0,1 - Monetary aggregates (M1/M2, inventory, velocity)
+      1,0 - Labor & bankruptcy rates
+      1,1 - Wages, price index, inflation
+      2,0 - Company health aggregates (balance, R&D, capacity)
+      2,1 - Population counts (households + companies)
+    """
+    global_rows = data_by_scope.get("global", pd.DataFrame())
+    company_rows = data_by_scope.get("company", pd.DataFrame())
+    household_rows = data_by_scope.get("household", pd.DataFrame())
+
+    # Prepare subplots
+    fig, axes = plt.subplots(nrows=3, ncols=2, figsize=(14, 12))
+    axs = axes.flatten()
+
+    # 0,0 Global output
+    steps, gdat = extract_series(global_rows, "gdp", "household_consumption", "government_spending")
+    ax = axs[0]
+    if steps and any(gdat.get(k) for k in gdat):
+        ax.plot(steps, gdat.get("gdp", []), label="GDP", color="tab:blue")
+        ax.plot(steps, gdat.get("household_consumption", []), label="Household Consumption", color="tab:orange")
+        ax.plot(steps, gdat.get("government_spending", []), label="Government Spending", color="tab:green")
+    ax.set_title("Output Composition")
+    ax.set_xlabel("Time Step")
+    ax.set_ylabel("Value")
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+
+    # 0,1 Monetary aggregates
+    steps_m, mdat = extract_series(global_rows, "m1_proxy", "m2_proxy", "inventory_value_total", "velocity_proxy", "cc_exposure")
+    ax = axs[1]
+    if steps_m:
+        ax.plot(steps_m, mdat.get("m1_proxy", []), label="M1 proxy", color="tab:blue")
+        ax.plot(steps_m, mdat.get("m2_proxy", []), label="M2 proxy", color="tab:cyan", linestyle="--")
+        ax.plot(steps_m, mdat.get("inventory_value_total", []), label="Retail inventory value", color="tab:olive", linestyle=":")
+        ax.set_xlabel("Time Step")
+        ax.set_ylabel("Level")
+
+        ax_r = ax.twinx()
+        ax_r.plot(steps_m, mdat.get("cc_exposure", []), label="CC exposure", color="tab:red")
+        ax_r.plot(steps_m, mdat.get("velocity_proxy", []), label="Velocity proxy", color="tab:purple", linestyle="--")
+        ax_r.set_ylabel("Exposure / Velocity")
+
+        # combine legends
+        lines = ax.get_lines() + ax_r.get_lines()
+        labels = [l.get_label() for l in lines]
+        ax.legend(lines, labels, loc="upper left")
+    ax.set_title("Money, Inventory & Velocity")
+    ax.grid(True, alpha=0.3)
+
+    # 1,0 Labor & bankruptcy
+    steps_l, ldat = extract_series(global_rows, "employment_rate", "unemployment_rate", "bankruptcy_rate")
+    ax = axs[2]
+    if steps_l:
+        ax.plot(steps_l, ldat.get("employment_rate", []), label="Employment Rate", color="tab:green")
+        ax.plot(steps_l, ldat.get("unemployment_rate", []), label="Unemployment Rate", color="tab:orange")
+        ax.plot(steps_l, ldat.get("bankruptcy_rate", []), label="Bankruptcy Rate", color="tab:red")
+    ax.set_title("Labor & Bankruptcy Rates")
+    ax.set_xlabel("Time Step")
+    ax.set_ylabel("Share")
+    ax.set_ylim(bottom=0)
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+
+    # 1,1 Wages, prices & inflation
+    steps_w, wdat = extract_series(global_rows, "average_nominal_wage", "average_real_wage", "price_index", "inflation_rate")
+    ax = axs[3]
+    if steps_w:
+        ax.plot(steps_w, wdat.get("average_nominal_wage", []), label="Nominal Wage", color="tab:blue")
+        ax.plot(steps_w, wdat.get("average_real_wage", []), label="Real Wage", color="tab:green")
+        ax.set_xlabel("Time Step")
+        ax.set_ylabel("Wage Level")
+
+        ax_p = ax.twinx()
+        ax_p.plot(steps_w, wdat.get("price_index", []), label="Price Index", color="tab:purple")
+        ax_p.plot(steps_w, wdat.get("inflation_rate", []), label="Inflation Rate", color="tab:orange")
+        ax_p.set_ylabel("Price / Inflation")
+
+        lines = ax.get_lines() + ax_p.get_lines()
+        labels = [l.get_label() for l in lines]
+        ax.legend(lines, labels, loc="upper right")
+    ax.set_title("Wages, Prices & Inflation")
+    ax.grid(True, alpha=0.3)
+
+    # 2,0 Company health
+    steps_c, cdat = aggregate_company_metrics(company_rows)
+    ax = axs[4]
+    if steps_c:
+        ax.plot(steps_c, cdat.get("balance", []), label="Aggregate Balance", color="tab:blue")
+        ax.set_xlabel("Time Step")
+        ax.set_ylabel("Balance ($)")
+
+        ax_a = ax.twinx()
+        ax_a.plot(steps_c, cdat.get("rd_investment", []), label="R&D Investment", color="tab:green", linestyle="--")
+        ax_a.plot(steps_c, cdat.get("production_capacity", []), label="Production Capacity", color="tab:red", linestyle=":")
+        ax_a.set_ylabel("Investment / Capacity")
+
+        lines = ax.get_lines() + ax_a.get_lines()
+        labels = [l.get_label() for l in lines]
+        ax.legend(lines, labels, loc="upper left")
+    ax.set_title("Company Health Indicators")
+    ax.grid(True, alpha=0.3)
+
+    # 2,1 Population counts (households + companies)
+    steps_h, hcounts = count_agents_per_step(household_rows)
+    steps_co, ccounts = count_agents_per_step(company_rows)
+    ax = axs[5]
+    # align on steps by using union of steps
+    all_steps = sorted(set(steps_h) | set(steps_co))
+    def reindex(values_steps, values, target_steps):
+        mapping = dict(zip(values_steps, values))
+        return [mapping.get(s, 0) for s in target_steps]
+
+    hvals = reindex(steps_h, hcounts, all_steps)
+    cvals = reindex(steps_co, ccounts, all_steps)
+    if all_steps:
+        ax.plot(all_steps, hvals, label="# Households", color="tab:blue")
+        ax.plot(all_steps, cvals, label="# Companies", color="tab:green")
+    ax.set_title("Active Agents")
+    ax.set_xlabel("Time Step")
+    ax.set_ylabel("Count")
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+
+    fig.tight_layout()
+    return fig, "overview_dashboard.png"
+
+
 PLOT_SPECS: list[tuple[str, PlotFunc]] = [
     ("global", plot_global_output),
     ("global", plot_monetary_system),
@@ -398,6 +530,7 @@ def main() -> None:
     run_dir = plots_dir / run_id
     latest_dir = ensure_dirs(run_dir)
 
+
     global_rows = load_csv_rows(metrics_dir / f"global_metrics_{run_id}.csv")
     state_rows = load_csv_rows(
         metrics_dir / f"state_metrics_{run_id}.csv", skip_fields={"agent_id"}
@@ -420,6 +553,17 @@ def main() -> None:
 
     figures: list[plt.Figure] = []
     axes: list[plt.Axes] = []
+
+    # Save a compact overview dashboard first (reduces number of files and groups related series)
+    try:
+        fig, filename = plot_overview_dashboard(data_by_scope)
+        figures.append(fig)
+        axes.extend(fig.axes)
+        save_figure(fig, filename, run_dir, latest_dir, close_figure=not args.live_display)
+    except Exception:
+        # Non-fatal: keep generating the rest of the plots even if overview fails for missing series
+        pass
+
     for scope, plot_func in PLOT_SPECS:
         fig, filename = plot_func(data_by_scope[scope])
         figures.append(fig)

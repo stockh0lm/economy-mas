@@ -80,8 +80,8 @@ company:
 # --- WarengeldBank-Parameter ---
 bank:
   # Banken finanzieren sich über Kontogebühren (keine Zinsen).
-  # fee_rate is legacy and not used by the main loop anymore.
-  fee_rate: 0.0
+  # `fee_rate` was a legacy-only parameter (used by old tests). It is deprecated
+  # and should not appear in YAML configs; use account fee parameters below.
   base_account_fee: 1.0
   # "Plus" soll teurer sein als "Minus".
   positive_balance_fee_rate: 0.0002

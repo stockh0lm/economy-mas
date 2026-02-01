@@ -16,6 +16,7 @@ by retailer credit limits and collateral (inventory values) and later audits.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import warnings
 from typing import Any, Iterable, Protocol
 
 from config import CONFIG_MODEL, SimulationConfig
@@ -84,6 +85,11 @@ class WarengeldBank(BaseAgent):
     # --- Config-backed convenience properties (tests expect attributes) ---
     @property
     def fee_rate(self) -> float:  # tests expect bank.fee_rate
+        warnings.warn(
+            "bank.fee_rate is deprecated (legacy tests only). Use WarengeldBank.charge_account_fees(...) and its config parameters instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         return float(self.config.bank.fee_rate)
 
     @property
@@ -191,6 +197,12 @@ class WarengeldBank(BaseAgent):
         - denial when the request exceeds `max_credit = liquidity / ratio`
         - ratio is influenced by macro unemployment/inflation
         """
+
+        warnings.warn(
+            "WarengeldBank.grant_credit(...) is deprecated. Use WarengeldBank.finance_goods_purchase(...) for spec-aligned money creation.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
         if amount <= 0:
             return 0.0
@@ -303,6 +315,12 @@ class WarengeldBank(BaseAgent):
         from merchant.balance, increasing bank liquidity.
         """
 
+        warnings.warn(
+            "WarengeldBank.calculate_fees(...) is deprecated. The spec-aligned fee path is WarengeldBank.charge_account_fees(...).",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
         total = 0.0
         for m in merchants:
             mid = str(getattr(m, "unique_id", "client"))
@@ -406,6 +424,12 @@ class WarengeldBank(BaseAgent):
 
         # Legacy test mode: enforce repayment immediately.
         if current_step is None:
+            warnings.warn(
+                "WarengeldBank.check_inventories(..., current_step=None) is deprecated. "
+                "Inventory enforcement is handled via RetailerAgent.settle_accounts(...) and clearing audits.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
             threshold = float(self.inventory_coverage_threshold)
             for r in retailers:
                 rid = str(getattr(r, "unique_id", "client"))
@@ -457,15 +481,16 @@ class WarengeldBank(BaseAgent):
     def step(self, current_step: int, merchants: Iterable[Any] | None = None) -> None:  # type: ignore[override]
         """Bank step hook used by tests.
 
-        Runs inventory checks and fee collection.
+        Runs inventory checks and fee collection using modern methods.
         """
 
         super().step(current_step)
         if merchants is None:
             return
-        # inventory checks only in diagnostic mode for this step
+        # Use modern inventory checks (diagnostic mode)
         _ = self.check_inventories(merchants, current_step=current_step)
-        self.calculate_fees(merchants)
+        # Use modern fee calculation
+        self.charge_account_fees(merchants)
 
     # --- Derived metrics ---
     @property

@@ -254,6 +254,56 @@ class MetricsCollector:
                 "aggregation": "value",
                 "critical_threshold": None,
             },
+            # Goods vs services transparency (Warengeld contract)
+            "goods_tx_volume": {
+                "enabled": True,
+                "display_name": "Goods Transaction Volume",
+                "unit": "$",
+                "aggregation": "value",
+                "critical_threshold": None,
+            },
+            "service_tx_volume": {
+                "enabled": True,
+                "display_name": "Service Transaction Volume",
+                "unit": "$",
+                "aggregation": "value",
+                "critical_threshold": None,
+            },
+            "issuance_volume": {
+                "enabled": True,
+                "display_name": "Issuance Volume (Money Creation)",
+                "unit": "$",
+                "aggregation": "value",
+                "critical_threshold": None,
+            },
+            "extinguish_volume": {
+                "enabled": True,
+                "display_name": "Extinguish Volume (Money Destruction)",
+                "unit": "$",
+                "aggregation": "value",
+                "critical_threshold": None,
+            },
+            "goods_value_total": {
+                "enabled": True,
+                "display_name": "Goods Output Value",
+                "unit": "$",
+                "aggregation": "value",
+                "critical_threshold": None,
+            },
+            "service_value_total": {
+                "enabled": True,
+                "display_name": "Service Output Value",
+                "unit": "$",
+                "aggregation": "value",
+                "critical_threshold": None,
+            },
+            "service_share_of_output": {
+                "enabled": True,
+                "display_name": "Service Share of Output",
+                "unit": "Anteil",
+                "aggregation": "value",
+                "critical_threshold": None,
+            },
             "total_environmental_impact": {
                 "enabled": True,
                 "display_name": "Environmental Impact",
@@ -422,6 +472,7 @@ class MetricsCollector:
             # Collect metrics if they exist on the company object
             for attr in [
                 "balance",
+                "service_sales_total",
                 "production_capacity",
                 "inventory",
                 "environmental_impact",
@@ -455,8 +506,10 @@ class MetricsCollector:
                 "inventory_value",
                 "target_inventory_value",
                 "write_downs_total",
+                "inventory_write_down_extinguished_total",
                 "sales_total",
                 "purchases_total",
+                "repaid_total",
             ]:
                 if hasattr(retailer, attr):
                     step_metrics[attr] = cast(ValueType, getattr(retailer, attr))
@@ -483,6 +536,16 @@ class MetricsCollector:
                 total_credit = float(sum(credit_lines.values()))
                 step_metrics["total_credit"] = total_credit
                 step_metrics["num_borrowers"] = int(len(credit_lines))
+
+            # Warengeld-relevant money creation tracking: volume of financed goods purchases.
+            # Referenz: doc/issues.md Abschnitt 6) -> M3 (Dienstleistungssektor: Service-Tx müssen issuance_volume NICHT beeinflussen).
+            if hasattr(bank, "goods_purchase_ledger"):
+                ledger = getattr(bank, "goods_purchase_ledger")
+                issuance = 0.0
+                for rec in ledger:
+                    if int(getattr(rec, "step", -1)) == int(step):
+                        issuance += float(getattr(rec, "amount", 0.0))
+                step_metrics["issuance_volume"] = float(issuance)
 
             if hasattr(bank, "total_savings"):
                 total_savings = float(getattr(bank, "total_savings"))
@@ -931,6 +994,13 @@ class MetricsCollector:
         - m2_proxy: m1_proxy + household savings (Sparkasse deposits)
         - cc_exposure: sum of absolute cc balances (retailers)
         - inventory_value_total: sum of retailer inventory values
+
+        Additional transparency metrics (doc/issues.md Abschnitt 6 -> M3):
+        - goods_tx_volume: sum of retailer sales_total
+        - service_tx_volume: sum of company service_sales_total
+        - goods_value_total, service_value_total, service_share_of_output
+        - issuance_volume: sum of WarengeldBank financed goods purchases in this step
+        - extinguish_volume: sum of retailer CC repayments + inventory write-down extinguishing in this step
         """
 
         metrics: MetricDict = {}
@@ -938,7 +1008,9 @@ class MetricsCollector:
         m1 = 0.0
         m2 = 0.0
 
-        # Companies (sight)
+        service_tx_volume = 0.0
+
+        # Companies (sight + services)
         for _cid, time_series in self.company_metrics.items():
             data = time_series.get(step)
             if not data:
@@ -947,6 +1019,7 @@ class MetricsCollector:
             bal = float(data.get("sight_balance", data.get("balance", 0.0)))
             m1 += max(0.0, bal)
             m2 += max(0.0, bal)
+            service_tx_volume += float(data.get("service_sales_total", 0.0))
 
         # Households (sight + savings)
         for _hid, time_series in self.household_metrics.items():
@@ -958,10 +1031,11 @@ class MetricsCollector:
             m1 += max(0.0, sight)
             m2 += max(0.0, sight) + max(0.0, savings)
 
-        # Retailers (sight) + exposures + inventory
+        # Retailers (sight) + exposures + inventory + extinction flows
         cc_exposure = 0.0
         inventory_total = 0.0
         sales_total = 0.0
+        extinguish_volume = 0.0
         for _rid, time_series in self.retailer_metrics.items():
             data = time_series.get(step)
             if not data:
@@ -970,10 +1044,20 @@ class MetricsCollector:
             cc = float(data.get("cc_balance", 0.0))
             inv = float(data.get("inventory_value", 0.0))
             sales_total += float(data.get("sales_total", 0.0))
+            extinguish_volume += float(data.get("repaid_total", 0.0))
+            extinguish_volume += float(data.get("inventory_write_down_extinguished_total", 0.0))
             m1 += max(0.0, sight)
             m2 += max(0.0, sight)
             cc_exposure += abs(cc)
             inventory_total += max(0.0, inv)
+
+        # Issuance: sum across banks that provide per-step issuance_volume.
+        issuance_volume = 0.0
+        for _bid, time_series in self.bank_metrics.items():
+            data = time_series.get(step)
+            if not data:
+                continue
+            issuance_volume += float(data.get("issuance_volume", 0.0))
 
         metrics["m1_proxy"] = m1
         metrics["m2_proxy"] = m2
@@ -981,6 +1065,17 @@ class MetricsCollector:
         metrics["inventory_value_total"] = inventory_total
         metrics["sales_total"] = sales_total
         metrics["velocity_proxy"] = sales_total / m1 if m1 > 0 else 0.0
+        metrics["goods_tx_volume"] = sales_total
+        metrics["service_tx_volume"] = service_tx_volume
+        metrics["issuance_volume"] = issuance_volume
+        metrics["extinguish_volume"] = extinguish_volume
+
+        goods_value_total = sales_total
+        service_value_total = service_tx_volume
+        metrics["goods_value_total"] = goods_value_total
+        metrics["service_value_total"] = service_value_total
+        denom = goods_value_total + service_value_total
+        metrics["service_share_of_output"] = service_value_total / denom if denom > 0 else 0.0
         return metrics
 
     def _price_dynamics(

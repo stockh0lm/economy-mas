@@ -96,6 +96,11 @@ class Company(BaseAgent, LineageMixin):
         self.innovation_index: float = 0.0
         self._zero_staff_steps: int = 0
 
+        # Flow metrics (reset per step by the main loop if desired)
+        # Services are booked as pure transfers (no inventory) and are explicitly
+        # tracked for transparency (doc/issues.md Abschnitt 6 -> M3).
+        self.service_sales_total: float = 0.0
+
     # --- Legacy compatibility properties ---
     @property
     def inventory(self) -> float:
@@ -270,6 +275,38 @@ class Company(BaseAgent, LineageMixin):
         value = qty * unit_price
         self.finished_goods_units -= qty
         return float(qty), float(value)
+
+
+    def sell_service_to_household(self, household: Household, budget: float) -> float:
+        """Sell services to a household (money-neutral transfer, no inventory).
+
+        Referenz: doc/issues.md Abschnitt 6) Prompt-Meilensteine -> M3 und
+        Abschnitt 5) "Dienstleistungs-Wertschöpfung ...".
+
+        Contract:
+        - No inventory changes
+        - No money creation: only a transfer between sight balances
+        - Service transaction volume is tracked via `self.service_sales_total`
+        """
+
+        if budget <= 0:
+            return 0.0
+
+        paid = float(household.pay(float(budget)))
+        if paid <= 0:
+            return 0.0
+
+        self.sight_balance += paid
+        self.service_sales_total += paid
+
+        log(
+            "event=service_tx "
+            f"payer={household.unique_id} provider={self.unique_id} amount={paid:.2f}",
+            level="INFO",
+        )
+        return paid
+
+
     def sell_goods(self, demand: float | None = None) -> float:
         """LEGACY: Producer selling directly to a generic market.
 
@@ -379,6 +416,102 @@ class Company(BaseAgent, LineageMixin):
         )
 
         return amount
+
+    # --- Sparkasse investment credit (deterministic path) ---
+    def request_sparkasse_investment_loan(self, savings_bank: SavingsBank) -> float:
+        """Request an investment loan from the SavingsBank and convert it into capacity.
+
+        Deterministic minimal policy (see doc/issues.md Abschnitt 6 -> M2 and Abschnitt 5 ->
+        "Firmen sollen bei der Sparkasse Geld leihen..."):
+        - Trigger: company is considered *under-capitalized* if `sight_balance` is below
+          `config.company.investment_threshold`.
+        - Desired principal: the gap to the threshold.
+        - Eligibility cap: outstanding principal may not exceed
+          `production_capacity * sparkasse_investment_loan_max_to_capacity`.
+        - Bank cap: cannot exceed `savings_bank.available_funds`.
+
+        Investment mapping (deterministic):
+        - Each `investment_capital_cost_per_capacity` currency increases
+          `production_capacity` by +1.
+
+        Notes:
+        - This path does **not** create money: it transfers from the SavingsBank's
+          available funds stock into the company's sight balance.
+        - Repayment is modeled via `repay_sparkasse_investment_loan()`.
+        """
+
+        if savings_bank is None:
+            return 0.0
+
+        threshold = float(self.config.company.investment_threshold)
+        if float(self.sight_balance) >= threshold:
+            return 0.0
+
+        desired_principal = max(0.0, threshold - float(self.sight_balance))
+        if desired_principal <= 0.0:
+            return 0.0
+
+        outstanding = float(savings_bank.active_loans.get(self.unique_id, 0.0))
+        max_ratio = float(self.config.company.sparkasse_investment_loan_max_to_capacity)
+        max_total_principal = max(0.0, float(self.production_capacity) * max_ratio)
+        room = max(0.0, max_total_principal - outstanding)
+        if room <= 0.0:
+            return 0.0
+
+        request_amount = min(desired_principal, room)
+        if request_amount <= 0.0:
+            return 0.0
+
+        cap_before = float(self.production_capacity)
+        granted = float(savings_bank.allocate_credit(self, request_amount))
+        if granted <= 0.0:
+            return 0.0
+
+        capital_cost = float(self.config.company.investment_capital_cost_per_capacity)
+        capacity_increase = granted / capital_cost
+        self.production_capacity += capacity_increase
+
+        log(
+            "event=sparkasse_investment_loan_granted "
+            f"borrower={self.unique_id} principal={granted:.2f} "
+            f"capacity_before={cap_before:.2f} capacity_after={self.production_capacity:.2f}",
+            level="INFO",
+        )
+
+        return granted
+
+    def repay_sparkasse_investment_loan(self, savings_bank: SavingsBank | None) -> float:
+        """Deterministically repay part of outstanding Sparkasse investment loans.
+
+        Rule: pay a fixed share of the available cash buffer per step.
+        This intentionally stays deterministic and simple for unit tests.
+        """
+
+        if savings_bank is None:
+            return 0.0
+
+        outstanding = float(savings_bank.active_loans.get(self.unique_id, 0.0))
+        if outstanding <= 0.0:
+            return 0.0
+
+        buffer = float(self.config.company.min_working_capital_buffer)
+        available = max(0.0, float(self.sight_balance) - buffer)
+        if available <= 0.0:
+            return 0.0
+
+        repay_rate = float(self.config.company.sparkasse_investment_loan_repayment_rate)
+        repay_budget = max(0.0, available * repay_rate)
+        if repay_budget <= 0.0:
+            return 0.0
+
+        paid = float(savings_bank.receive_loan_repayment(self, repay_budget))
+        if paid > 0:
+            log(
+                "event=sparkasse_investment_loan_repaid "
+                f"borrower={self.unique_id} amount={paid:.2f} remaining={savings_bank.active_loans.get(self.unique_id, 0.0):.2f}",
+                level="INFO",
+            )
+        return paid
 
     def split_company(self, labor_market: LaborMarket | None = None) -> "Company":
         """

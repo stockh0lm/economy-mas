@@ -204,6 +204,27 @@ class CompanyConfig(BaseConfigModel):
     zero_staff_grace_steps: PositiveInt = 3
     zero_staff_liquidation_state_share: float = Field(1.0, ge=0, le=1)
 
+    # --- Sparkasse investment credit (deterministic, testable policy) ---
+    # See doc/issues.md Abschnitt 6) -> M2 (Sparkassen-Investitionskredite).
+    # Trigger default: if `sight_balance` < `investment_threshold` and eligibility allows,
+    # the company may request an investment loan from the SavingsBank.
+    sparkasse_investment_loan_max_to_capacity: float = Field(
+        5.0,
+        ge=0,
+        description="Eligibility cap: max principal outstanding = production_capacity * ratio",
+    )
+    sparkasse_investment_loan_repayment_rate: float = Field(
+        0.1,
+        ge=0,
+        le=1,
+        description="Deterministic repayment rate (share of available cash buffer)",
+    )
+    investment_capital_cost_per_capacity: float = Field(
+        10.0,
+        gt=0,
+        description="Deterministic mapping: currency needed per +1 production_capacity",
+    )
+
 
 class RetailerConfig(BaseConfigModel):
     # Kontokorrent-Kreditrahmen (zinsenfrei) wird bei Initialisierung gesetzt; Anpassung ist politisch/vertraglich geregelt.
@@ -220,7 +241,6 @@ class RetailerConfig(BaseConfigModel):
     auto_repay: bool = True
 
 class BankConfig(BaseConfigModel):
-    fee_rate: float = Field(0.01, ge=0)
     base_account_fee: float = Field(0.0, ge=0)
     positive_balance_fee_rate: float = Field(0.0, ge=0)
     negative_balance_fee_rate: float = Field(0.0, ge=0)
@@ -472,8 +492,7 @@ class SimulationConfig(BaseConfigModel):
             raise ValueError("minimum_wage_floor cannot be higher than starting_wage")
 
         # Check that bank parameters are stable
-        if self.bank.fee_rate > 0.1:
-            raise ValueError("Bank fee rate exceeds 10% - this may cause economic instability")
+        # Removed legacy fee_rate check - modern parameters are validated by Pydantic
 
     def validate_all(self) -> None:
         """Run all validation checks on the configuration."""
@@ -591,8 +610,7 @@ def validate_config_compatibility(config: SimulationConfig) -> None:
     if config.company.base_wage < config.labor_market.minimum_wage_floor:
         errors.append("Company base wage is below minimum wage floor")
 
-    if config.bank.fee_rate > 0.05 and household_count > 100:
-        errors.append("High bank fee rate with large household count may cause instability")
+    # Removed legacy fee_rate check - modern parameters are validated by Pydantic
 
     if errors:
         raise ConfigValidationError("Configuration compatibility issues found", errors)

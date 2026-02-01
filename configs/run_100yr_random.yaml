@@ -4,11 +4,11 @@ time:
   days_per_month: 30
 
 spatial:
-  num_regions: 12
+  num_regions: 2
   local_trade_bias: 0.8
 
 population:
-  num_households: 500
-  num_companies: 120
-  num_retailers: 48
+  num_households: 50
+  num_companies: 12
+  num_retailers: 5 
   seed: 42
