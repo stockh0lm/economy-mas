@@ -70,6 +70,12 @@ class RetailerAgent(BaseAgent):
         # Reserve for write-downs (Warenwertberichtigungskonto)
         self.write_down_reserve: float = 0.0
 
+        # COGS tracking for CC-Limit Policy (rolling monthly avg)
+        self.cogs_total: float = 0.0
+        self.cogs_history: list[float] = []
+        # Audit risk score in [0,1] used by the bank as a CC-limit modifier
+        self.audit_risk_score: float = 0.0
+
 
         # Land/environmental variables (used by State taxes / EnvironmentalAgency)
         self.land_area: float = float(
@@ -99,6 +105,47 @@ class RetailerAgent(BaseAgent):
     @balance.setter
     def balance(self, value: float) -> None:
         self.sight_balance = float(value)
+
+    # --- CC-Limit Policy helpers ---
+    def push_cogs_history(self, *, window_days: int) -> None:
+        # Finalize current-step COGS into the rolling history.
+        if window_days <= 0:
+            raise ValueError("window_days must be > 0")
+        self.cogs_history.append(float(self.cogs_total))
+        if len(self.cogs_history) > window_days:
+            self.cogs_history = self.cogs_history[-window_days:]
+        self.cogs_total = 0.0
+
+    def avg_monthly_cogs(self, *, window_days: int, days_per_month: int) -> float:
+        # Rolling monthly COGS estimate based on the last `window_days` daily totals.
+        if window_days <= 0:
+            raise ValueError("window_days must be > 0")
+        if days_per_month <= 0:
+            raise ValueError("days_per_month must be > 0")
+        if not self.cogs_history:
+            return 0.0
+        window = self.cogs_history[-window_days:]
+        avg_daily = sum(window) / float(len(window))
+        return avg_daily * float(days_per_month)
+
+    def accept_cc_limit_proposal(
+        self,
+        proposed_limit: float,
+        *,
+        current_limit: float,
+        current_step: int,
+        max_monthly_decrease: float,
+    ) -> bool:
+        # Retailer-side acceptance rule (partnership).
+        _ = current_step  # currently unused; kept for possible future policies
+        if proposed_limit >= current_limit:
+            return True
+        if current_limit <= 0:
+            return True
+        if not (0.0 <= max_monthly_decrease <= 1.0):
+            raise ValueError("max_monthly_decrease must be within [0,1]")
+        decrease_ratio = (current_limit - proposed_limit) / float(current_limit)
+        return decrease_ratio <= max_monthly_decrease
 
     # --- Inventory + pricing ---
     def _avg_unit_cost(self) -> float:
@@ -199,6 +246,7 @@ class RetailerAgent(BaseAgent):
             sale_value = paid
             cost_value = qty * unit_cost
 
+        self.cogs_total += float(cost_value)
         self.sight_balance += sale_value
         self.sales_total += sale_value
 
@@ -264,6 +312,7 @@ class RetailerAgent(BaseAgent):
             sale_value = paid
             cost_value = qty * unit_cost
 
+        self.cogs_total += float(cost_value)
         self.sight_balance += sale_value
         self.sales_total += sale_value
 

@@ -1,44 +1,29 @@
 """WarengeldBank (reform bank).
 
-Specification goals:
-- **Money creation occurs only** when a retailer finances *goods purchases* via
-  an interest-free Kontokorrent line.
+Specification goals
+-------------------
+- **Money creation occurs only** when a retailer finances *goods purchases* via an
+  interest-free Kontokorrent line.
 - Money is extinguished when retailers repay Kontokorrent using sight balances.
 - The bank finances itself via **account fees**, not interest.
-- Retailers are controlled via inventory checks; the bank itself is controlled
-  by the Clearingstelle (see `clearing_agent.py`).
+- Retailers are controlled via periodic inventory coverage checks; the bank
+  itself is controlled by the Clearingstelle (see `clearing_agent.py`).
 
-This module keeps the API small and explicit. In particular, there is no
-"liquidity pool" that would cap credit creation; credit creation is constrained
-by retailer credit limits and collateral (inventory values) and later audits.
+Migration note
+--------------
+Legacy test-only APIs were removed to avoid accidental money-creation paths.
+Referenz: doc/issues.md Abschnitt 4 → „Legacy-Muster vollständig bereinigen und Migration abschließen“.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-import warnings
-from typing import Any, Iterable, Protocol
+from typing import Any, Iterable
 
 from config import CONFIG_MODEL, SimulationConfig
 from logger import log
 
 from agents.base_agent import BaseAgent
-
-
-class MerchantProtocol(Protocol):
-    """Structural protocol for credit clients used by tests.
-
-    The simulation distinguishes Retailers (Kontokorrent) from Companies (no CC).
-    Unit tests in this repo use a simplified "merchant" abstraction.
-    """
-
-    unique_id: str
-
-    # legacy attributes used by some parts of the codebase
-    inventory: float  # goods stock/value proxy
-    balance: float  # sight balance proxy
-
-    def request_funds_from_bank(self, amount: float) -> float: ...
 
 
 @dataclass(frozen=True)
@@ -56,10 +41,12 @@ class WarengeldBank(BaseAgent):
         super().__init__(unique_id)
         self.config: SimulationConfig = config or CONFIG_MODEL
 
-        # --- Legacy/public API expected by unit tests ---
+        # Diagnostics / fields exercised by unit tests.
         self.collected_fees: float = 0.0
         self.macro_unemployment: float = float(self.config.labor_market.target_unemployment_rate)
         self.macro_inflation: float = float(self.config.labor_market.target_inflation_rate)
+
+        # Legacy test helper: a simple "liquidity" stock. Not used for Warengeld issuance.
         self.liquidity: float = float(self.config.bank.initial_liquidity)
 
         # Accounting / tracking
@@ -83,15 +70,6 @@ class WarengeldBank(BaseAgent):
         self.cc_write_downs_total: float = 0.0
 
     # --- Config-backed convenience properties (tests expect attributes) ---
-    @property
-    def fee_rate(self) -> float:  # tests expect bank.fee_rate
-        warnings.warn(
-            "bank.fee_rate is deprecated (legacy tests only). Use WarengeldBank.charge_account_fees(...) and its config parameters instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return float(self.config.bank.fee_rate)
-
     @property
     def inventory_check_interval(self) -> int:
         return int(self.config.bank.inventory_check_interval)
@@ -127,11 +105,71 @@ class WarengeldBank(BaseAgent):
         if limit <= 0:
             limit = float(self.config.retailer.initial_cc_limit)
         self.cc_limits[str(retailer.unique_id)] = limit
-        self.credit_lines.setdefault(str(retailer.unique_id), max(0.0, -float(getattr(retailer, "cc_balance", 0.0))))
+        self.credit_lines.setdefault(
+            str(retailer.unique_id),
+            max(0.0, -float(getattr(retailer, "cc_balance", 0.0))),
+        )
         # Keep retailer attribute in sync if present.
         if hasattr(retailer, "cc_limit"):
             retailer.cc_limit = limit
 
+
+    def recompute_cc_limits(self, retailers: Iterable[Any], *, current_step: int) -> dict[str, float]:
+        """Recompute Kontokorrent limits from rolling COGS and audit risk.
+
+        Referenz: doc/issues.md Abschnitt 2 → „cc_limit-Policy / partnerschaftlicher Rahmen“.
+        """
+        if not isinstance(current_step, int):
+            raise TypeError("current_step must be int")
+
+        multiplier = float(self.config.bank.cc_limit_multiplier)
+        window_days = int(self.config.bank.cc_limit_rolling_window_days)
+        days_per_month = int(self.config.time.days_per_month)
+        audit_penalty = float(self.config.bank.cc_limit_audit_risk_penalty)
+        max_decrease = float(self.config.bank.cc_limit_max_monthly_decrease)
+        floor = float(self.config.retailer.initial_cc_limit)
+
+        updated: dict[str, float] = {}
+        for r in retailers:
+            retailer_id = str(getattr(r, "unique_id", ""))
+            if not retailer_id:
+                continue
+
+            # Rolling monthly COGS (retailer-side helper).
+            avg_monthly_cogs = 0.0
+            if hasattr(r, "avg_monthly_cogs"):
+                avg_monthly_cogs = float(r.avg_monthly_cogs(window_days=window_days, days_per_month=days_per_month))
+
+            base_limit = max(0.0, multiplier * avg_monthly_cogs)
+
+            # Audit risk modifier in [0,1]. Higher risk -> lower limit.
+            risk_score = float(getattr(r, "audit_risk_score", 0.0))
+            risk_score = max(0.0, min(1.0, risk_score))
+            risk_modifier = max(0.0, 1.0 - (audit_penalty * risk_score))
+
+            proposed_limit = max(floor, base_limit * risk_modifier)
+
+            # Not unilaterally cancellable: never cut below current exposure.
+            cc_balance = float(getattr(r, "cc_balance", 0.0))
+            proposed_limit = max(proposed_limit, abs(cc_balance))
+
+            current_limit = float(getattr(r, "cc_limit", self.cc_limits.get(retailer_id, floor)))
+            accepted_limit = proposed_limit
+            if proposed_limit < current_limit:
+                # Partnerschaftlich: der Retailer kann Decreases (starke) ablehnen.
+                if hasattr(r, "accept_cc_limit_proposal"):
+                    ok = bool(r.accept_cc_limit_proposal(proposed_limit, current_limit=current_limit, current_step=current_step, max_monthly_decrease=max_decrease))
+                else:
+                    ok = ((current_limit - proposed_limit) / current_limit) <= max_decrease if current_limit > 0 else True
+                if not ok:
+                    accepted_limit = current_limit
+
+            self.cc_limits[retailer_id] = accepted_limit
+            if hasattr(r, "cc_limit"):
+                r.cc_limit = accepted_limit
+            updated[retailer_id] = accepted_limit
+
+        return updated
     # --- Emission (money creation) ---
     def finance_goods_purchase(self, *, retailer: Any, seller: Any, amount: float, current_step: int) -> float:
         """Finance a retailer's goods purchase (THIS CREATES MONEY).
@@ -186,56 +224,16 @@ class WarengeldBank(BaseAgent):
         )
         return float(amount)
 
-    # --- Legacy-style credit granting used in tests ---
-    def grant_credit(self, merchant: MerchantProtocol, amount: float) -> float:
-        """Grant credit to a client (legacy bank API used in tests).
-
-        This is *not* the spec-aligned money-creation path (which is
-        `finance_goods_purchase`). Here we implement the simplified behavior that
-        unit tests assert:
-        - denial for non-positive amounts
-        - denial when the request exceeds `max_credit = liquidity / ratio`
-        - ratio is influenced by macro unemployment/inflation
-        """
-
-        warnings.warn(
-            "WarengeldBank.grant_credit(...) is deprecated. Use WarengeldBank.finance_goods_purchase(...) for spec-aligned money creation.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-
-        if amount <= 0:
-            return 0.0
-
-        ratio = float(self.base_credit_reserve_ratio)
-        ratio += float(self.credit_unemployment_sensitivity) * max(0.0, float(self.macro_unemployment) - self.target_unemployment_rate)
-        ratio += float(self.credit_inflation_sensitivity) * max(0.0, float(self.macro_inflation) - self.target_inflation_rate)
-        ratio = max(ratio, 1e-9)
-
-        max_credit = float(self.liquidity) / ratio
-        if amount > max_credit:
-            return 0.0
-
-        mid = str(merchant.unique_id)
-        self.credit_lines[mid] = self.credit_lines.get(mid, 0.0) + float(amount)
-        # Legacy behavior: granting increases merchant sight balance, decreases bank liquidity.
-        self.liquidity -= float(amount)
-        merchant.request_funds_from_bank(float(amount))
-        return float(amount)
-
     # --- Extinguishing (repayment) ---
     def process_repayment(self, retailer: Any, amount: float) -> float:
         """Repay outstanding credit.
 
-        Test behavior (legacy): repayment is an accounting operation that reduces
-        outstanding credit and increases bank liquidity, capped by the outstanding
-        amount and the requested amount.
-
-        Spec behavior: if the borrower has a sight balance, repayment debits it
-        (money is extinguished). For Kontokorrent clients we also move `cc_balance`
-        toward zero by the paid amount.
+        This method is used in both simulation and unit tests:
+        - For spec-aligned Kontokorrent clients: repayment debits sight balances
+          and moves `cc_balance` toward 0.
+        - For simplified stubs: repayment reduces `credit_lines` and increases
+          `liquidity` as a test-only accounting proxy.
         """
-
         if amount <= 0:
             return 0.0
 
@@ -263,7 +261,7 @@ class WarengeldBank(BaseAgent):
                 if hasattr(retailer, "cc_balance"):
                     retailer.cc_balance = float(getattr(retailer, "cc_balance", 0.0)) + paid
 
-        # Legacy tests: repayment is allowed even if no explicit cash is modeled.
+        # Unit tests allow repayment even if no explicit cash is modeled.
         repayment_amount = paid if paid > 0 else repay
 
         self.credit_lines[rid] = outstanding - repayment_amount
@@ -273,10 +271,8 @@ class WarengeldBank(BaseAgent):
     def write_down_cc(self, retailer: Any, amount: float, *, reason: str = "write_down") -> float:
         """Write down a retailer's outstanding Kontokorrent exposure.
 
-        In the Warengeld model, money destruction happens when deposits are debited.
         After a value correction (inventory write-down / clearing audit), the
-        corresponding credit exposure must be reduced as well, otherwise the system
-        accumulates permanent CC debt that can freeze retailer activity.
+        corresponding credit exposure must be reduced as well.
 
         This method only adjusts credit exposure (cc_balance + bank ledger). Callers
         are responsible for extinguishing deposits elsewhere (ClearingAgent, retailer
@@ -307,49 +303,12 @@ class WarengeldBank(BaseAgent):
         )
         return float(applied)
 
-    # --- Fees (legacy test API) ---
-    def calculate_fees(self, merchants: Iterable[Any]) -> float:
-        """Charge a proportional fee on outstanding credit (legacy behavior).
-
-        Tests expect: fee = outstanding_credit * fee_rate and the fee is paid
-        from merchant.balance, increasing bank liquidity.
-        """
-
-        warnings.warn(
-            "WarengeldBank.calculate_fees(...) is deprecated. The spec-aligned fee path is WarengeldBank.charge_account_fees(...).",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-
-        total = 0.0
-        for m in merchants:
-            mid = str(getattr(m, "unique_id", "client"))
-            outstanding = float(self.credit_lines.get(mid, 0.0))
-            if outstanding <= 0:
-                continue
-            fee = outstanding * float(self.fee_rate)
-            if fee <= 0:
-                continue
-            bal = float(getattr(m, "balance", getattr(m, "sight_balance", 0.0)))
-            paid = min(fee, bal)
-            if paid <= 0:
-                continue
-            if hasattr(m, "balance"):
-                m.balance = bal - paid
-            else:
-                m.sight_balance = bal - paid
-            self.liquidity += paid
-            total += paid
-
-        self.collected_fees += total
-        return float(total)
-
+    # --- Fees (spec-aligned) ---
     def charge_account_fees(self, accounts: Iterable[Any]) -> float:
         """Charge periodic account fees (spec-aligned).
 
-        In the *visionary Warengeld* model, banks do not charge interest on the
-        Kontokorrent. Operating costs and shared risk premiums are paid via
-        account fees.
+        In the Warengeld model, banks do not charge interest on the Kontokorrent.
+        Operating costs and shared risk premiums are paid via account fees.
 
         Fee model:
         - base_account_fee (flat)
@@ -358,8 +317,8 @@ class WarengeldBank(BaseAgent):
           (usually lower than the positive rate; "Plus" should be more expensive)
         - risk_pool_rate * total_cc_exposure distributed equally across accounts
 
-        The legacy `calculate_fees()` remains for tests, but the simulation uses
-        this method.
+        Fees are transfers (NOT money destruction): they move to the bank's own
+        sight_balance.
         """
 
         accounts_list = list(accounts)
@@ -403,63 +362,30 @@ class WarengeldBank(BaseAgent):
                 continue
 
             setter(bal - paid)
-            # Fees are a transfer to the bank's own sight account.
-            # They must NOT destroy money.
             self.sight_balance += paid
             self.fee_income += paid
             total_collected += paid
 
-        # Bookkeeping only; does not affect money supply metrics.
         self.risk_pool_collected += min(total_collected, risk_fee_total)
         self.collected_fees += total_collected
         return float(total_collected)
 
-    # --- Inventory control (legacy test API) ---
-    def check_inventories(self, retailers: Iterable[Any], current_step: int | None = None):
-        """Inventory coverage enforcement.
+    # --- Inventory control (modern diagnostic API) ---
+    def check_inventories(self, retailers: Iterable[Any], *, current_step: int) -> list[tuple[str, float, float]]:
+        """Inventory coverage diagnostics.
 
-        - If current_step is provided: return diagnostics list (spec-oriented).
-        - If current_step is omitted: enforce immediate repayments (legacy tests).
+        Returns a list of issues `(retailer_id, inventory_value, cc_exposure)`.
+
+        NOTE: This is diagnostic-only. Enforcement happens through clearing audits
+        and retailer-side settlement, not via an immediate bank-side repayment.
+
+        Referenz: doc/issues.md Abschnitt 4 → „Legacy-Muster vollständig bereinigen“.
         """
 
-        # Legacy test mode: enforce repayment immediately.
-        if current_step is None:
-            warnings.warn(
-                "WarengeldBank.check_inventories(..., current_step=None) is deprecated. "
-                "Inventory enforcement is handled via RetailerAgent.settle_accounts(...) and clearing audits.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            threshold = float(self.inventory_coverage_threshold)
-            for r in retailers:
-                rid = str(getattr(r, "unique_id", "client"))
-                outstanding = float(self.credit_lines.get(rid, 0.0))
-                if outstanding <= 0:
-                    continue
+        if not isinstance(current_step, int):
+            raise TypeError("current_step must be int")
 
-                inv = float(getattr(r, "inventory", getattr(r, "inventory_value", 0.0)))
-                min_covered_credit = inv / max(threshold, 1e-6)
-                excess = max(0.0, outstanding - min_covered_credit)
-                if excess <= 0:
-                    continue
-
-                bal = float(getattr(r, "balance", getattr(r, "sight_balance", 0.0)))
-                repay = min(excess, bal)
-                if repay <= 0:
-                    continue
-
-                if hasattr(r, "balance"):
-                    r.balance = bal - repay
-                else:
-                    r.sight_balance = bal - repay
-
-                self.credit_lines[rid] = outstanding - repay
-                self.liquidity += repay
-
-            return None
-
-        # Spec/diagnostic mode (existing behaviour)
-        if current_step - self.last_inventory_check_step < self.inventory_check_interval:
+        if self.last_inventory_check_step >= 0 and (current_step - self.last_inventory_check_step) < self.inventory_check_interval:
             return []
 
         self.last_inventory_check_step = current_step
@@ -487,9 +413,7 @@ class WarengeldBank(BaseAgent):
         super().step(current_step)
         if merchants is None:
             return
-        # Use modern inventory checks (diagnostic mode)
         _ = self.check_inventories(merchants, current_step=current_step)
-        # Use modern fee calculation
         self.charge_account_fees(merchants)
 
     # --- Derived metrics ---

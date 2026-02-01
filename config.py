@@ -247,6 +247,13 @@ class BankConfig(BaseConfigModel):
     # Risk pool: distribute a small fee proportional to total CC exposure across
     # all accounts. This is *not* interest; it is a shared risk premium.
     risk_pool_rate: float = Field(0.0, ge=0)
+    # CC-Limit Policy (partnerschaftlicher Rahmen)
+    cc_limit_multiplier: float = Field(2.0, gt=0)
+    cc_limit_rolling_window_days: PositiveInt = 30
+    # Maximaler Reduktionsanteil pro Monat; größere Reduktionen benötigen Zustimmung (Retailer).
+    cc_limit_max_monthly_decrease: float = Field(0.25, ge=0, le=1)
+    # Audit-Risk-Modifikator: risk_modifier = max(0, 1 - penalty * audit_risk_score).
+    cc_limit_audit_risk_penalty: float = Field(0.5, ge=0, le=1)
     inventory_check_interval: PositiveInt = 3
     inventory_coverage_threshold: float = Field(0.8, gt=0)
     base_credit_reserve_ratio: float = Field(0.1, gt=0)

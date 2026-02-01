@@ -159,6 +159,17 @@ Ich beschreibe das als **deterministische Pipeline** je Simulations-Tick (mit St
 * Abbuchung: account.sight_balance -= fee; bank.income += fee
 * bank zahlt Gehälter/Costs aus bank.income (optional)
 
+**Implementierungsnotiz (API, Stand Milestone 1):**
+* Bank-Emission (Geldschöpfung) erfolgt ausschließlich über:
+  * `WarengeldBank.finance_goods_purchase(retailer, seller, amount, current_step)`
+* Bank-Finanzierung erfolgt ausschließlich über Kontogebühren:
+  * `WarengeldBank.charge_account_fees(accounts)`
+* Inventurprüfung ist **diagnostisch** (keine unmittelbare Einziehung in der Bank):
+  * `WarengeldBank.check_inventories(retailers, current_step=...) -> list[(retailer_id, inventory_value, cc_exposure)]`
+* Wertberichtigungen reduzieren Bank-Exposure explizit:
+  * `WarengeldBank.write_down_cc(retailer, amount, reason=...)`
+* Entfernte Legacy-APIs: `grant_credit`, `calculate_fees`, `fee_rate` (Referenz: doc/issues.md Abschnitt 4).
+
 > **Offene Frage:** Bemessungsgrundlage (täglich, monatlich; linear vs. progressiv). Für Simulation: monatlich und progressiv (damit „große Plus-Bestände“ stärker gedrückt werden).
 
 ---

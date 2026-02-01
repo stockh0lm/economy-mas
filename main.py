@@ -21,7 +21,6 @@ import os
 import random
 import sys
 import time
-import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -105,21 +104,6 @@ def load_config(config_path: str | Path) -> SimulationConfig:
     path = Path(config_path)
     data = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else {}
 
-    # Konfig-Konsistenz: `bank.fee_rate` is legacy-only and must not be used for
-    # the spec-aligned simulation path (which uses WarengeldBank.charge_account_fees).
-    # Referenz: doc/issues.md Abschnitt 4 -> „Konfig-Konsistenz“.
-    if isinstance(data, dict):
-        bank_cfg = data.get("bank")
-        if isinstance(bank_cfg, dict) and "fee_rate" in bank_cfg:
-            warnings.warn(
-                "Config key 'bank.fee_rate' is deprecated (legacy tests only). "
-                "Remove it from YAML and configure account fees via 'bank.base_account_fee', "
-                "'bank.positive_balance_fee_rate', 'bank.negative_balance_fee_rate' and 'bank.risk_pool_rate'.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            # Remove the legacy fee_rate from config to prevent it from being used
-            del bank_cfg["fee_rate"]
 
     return SimulationConfig(**(data or {}))
 
@@ -607,27 +591,34 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
             bank = banks_by_region.get(r.region_id, warengeld_banks[0])
             r.settle_accounts(bank=bank, current_step=step)
 
+        # Update rolling COGS history for cc_limit policy (must happen before month-end recomputation).
+        for r in retailers:
+            if hasattr(r, "push_cogs_history"):
+                r.push_cogs_history(window_days=int(config.bank.cc_limit_rolling_window_days))
+    
         # 7) Monthly policies
         if clock.is_month_end(step):
             # Bank account fees (no interest) ... by region.
             for rid, bank in banks_by_region.items():
+                region_retailers = [r for r in retailers if r.region_id == rid]
+                bank.recompute_cc_limits(region_retailers, current_step=step)
                 bank_accounts: list[Any] = [a for a in households if a.region_id == rid]
                 bank_accounts += [a for a in companies if a.region_id == rid]
                 bank_accounts += [a for a in retailers if a.region_id == rid]
                 bank.charge_account_fees(bank_accounts)
-
+    
             # State taxes and budgets
             state.step([*companies, *retailers])
             # Spend state budgets back into the economy to keep circulation alive.
             state.spend_budgets(households, companies, retailers)
-
+    
             # Sight factor decay (excess sight balances)
             clearing.apply_sight_decay([*households, *companies, *retailers, state])
-
+    
             # Savings bank bookkeeping
             for sb in savings_banks:
                 sb.step(current_step=step)
-
+    
         # 8) Periodic clearing audits / reserve adjustments
         if clock.is_period_end(int(config.clearing.audit_interval), step):
             companies_by_id = {c.unique_id: c for c in companies}
@@ -639,11 +630,11 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
                     local_retailers = retailers
                 clearing.audit_bank(bank=bank, retailers=local_retailers, companies_by_id=companies_by_id, current_step=step)
                 clearing.enforce_reserve_bounds(bank=bank)
-
+    
         # 9) Environment (optional) - run monthly to match the global calendar.
         if clock.is_month_end(step):
             environmental_agency.step(current_step=step, agents=[*companies, *retailers], state=state)
-
+    
         # Collect metrics
         collector.collect_household_metrics(households, step)
         collector.collect_company_metrics(companies, step)
@@ -653,7 +644,7 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
         collector.collect_state_metrics("state", state, households, companies, step)
         collector.collect_market_metrics(labor_market, step)
         collector.calculate_global_metrics(step)
-
+    
         # Inject live counts + lifecycle events into macro metrics.
         if step in collector.global_metrics:
             collector.global_metrics[step].update(
@@ -667,7 +658,7 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
                     "company_deaths": company_deaths_this_step,
                 }
             )
-
+    
         # Minimal progress update (single line, overwritten).
         if progress_enabled:
             is_last = (step + 1) == steps
@@ -681,7 +672,7 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
                 remaining = (steps - done) / rate if rate > 0 else float("nan")
                 pct = (done / steps * 100.0) if steps > 0 else 100.0
                 bar = _progress_bar(done, steps, width=22)
-
+    
                 m1 = _m1_proxy(households, companies, retailers, state)
                 status = (
                     f"{bar} {pct:6.2f}%  step {done}/{steps}  "
@@ -689,27 +680,27 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
                     f"M1 {_format_compact_number(m1):>8}  "
                     f"elapsed {_format_duration(elapsed)}  eta {_format_duration(remaining)}"
                 )
-
+    
                 color = _progress_color(pct, progress_use_ansi)
                 status = _ansi(status, color, progress_use_ansi)
-
+    
                 # Carriage return to overwrite the previous status line.
                 # Flush immediately so it stays live even when stdout is buffered.
                 sys.stdout.write("\r" + status)
                 sys.stdout.flush()
-
+    
                 # Ensure final state ends with a newline.
                 if is_last:
                     sys.stdout.write("\n")
                     sys.stdout.flush()
-
+    
                 last_progress_ts = now
-
+    
         if step % max(1, steps // 10) == 0:
             m1 = _m1_proxy(households, companies, retailers, state)
             total_cc = sum(b.total_cc_exposure for b in warengeld_banks)
             log(f"Step {step}: M1 proxy={m1:.2f}, CC exposure={total_cc:.2f}")
-
+    
     log("Simulation finished.")
     collector.export_metrics()
     # Expose for validation/analysis scripts.

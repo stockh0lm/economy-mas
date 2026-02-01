@@ -16,7 +16,7 @@ class AccountStub:
 def test_config_consistency_deprecation(tmp_path: Path) -> None:
     """Referenz: doc/issues.md Abschnitt 4 → Konfig-Konsistenz
 
-    Updated to test that legacy fee_rate is properly deprecated and modern parameters work correctly.
+    Updated to test that a legacy fee key is not used and modern parameters work correctly.
     """
 
     cfg_text = textwrap.dedent(
