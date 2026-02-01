@@ -34,9 +34,9 @@ und konkrete nächste Schritte – mit Fokus auf **Schlankheit, Verständlichkei
   - Status: Es gibt derzeit nur `max_savings_per_account` als rein technische Obergrenze.
   - Spec: Spargrenzen sollen politisches Steuerinstrument sein, gekoppelt an erwartete Kreditnachfrage.
 
-- [ ] **Staat als realer Nachfrager im Warenkreislauf**:
-  - Status: Staat sammelt Steuern/verteilt Budgets (`state.step()` + `state.spend_budgets(...)`), aber es gibt **keinen** expliziten Mechanismus "Staat kauft Waren beim Retailer" (Warenfluss + Inventarabbau).
-  - TODO: Staat soll Budget (insb. Infrastruktur/Soziales) direkt bei `RetailerAgent` ausgeben (Procurement/Transfers über Retailkäufe), damit Budgets nicht nur als reine Transfers wirken.
+- [x] **Staat als realer Nachfrager im Warenkreislauf**:
+  - Status: Implementiert: `RetailerAgent.sell_to_state(...)` + `State.pay(...)`.
+  - State nutzt Procurement in `state.spend_budgets(...)` (Infrastruktur-Budget) → Warenfluss + Inventarabbau, Geldmengenneutral.
 
 ---
 
@@ -45,7 +45,7 @@ und konkrete nächste Schritte – mit Fokus auf **Schlankheit, Verständlichkei
 - [ ] **Golden-run Snapshot**
   - Ein kurzer Seeded-Run (z.B. 30 Tage) mit erwarteten Makro-Kennzahlen-Bändern.
 
-- [ ] **Neuer Test: Staat kauft Waren bei Retailern**
+- [x] **Neuer Test: Staat kauft Waren bei Retailern**
   - Referenz: Abschnitt **2) Abweichungen / Spec-Lücken → „Staat als realer Nachfrager…“**
   - Arrange: Retailer hat Inventory; State hat Budget.
   - Act: State procurement → `RetailerAgent.sell_to_state(...)` (oder Reuse `sell_to_household` mit State als Käufer-Protokoll).
@@ -147,7 +147,7 @@ und konkrete nächste Schritte – mit Fokus auf **Schlankheit, Verständlichkei
 - Wenn der Punkt vollständig erledigt ist, in eine „Done / Erledigt“-Sektion verschieben oder entfernen.
 - Verweise/Tests dabei konsistent halten.
 
-- [ ] **M1: Staat kauft Waren bei Retailern (Realwirtschaftliche Rückkopplung)**
+- [x] **M1: Staat kauft Waren bei Retailern (Realwirtschaftliche Rückkopplung)**
   - Bezug: Abschnitt **2) → „Staat als realer Nachfrager im Warenkreislauf“** und Abschnitt **3) → Test „Staat kauft Waren…“**.
 
 - [ ] **M2: Sparkassen‑Investitionskredite für Companies (Policy + deterministischer Test + Logging)**
@@ -166,7 +166,7 @@ und konkrete nächste Schritte – mit Fokus auf **Schlankheit, Verständlichkei
 
 ## 7) Empfohlene nächste Schritte (praktisch)
 
-1) **State-Procurement via Retailer** einführen (+ Test), damit Budgets realwirtschaftlich rückgekoppelt sind.
+1) (erledigt) **State-Procurement via Retailer** ist implementiert (+ Test) (siehe Abschnitt 6) M1).
 2) **Sparkassen-Investitionskredite** für Companies minimal implementieren (deterministisch testbar) + Logging.
 3) **Dienstleistungssektor transparent machen** (Metriken + money-neutral booking).
 4) Danach: `cc_limit-Policy` (rollierend, audit-basiert) ergänzen.

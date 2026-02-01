@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from .bank import WarengeldBank
     from .company_agent import Company
     from .household_agent import Household
+    from .state_agent import State
 
 
 @dataclass
@@ -209,6 +210,73 @@ class RetailerAgent(BaseAgent):
         if reserve_add > 0 and self.sight_balance >= reserve_add:
             self.sight_balance -= reserve_add
             self.write_down_reserve += reserve_add
+
+        return RetailSaleResult(qty, sale_value, cost_value, gross_profit)
+
+    def sell_to_state(
+        self,
+        state: "State",
+        budget: float,
+        *,
+        budget_bucket: str = "infrastructure_budget",
+    ) -> RetailSaleResult:
+        """Sell goods to the State (public procurement).
+
+        Bezug: doc/issues.md Abschnitt 2) "Staat als realer Nachfrager..." und
+        Abschnitt 6) M1.
+
+        Important: This is a **pure transfer** (money-neutral). It must not call
+        money-creation paths (e.g. WarengeldBank.finance_goods_purchase).
+        """
+
+        if budget <= 0 or self.inventory_units <= 0:
+            return RetailSaleResult(0.0, 0.0, 0.0, 0.0)
+
+        price = self.unit_sale_price()
+        if price <= 0:
+            return RetailSaleResult(0.0, 0.0, 0.0, 0.0)
+
+        # State can only spend what is available in the chosen bucket.
+        available = float(getattr(state, budget_bucket))
+        effective_budget = min(float(budget), max(0.0, available))
+        if effective_budget <= 0:
+            return RetailSaleResult(0.0, 0.0, 0.0, 0.0)
+
+        qty = min(self.inventory_units, effective_budget / price)
+        if qty <= 0:
+            return RetailSaleResult(0.0, 0.0, 0.0, 0.0)
+
+        sale_value = qty * price
+        unit_cost = self._avg_unit_cost()
+        cost_value = qty * unit_cost
+
+        paid = state.pay(sale_value, budget_bucket=budget_bucket)
+        if paid <= 0:
+            return RetailSaleResult(0.0, 0.0, 0.0, 0.0)
+
+        # If State couldn't pay full sale_value, scale down quantities proportionally.
+        if paid < sale_value and sale_value > 0:
+            scale = paid / sale_value
+            qty *= scale
+            sale_value = paid
+            cost_value = qty * unit_cost
+
+        self.sight_balance += sale_value
+        self.sales_total += sale_value
+
+        self.inventory_units -= qty
+        self.inventory_value = max(0.0, self.inventory_value - cost_value)
+
+        gross_profit = max(0.0, sale_value - cost_value)
+        reserve_add = gross_profit * self.config.retailer.write_down_reserve_share
+        if reserve_add > 0 and self.sight_balance >= reserve_add:
+            self.sight_balance -= reserve_add
+            self.write_down_reserve += reserve_add
+
+        log(
+            f"Retailer {self.unique_id}: sold to State {state.unique_id} value={sale_value:.2f} units={qty:.2f}.",
+            level="INFO",
+        )
 
         return RetailSaleResult(qty, sale_value, cost_value, gross_profit)
 

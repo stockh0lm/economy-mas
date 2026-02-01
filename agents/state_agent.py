@@ -76,6 +76,46 @@ class State(BaseAgent):
         )
 
 
+    def pay(self, amount: float, *, budget_bucket: str | None = None) -> float:
+        """Pay from state deposits (money-neutral transfer).
+
+        This method exists to support **explicit procurement flows** (see
+        `doc/issues.md` Abschnitt 2/3/6: Staat als realer Nachfrager / M1).
+
+        Args:
+            amount: Amount to debit.
+            budget_bucket: Optional explicit bucket to debit (e.g. "infrastructure_budget").
+
+        Returns:
+            Actually paid amount (capped by available funds).
+        """
+
+        if amount <= 0:
+            return 0.0
+
+        if budget_bucket is not None:
+            if not hasattr(self, budget_bucket):
+                raise AttributeError(f"State has no budget bucket: {budget_bucket}")
+            available = float(max(0.0, getattr(self, budget_bucket)))
+            paid = min(float(amount), available)
+            setattr(self, budget_bucket, available - paid)
+            return float(paid)
+
+        # Fallback: spend from buckets in a deterministic order.
+        remaining = float(amount)
+        for bucket in ["tax_revenue", "infrastructure_budget", "social_budget", "environment_budget"]:
+            if remaining <= 0:
+                break
+            available = float(max(0.0, getattr(self, bucket)))
+            if available <= 0:
+                continue
+            paid = min(remaining, available)
+            setattr(self, bucket, available - paid)
+            remaining -= paid
+
+        return float(amount - remaining)
+
+
     def collect_taxes(self, agents: AgentCollection) -> None:
         """
         Collect land taxes from all applicable agents.
@@ -154,7 +194,12 @@ class State(BaseAgent):
         # Reset tax revenue after distribution
         self.tax_revenue = 0.0
 
-    def spend_budgets(self, households: Sequence[TaxableAgent], companies: Sequence[TaxableAgent], retailers: Sequence[TaxableAgent]) -> None:
+    def spend_budgets(
+        self,
+        households: Sequence[TaxableAgent],
+        companies: Sequence[TaxableAgent],
+        retailers: Sequence[TaxableAgent],
+    ) -> None:
         """Recirculate state budgets back into the economy.
 
         Without an explicit spending rule, taxes and environmental levies accumulate
@@ -162,8 +207,8 @@ class State(BaseAgent):
         money-neutral redistribution:
 
         - social_budget -> equal per-household transfers
-        - infrastructure_budget -> equal per-company spending (procurement)
-        - environment_budget -> equal per-retailer spending
+        - infrastructure_budget -> goods procurement from retailers (real demand, inventory flows)
+        - environment_budget -> equal per-retailer spending (transfers)
 
         Transfers do not create or destroy money; they only change distribution.
         """
@@ -178,15 +223,22 @@ class State(BaseAgent):
                     h.balance = float(getattr(h, "balance")) + per_h
             self.social_budget = 0.0
 
-        # Infrastructure procurement
-        if self.infrastructure_budget > 0 and companies:
-            per_c = float(self.infrastructure_budget) / float(len(companies))
-            for c in companies:
-                if hasattr(c, "sight_balance"):
-                    c.sight_balance = float(getattr(c, "sight_balance")) + per_c
+        # Infrastructure procurement (State buys goods from retailers)
+        if self.infrastructure_budget > 0 and retailers:
+            per_r = float(self.infrastructure_budget) / float(len(retailers))
+            for r in retailers:
+                if hasattr(r, "sell_to_state"):
+                    # Procurement is money-neutral and reduces retailer inventory.
+                    _ = r.sell_to_state(self, budget=per_r, budget_bucket="infrastructure_budget")
                 else:
-                    c.balance = float(getattr(c, "balance")) + per_c
-            self.infrastructure_budget = 0.0
+                    # Fallback: legacy transfer (should be rare)
+                    paid = self.pay(per_r, budget_bucket="infrastructure_budget")
+                    if paid <= 0:
+                        continue
+                    if hasattr(r, "sight_balance"):
+                        r.sight_balance = float(getattr(r, "sight_balance")) + paid
+                    else:
+                        r.balance = float(getattr(r, "balance")) + paid
 
         # Environmental spending
         if self.environment_budget > 0 and retailers:
