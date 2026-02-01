@@ -11,6 +11,15 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import pandas as pd
 
+# TODO(plot_metrics): The metrics schema is evolving. When adding new columns to the CSV export,
+#   please keep names stable and prefer *_total / *_rate / *_proxy suffixes.
+#   Suggested upcoming global columns:
+#     - goods_value_total, service_value_total, service_share_of_output
+#     - goods_tx_volume, service_tx_volume
+#     - issuance_volume, extinguish_volume
+#     - velocity_proxy (already present) + optional velocity_goods_proxy / velocity_service_proxy
+#   Once these exist, add dedicated plots (and tests) below.
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 METRICS_DIR = REPO_ROOT / "output" / "metrics"
 PLOTS_DIR = REPO_ROOT / "output" / "plots"
@@ -38,14 +47,12 @@ def parse_args() -> argparse.Namespace:
         help="Directory where rendered plots will be written (default: output/plots).",
     )
     parser.add_argument(
-        "--show",
+        "--live-display",
         action="store_true",
-        help="Display the figures in an interactive window after saving them.",
-    )
-    parser.add_argument(
-        "--link-cursor",
-        action="store_true",
-        help="When used with --show, keep a synchronized vertical cursor across plots.",
+        help=(
+            "Show all plots interactively and synchronize cursor + axis limits across figures. "
+            "When omitted, plots are only saved to disk."
+        ),
     )
     return parser.parse_args()
 
@@ -177,6 +184,8 @@ def count_agents_per_step(rows: pd.DataFrame) -> tuple[list[int], list[int]]:
 
 
 def plot_global_output(global_rows: pd.DataFrame) -> tuple[plt.Figure, str]:
+    # TODO(plot_metrics): Extend this plot once the service-sector tracking lands.
+    #   Plot goods vs services output (goods_value_total/service_value_total) and the service share.
     steps, data = extract_series(
         global_rows,
         "gdp",
@@ -198,6 +207,9 @@ def plot_global_output(global_rows: pd.DataFrame) -> tuple[plt.Figure, str]:
 def plot_monetary_system(global_rows: pd.DataFrame) -> tuple[plt.Figure, str]:
     """Diagnostics for the core Warengeld mechanism."""
 
+    # TODO(plot_metrics): Add issuance/extinguish flow plots once available.
+    #   Suggested series: issuance_volume (retailer financing), extinguish_volume (repayment + write-downs),
+    #   and a breakdown of CC exposure by region/bank if we export it.
     steps, data = extract_series(
         global_rows,
         "m1_proxy",
@@ -372,6 +384,9 @@ PLOT_SPECS: list[tuple[str, PlotFunc]] = [
     ("company", plot_company_population),
 ]
 
+# TODO(plot_metrics): When we add service-sector metrics, introduce a new plot (e.g. plot_service_sector)
+#   and register it in PLOT_SPECS (scope "global"), plus a lightweight unit test in tests/test_plot_metrics.py.
+
 
 def main() -> None:
     args = parse_args()
@@ -409,15 +424,62 @@ def main() -> None:
         fig, filename = plot_func(data_by_scope[scope])
         figures.append(fig)
         axes.extend(fig.axes)
-        save_figure(fig, filename, run_dir, latest_dir, close_figure=not args.show)
+        save_figure(fig, filename, run_dir, latest_dir, close_figure=not args.live_display)
 
-    if args.show:
-        if args.link_cursor:
-            on_move = add_linked_cursor(axes)
-            for fig in figures:
-                fig.canvas.mpl_connect("motion_notify_event", on_move)
+    if args.live_display:
+        # Keep a synchronized vertical cursor and shared zoom/pan across all axes.
+        on_move = add_linked_cursor(axes)
+        for fig in figures:
+            fig.canvas.mpl_connect("motion_notify_event", on_move)
+
+        sync_axis_limits(axes)
+
         plt.show(block=True)
 
+
+def sync_axis_limits(axes: list[plt.Axes]) -> None:
+    """Synchronize zoom/pan (x/y limits) across all axes.
+
+    Matplotlib doesn't provide this out of the box across multiple figures.
+    We listen to xlim/ylim change events and propagate them.
+    """
+
+    if not axes:
+        return
+
+    syncing = {"active": False}
+
+    def _on_xlim_changed(changed_ax: plt.Axes):
+        if syncing["active"]:
+            return
+        syncing["active"] = True
+        try:
+            xlim = changed_ax.get_xlim()
+            for ax in axes:
+                if ax is changed_ax:
+                    continue
+                ax.set_xlim(xlim)
+                ax.figure.canvas.draw_idle()
+        finally:
+            syncing["active"] = False
+
+    def _on_ylim_changed(changed_ax: plt.Axes):
+        if syncing["active"]:
+            return
+        syncing["active"] = True
+        try:
+            ylim = changed_ax.get_ylim()
+            for ax in axes:
+                if ax is changed_ax:
+                    continue
+                ax.set_ylim(ylim)
+                ax.figure.canvas.draw_idle()
+        finally:
+            syncing["active"] = False
+
+    for ax in axes:
+        ax.callbacks.connect("xlim_changed", _on_xlim_changed)
+        ax.callbacks.connect("ylim_changed", _on_ylim_changed)
 
 def add_linked_cursor(axes: list[plt.Axes]) -> Callable[[object], None]:
     lines = [ax.axvline(color="gray", lw=0.8, alpha=0.5, visible=False) for ax in axes]

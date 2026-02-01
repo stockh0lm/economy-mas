@@ -24,7 +24,7 @@ und konkrete nächste Schritte – mit Fokus auf **Schlankheit, Verständlichkei
 
 - [~] **Warenbewertung & Abschreibung**:
   - Status: Es existiert eine einfache Inventarbewertung "at cost" (`RetailerAgent.inventory_value`) + ein pauschaler Obsoleszenz-Write-down (`obsolescence_rate`).
-  - Offene Spec-Fragen: Bewertungsregel (Einstand/Markt/Niederstwert), “unverkaufbar”-Kriterium, Artikelgruppen.
+  - Offene Spec-Fragen: Bewertungsregel (Einstand/Markt/Niederstwert), „unverkaufbar“-Kriterium, Artikelgruppen.
 
 - [~] **Fraud/Wertberichtigung-Rechenregel**:
   - Status: Clearing hat eine implementierte, einfache Verlustallokation in `_apply_value_correction(...)` (Reserve → Retailer-Sicht → Empfänger-Haircut (pro-rata via Bank-Ledger) → Bankreserve).
@@ -34,22 +34,12 @@ und konkrete nächste Schritte – mit Fokus auf **Schlankheit, Verständlichkei
   - Status: Es gibt derzeit nur `max_savings_per_account` als rein technische Obergrenze.
   - Spec: Spargrenzen sollen politisches Steuerinstrument sein, gekoppelt an erwartete Kreditnachfrage.
 
-- [x] **Staat als realer Nachfrager im Warenkreislauf**:
-  - Status: Implementiert: `RetailerAgent.sell_to_state(...)` + `State.pay(...)`.
-  - State nutzt Procurement in `state.spend_budgets(...)` (Infrastruktur-Budget) → Warenfluss + Inventarabbau, Geldmengenneutral.
-
 ---
 
 ## 3) Tests / Validierung
 
 - [ ] **Golden-run Snapshot**
   - Ein kurzer Seeded-Run (z.B. 30 Tage) mit erwarteten Makro-Kennzahlen-Bändern.
-
-- [x] **Neuer Test: Staat kauft Waren bei Retailern**
-  - Referenz: Abschnitt **2) Abweichungen / Spec-Lücken → „Staat als realer Nachfrager…“**
-  - Arrange: Retailer hat Inventory; State hat Budget.
-  - Act: State procurement → `RetailerAgent.sell_to_state(...)` (oder Reuse `sell_to_household` mit State als Käufer-Protokoll).
-  - Assert: Inventory sinkt, Retailer.sight steigt, State.sight sinkt, keine Geldschöpfung/Vernichtung.
 
 - [ ] **Neuer Test: Sparkassen-Kredit -> Investition -> Produktivität**
   - Referenz: Abschnitt **5) Neue ToDos → „Firmen sollen bei der Sparkasse Geld leihen…“**
@@ -137,6 +127,11 @@ und konkrete nächste Schritte – mit Fokus auf **Schlankheit, Verständlichkei
 
 - [ ] **scripts/plot_metrics.py** anpassen, um neue Metriken (Güter-/Dienstleistungs-Output, Velocity-Proxies) zu plotten.
   - [ ] **scripts/plot_metrics.py** intern vollständig auf pandas umstellen um performance zu steigern (DataFrame-basiert statt dict-basiert). eventuell noch numpy, wenns hilft.
+  - [ ] Optionaler Live-Mode: `--live-display` zeigt alle Plots interaktiv und synchronisiert Cursor/Zoom über alle Figures.
+
+- [ ] **main.py Status-Line standardisieren (default an, abschaltbar)**
+  - Ziel: Eine einzelne, sich überschreibende Fortschrittszeile (HH/CO/M1/ETA) soll **standardmäßig** angezeigt werden.
+  - Abschalten via `SIM_PROGRESS=0` (und Farben via `NO_COLOR`).
 
 ---
 
@@ -146,9 +141,6 @@ und konkrete nächste Schritte – mit Fokus auf **Schlankheit, Verständlichkei
 - Den entsprechenden Punkt auf `[x]` setzen.
 - Wenn der Punkt vollständig erledigt ist, in eine „Done / Erledigt“-Sektion verschieben oder entfernen.
 - Verweise/Tests dabei konsistent halten.
-
-- [x] **M1: Staat kauft Waren bei Retailern (Realwirtschaftliche Rückkopplung)**
-  - Bezug: Abschnitt **2) → „Staat als realer Nachfrager im Warenkreislauf“** und Abschnitt **3) → Test „Staat kauft Waren…“**.
 
 - [ ] **M2: Sparkassen‑Investitionskredite für Companies (Policy + deterministischer Test + Logging)**
   - Bezug: Abschnitt **5) → „Firmen sollen bei der Sparkasse Geld leihen…“** und Abschnitt **3) → Test „Sparkassen‑Kredit → Investition…“**.
@@ -160,13 +152,12 @@ und konkrete nächste Schritte – mit Fokus auf **Schlankheit, Verständlichkei
   - Bezug: Abschnitt **4) → „Legacy‑Bankpfade…“**.
 
 - [ ] **M5: Tech‑Debt klein – Company Balance‑Sheet Naming auf `sight_balance` konsolidieren**
-  - Bezug: Abschnitt **4) → „Einheitliche Balance-Sheet-Namen (Company/Producer)“**.
+  - Bezug: Abschnitt **4) → „Einheitliche Balance‑Sheet-Namen (Company/Producer)“**.
 
 ---
 
 ## 7) Empfohlene nächste Schritte (praktisch)
 
-1) (erledigt) **State-Procurement via Retailer** ist implementiert (+ Test) (siehe Abschnitt 6) M1).
-2) **Sparkassen-Investitionskredite** für Companies minimal implementieren (deterministisch testbar) + Logging.
-3) **Dienstleistungssektor transparent machen** (Metriken + money-neutral booking).
-4) Danach: `cc_limit-Policy` (rollierend, audit-basiert) ergänzen.
+1) **Sparkassen-Investitionskredite** für Companies minimal implementieren (deterministisch testbar) + Logging.
+2) **Dienstleistungssektor transparent machen** (Metriken + money-neutral booking).
+3) Danach: `cc_limit-Policy` (rollierend, audit-basiert) ergänzen.

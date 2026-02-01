@@ -237,8 +237,8 @@ def test_parse_args_defaults():
         assert args.run_id is None
         assert args.metrics_dir.endswith("output/metrics")
         assert args.plots_dir.endswith("output/plots")
-        assert args.show is False
-        assert args.link_cursor is False
+        assert args.live_display is False
+
 
 def test_parse_args_custom():
     """Test argument parsing with custom values."""
@@ -247,8 +247,7 @@ def test_parse_args_custom():
         '--run-id', '20240101_120000',
         '--metrics-dir', '/custom/metrics',
         '--plots-dir', '/custom/plots',
-        '--show',
-        '--link-cursor'
+        '--live-display',
     ]
 
     with patch('sys.argv', test_args):
@@ -257,8 +256,7 @@ def test_parse_args_custom():
         assert args.run_id == '20240101_120000'
         assert args.metrics_dir == '/custom/metrics'
         assert args.plots_dir == '/custom/plots'
-        assert args.show is True
-        assert args.link_cursor is True
+        assert args.live_display is True
 
 def test_edge_case_empty_csv():
     """Test handling of empty CSV file."""

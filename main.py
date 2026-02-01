@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import os
 import random
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -60,6 +61,36 @@ def _progress_bar(done: int, total: int, width: int = 30) -> str:
     ratio = max(0.0, min(1.0, done / total))
     filled = int(round(ratio * width))
     return "[" + ("#" * filled) + ("-" * (width - filled)) + "]"
+
+
+def _format_compact_number(value: float) -> str:
+    """Format numbers compactly for status lines (keeps terminal output short)."""
+
+    abs_val = abs(value)
+    if abs_val >= 1_000_000_000:
+        return f"{value / 1_000_000_000:.2f}B"
+    if abs_val >= 1_000_000:
+        return f"{value / 1_000_000:.2f}M"
+    if abs_val >= 1_000:
+        return f"{value / 1_000:.2f}k"
+    return f"{value:.2f}"
+
+
+def _ansi(text: str, code: str, enabled: bool) -> str:
+    if not enabled:
+        return text
+    return f"\x1b[{code}m{text}\x1b[0m"
+
+
+def _progress_color(pct: float, enabled: bool) -> str:
+    if not enabled:
+        return ""
+    # red -> yellow -> green
+    if pct < 33.3:
+        return "31"  # red
+    if pct < 66.6:
+        return "33"  # yellow
+    return "32"  # green
 
 
 # ---------------------------
@@ -333,8 +364,10 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
 
     log(f"Starting simulation for {steps} steps...")
 
-    # Minimal liveness/progress output for long runs (opt-in; avoids noisy unit tests).
-    progress_enabled = os.getenv("SIM_PROGRESS") == "1"
+    # Minimal liveness/progress output for long runs.
+    # Enabled by default; disable with SIM_PROGRESS=0.
+    progress_enabled = os.getenv("SIM_PROGRESS", "1") not in {"0", "false", "False"}
+    progress_use_ansi = progress_enabled and (os.getenv("NO_COLOR") is None)
     start_ts = time.time()
     last_progress_ts = start_ts
     progress_every_steps = max(1, steps // 200)  # ~0.5% increments (cap at 200 updates)
@@ -607,7 +640,7 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
                 }
             )
 
-        # Minimal ASCII progress update.
+        # Minimal progress update (single line, overwritten).
         if progress_enabled:
             is_last = (step + 1) == steps
             now = time.time()
@@ -619,11 +652,29 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
                 rate = done / elapsed if elapsed > 0 else 0.0
                 remaining = (steps - done) / rate if rate > 0 else float("nan")
                 pct = (done / steps * 100.0) if steps > 0 else 100.0
-                bar = _progress_bar(done, steps, width=28)
-                log(
+                bar = _progress_bar(done, steps, width=22)
+
+                m1 = _m1_proxy(households, companies, retailers, state)
+                status = (
                     f"{bar} {pct:6.2f}%  step {done}/{steps}  "
+                    f"HH {len(households):5d}  CO {len(companies):5d}  "
+                    f"M1 {_format_compact_number(m1):>8}  "
                     f"elapsed {_format_duration(elapsed)}  eta {_format_duration(remaining)}"
                 )
+
+                color = _progress_color(pct, progress_use_ansi)
+                status = _ansi(status, color, progress_use_ansi)
+
+                # Carriage return to overwrite the previous status line.
+                # Flush immediately so it stays live even when stdout is buffered.
+                sys.stdout.write("\r" + status)
+                sys.stdout.flush()
+
+                # Ensure final state ends with a newline.
+                if is_last:
+                    sys.stdout.write("\n")
+                    sys.stdout.flush()
+
                 last_progress_ts = now
 
         if step % max(1, steps // 10) == 0:
