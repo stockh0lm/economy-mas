@@ -486,16 +486,33 @@ def test_plotting_functions_return_consistent_filenames():
         (plot_company_health, "company_health.png"),
         (plot_household_population, "households_count.png"),
         (plot_company_population, "companies_count.png"),
-    ]
+   ]
 
-    sample_data = pd.DataFrame([{'time_step': 1, 'gdp': 100.0, 'household_consumption': 80.0}])
+    # Create comprehensive test data with all required columns for each plotting function
+    sample_data = pd.DataFrame([
+        {
+            'time_step': 1,
+            'gdp': 100.0, 'household_consumption': 80.0, 'government_spending': 10.0,
+            'm1_proxy': 50.0, 'm2_proxy': 60.0, 'cc_exposure': 20.0, 'inventory_value_total': 30.0,
+            'velocity_proxy': 1.5, 'employment_rate': 0.9, 'unemployment_rate': 0.1, 'bankruptcy_rate': 0.01,
+            'average_nominal_wage': 50.0, 'average_real_wage': 45.0, 'price_index': 100.0, 'inflation_rate': 0.02,
+            'environment_budget': 5.0, 'infrastructure_budget': 10.0, 'social_budget': 8.0,
+            'balance': 100.0, 'rd_investment': 10.0, 'production_capacity': 50.0,
+            'agent_id': 'agent_1'
+        },
+        {
+            'time_step': 2,
+            'gdp': 110.0, 'household_consumption': 85.0, 'government_spending': 12.0,
+            'm1_proxy': 55.0, 'm2_proxy': 65.0, 'cc_exposure': 22.0, 'inventory_value_total': 32.0,
+            'velocity_proxy': 1.6, 'employment_rate': 0.92, 'unemployment_rate': 0.08, 'bankruptcy_rate': 0.008,
+            'average_nominal_wage': 52.0, 'average_real_wage': 47.0, 'price_index': 102.0, 'inflation_rate': 0.02,
+            'environment_budget': 5.5, 'infrastructure_budget': 11.0, 'social_budget': 8.5,
+            'balance': 110.0, 'rd_investment': 12.0, 'production_capacity': 52.0,
+            'agent_id': 'agent_2'
+        }
+    ])
 
     for func, expected_filename in plotting_functions:
-        try:
-            fig, filename = func(sample_data)
-            assert filename == expected_filename
-            assert fig is not None
-        except Exception as e:
-            # Some functions may fail with minimal data, that's okay for this test
-            if "not in" not in str(e) and "key" not in str(e).lower():
-                raise
+        fig, filename = func(sample_data)
+        assert filename == expected_filename
+        assert fig is not None

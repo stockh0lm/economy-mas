@@ -86,64 +86,97 @@ def load_csv_rows(path: Path, skip_fields: Iterable[str] | None = None) -> pd.Da
     return pd.DataFrame(parsed_rows)
 
 
-def _rows_to_dicts(rows: pd.DataFrame | list[dict[str, object]]) -> list[dict[str, object]]:
-    """Normalize either a DataFrame or list-of-dicts into list-of-dicts."""
-
-    if isinstance(rows, pd.DataFrame):
-        return rows.to_dict(orient="records")
-    return rows
 
 
 def extract_series(
-    rows: pd.DataFrame | list[dict[str, object]], *columns: str
+    rows: pd.DataFrame, *columns: str
 ) -> tuple[list[int], dict[str, list[float]]]:
-    dict_rows = _rows_to_dicts(rows)
-    ordered = sorted(dict_rows, key=lambda row: int(row["time_step"]))
-    steps = [int(row["time_step"]) for row in ordered]
-    series: dict[str, list[float]] = {}
+    """Extract time series data using optimized pandas operations.
+
+    Args:
+        rows: DataFrame containing the metrics data
+        *columns: Column names to extract as series
+
+    Returns:
+        Tuple of (time_steps, series_data) where series_data is a dict mapping
+        column names to lists of float values
+    """
+    # Vectorized sorting and type conversion
+    df = rows.sort_values('time_step')
+    steps = df['time_step'].astype(int).tolist()
+
+    # Vectorized extraction with NaN handling
+    series = {}
     for column in columns:
-        values: list[float] = []
-        for row in ordered:
-            v = row.get(column)
-            # pandas uses NaN floats for missing values; normalize to 0.0
-            if v is None or (isinstance(v, float) and pd.isna(v)):
-                values.append(0.0)
-            else:
-                values.append(float(v))
-        series[column] = values
+        if column in df.columns:
+            # Fill NaN values with 0.0 and convert to float - all vectorized
+            series[column] = df[column].fillna(0.0).astype(float).tolist()
+        else:
+            # If column doesn't exist, return empty list
+            series[column] = []
+
     return steps, series
 
 
 def aggregate_company_metrics(
-    rows: pd.DataFrame | list[dict[str, object]]
+    rows: pd.DataFrame
 ) -> tuple[list[int], dict[str, list[float]]]:
-    dict_rows = _rows_to_dicts(rows)
-    totals: defaultdict[int, dict[str, float]] = defaultdict(lambda: defaultdict(float))
-    for row in dict_rows:
-        step = int(row["time_step"])
-        for key in ("balance", "rd_investment", "production_capacity"):
-            value = row.get(key)
-            if isinstance(value, (int, float)) and value is not None:
-                totals[step][key] += float(value)
-    steps = sorted(totals)
+    """Aggregate company metrics using optimized pandas groupby operations.
+
+    Args:
+        rows: DataFrame containing company metrics data
+
+    Returns:
+        Tuple of (time_steps, aggregated_data) where aggregated_data contains
+        sums for balance, rd_investment, and production_capacity
+    """
+    # Check which columns are available
+    available_columns = ['balance', 'rd_investment', 'production_capacity']
+    existing_columns = [col for col in available_columns if col in rows.columns]
+
+    if not existing_columns:
+        # No company metrics columns found, return empty result
+        return [], {'balance': [], 'rd_investment': [], 'production_capacity': []}
+
+    # Vectorized groupby and aggregation
+    df = rows.copy()
+    df['time_step'] = df['time_step'].astype(int)
+    result = df.groupby('time_step')[existing_columns].sum().fillna(0.0)
+
+    steps = sorted(result.index.tolist())
+
+    # Initialize all expected columns with empty lists or data
     aggregated = {
-        key: [totals[step].get(key, 0.0) for step in steps]
-        for key in ("balance", "rd_investment", "production_capacity")
+        'balance': result.get('balance', pd.Series([], dtype=float)).tolist(),
+        'rd_investment': result.get('rd_investment', pd.Series([], dtype=float)).tolist(),
+        'production_capacity': result.get('production_capacity', pd.Series([], dtype=float)).tolist()
     }
+
     return steps, aggregated
 
 
-def count_agents_per_step(rows: pd.DataFrame | list[dict[str, object]]) -> tuple[list[int], list[int]]:
-    dict_rows = _rows_to_dicts(rows)
-    counts: defaultdict[int, set[str]] = defaultdict(set)
-    for row in dict_rows:
-        counts[int(row["time_step"])].add(str(row.get("agent_id", "")))
-    steps = sorted(counts)
-    values = [len(counts[step]) for step in steps]
+def count_agents_per_step(rows: pd.DataFrame) -> tuple[list[int], list[int]]:
+    """Count unique agents per time step using optimized pandas operations.
+
+    Args:
+        rows: DataFrame containing agent data with time_step and agent_id
+
+    Returns:
+        Tuple of (time_steps, agent_counts) where agent_counts contains the number
+        of unique agents at each time step
+    """
+    # Vectorized groupby and unique counting
+    df = rows.copy()
+    df['time_step'] = df['time_step'].astype(int)
+    result = df.groupby('time_step')['agent_id'].nunique()
+
+    steps = sorted(result.index.tolist())
+    values = result.tolist()
+
     return steps, values
 
 
-def plot_global_output(global_rows: pd.DataFrame | list[dict[str, object]]) -> tuple[plt.Figure, str]:
+def plot_global_output(global_rows: pd.DataFrame) -> tuple[plt.Figure, str]:
     steps, data = extract_series(
         global_rows,
         "gdp",
@@ -162,7 +195,7 @@ def plot_global_output(global_rows: pd.DataFrame | list[dict[str, object]]) -> t
     return fig, "global_output.png"
 
 
-def plot_monetary_system(global_rows: pd.DataFrame | list[dict[str, object]]) -> tuple[plt.Figure, str]:
+def plot_monetary_system(global_rows: pd.DataFrame) -> tuple[plt.Figure, str]:
     """Diagnostics for the core Warengeld mechanism."""
 
     steps, data = extract_series(
@@ -195,7 +228,7 @@ def plot_monetary_system(global_rows: pd.DataFrame | list[dict[str, object]]) ->
     return fig, "monetary_system.png"
 
 
-def plot_labor_market(global_rows: pd.DataFrame | list[dict[str, object]]) -> tuple[plt.Figure, str]:
+def plot_labor_market(global_rows: pd.DataFrame) -> tuple[plt.Figure, str]:
     steps, data = extract_series(
         global_rows,
         "employment_rate",
@@ -215,7 +248,7 @@ def plot_labor_market(global_rows: pd.DataFrame | list[dict[str, object]]) -> tu
     return fig, "labor_market.png"
 
 
-def plot_prices_and_wages(global_rows: pd.DataFrame | list[dict[str, object]]) -> tuple[plt.Figure, str]:
+def plot_prices_and_wages(global_rows: pd.DataFrame) -> tuple[plt.Figure, str]:
     steps, wage_series = extract_series(
         global_rows,
         "average_nominal_wage",
@@ -254,7 +287,7 @@ def plot_prices_and_wages(global_rows: pd.DataFrame | list[dict[str, object]]) -
     return fig, "prices_and_wages.png"
 
 
-def plot_state_budgets(state_rows: pd.DataFrame | list[dict[str, object]]) -> tuple[plt.Figure, str]:
+def plot_state_budgets(state_rows: pd.DataFrame) -> tuple[plt.Figure, str]:
     steps, data = extract_series(
         state_rows,
         "environment_budget",
@@ -273,7 +306,7 @@ def plot_state_budgets(state_rows: pd.DataFrame | list[dict[str, object]]) -> tu
     return fig, "state_budgets.png"
 
 
-def plot_company_health(company_rows: pd.DataFrame | list[dict[str, object]]) -> tuple[plt.Figure, str]:
+def plot_company_health(company_rows: pd.DataFrame) -> tuple[plt.Figure, str]:
     steps, data = aggregate_company_metrics(company_rows)
     fig, ax_balance = plt.subplots(figsize=(10, 6))
     ax_balance.plot(steps, data["balance"], label="Aggregate Balance", color="tab:blue")
@@ -306,7 +339,7 @@ def plot_company_health(company_rows: pd.DataFrame | list[dict[str, object]]) ->
     return fig, "company_health.png"
 
 
-def plot_household_population(household_rows: pd.DataFrame | list[dict[str, object]]) -> tuple[plt.Figure, str]:
+def plot_household_population(household_rows: pd.DataFrame) -> tuple[plt.Figure, str]:
     steps, counts = count_agents_per_step(household_rows)
     fig, ax = plt.subplots(figsize=(10, 4))
     ax.plot(steps, counts, color="tab:blue")
@@ -317,7 +350,7 @@ def plot_household_population(household_rows: pd.DataFrame | list[dict[str, obje
     return fig, "households_count.png"
 
 
-def plot_company_population(company_rows: pd.DataFrame | list[dict[str, object]]) -> tuple[plt.Figure, str]:
+def plot_company_population(company_rows: pd.DataFrame) -> tuple[plt.Figure, str]:
     steps, counts = count_agents_per_step(company_rows)
     fig, ax = plt.subplots(figsize=(10, 4))
     ax.plot(steps, counts, color="tab:green")
@@ -409,6 +442,33 @@ def add_linked_cursor(axes: list[plt.Axes]) -> Callable[[object], None]:
 
     return on_move
 
+
+def ensure_dirs(directory: Path) -> Path:
+    """Ensure that the specified directory exists, creating it if necessary.
+
+    Args:
+        directory: Path object pointing to the directory to ensure exists
+
+    Returns:
+        The same Path object for convenience
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+def save_figure(fig: plt.Figure, filename: str, run_dir: Path, latest_dir: Path, close_figure: bool = True) -> None:
+    """Save a matplotlib figure to a file in the specified directory.
+
+    Args:
+        fig: The matplotlib figure to save
+        filename: The filename for the saved figure
+        run_dir: The base directory where figures should be saved
+        latest_dir: The specific run directory (should be same as run_dir in current usage)
+        close_figure: Whether to close the figure after saving
+    """
+    save_path = latest_dir / filename
+    fig.savefig(save_path, bbox_inches='tight', dpi=150)
+    if close_figure:
+        plt.close(fig)
 
 def try_float(value: str | None) -> float | None:
     if value is None or value == "":
