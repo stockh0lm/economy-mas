@@ -138,18 +138,51 @@ def _resolve_config_from_args_or_env() -> SimulationConfig:
 
 
 def create_households(config: SimulationConfig) -> list[Household]:
+    """Create households with a realistic initial age distribution.
+
+    Notes:
+    - Primary truth: doc/specs.md (macro contract). Demography details are
+      driven by doc/issues.md Abschnitt 4) (growth & death behaviour).
+    - Age seeding uses a deterministic RNG derived from config.time.seed or
+      config.population.seed to keep CI stable.
+    """
+
+    import random
+
+    # Deterministic local RNG (do NOT mutate global random state here).
+    seed = getattr(getattr(config, "time", None), "seed", None)
+    if seed is None:
+        seed = getattr(getattr(config, "population", None), "seed", None)
+    rng = random.Random(int(seed) if seed is not None else 0)
+
+    days_per_year = int(getattr(getattr(config, "time", None), "days_per_year", 360) or 360)
+
+    def _seed_age(h: Household) -> None:
+        min_y = int(getattr(config.household, "initial_age_min_years", 0))
+        mode_y = int(getattr(config.household, "initial_age_mode_years", 35))
+        max_y = int(getattr(config.household, "initial_age_max_years", int(config.household.max_age)))
+        max_y = max(min_y, min(max_y, int(config.household.max_age)))
+        mode_y = max(min_y, min(mode_y, max_y))
+        age_years = float(rng.triangular(min_y, max_y, mode_y))
+        h.age_days = int(age_years * days_per_year)
+
     if config.population.num_households is not None:
         count = int(config.population.num_households)
         template = config.population.household_template
-        return [
+        households = [
             Household(unique_id=f"{config.HOUSEHOLD_ID_PREFIX}{i}", income=template.income, config=config)
             for i in range(count)
         ]
+        for h in households:
+            _seed_age(h)
+        return households
 
     # fall back: explicit list
     households: list[Household] = []
     for i, h in enumerate(config.INITIAL_HOUSEHOLDS):
-        households.append(Household(unique_id=f"{config.HOUSEHOLD_ID_PREFIX}{i}", income=h.income, config=config))
+        hh = Household(unique_id=f"{config.HOUSEHOLD_ID_PREFIX}{i}", income=h.income, config=config)
+        _seed_age(hh)
+        households.append(hh)
     return households
 
 
@@ -232,7 +265,7 @@ def initialize_agents(config: SimulationConfig) -> dict[str, Any]:
     Kept for backwards compatibility with unit tests.
     """
 
-    state = State(unique_id="state", config=config)
+    state = State(unique_id=str(config.STATE_ID), config=config)
 
     # Spatial granularity: create one house bank (+ savings bank) per region.
     num_regions = int(getattr(config.spatial, "num_regions", 1))
@@ -244,9 +277,9 @@ def initialize_agents(config: SimulationConfig) -> dict[str, Any]:
         bank.region_id = rid
     for rid, sb in zip(region_ids, savings_banks):
         sb.region_id = rid
-    clearing = ClearingAgent(unique_id="clearing", config=config)
+    clearing = ClearingAgent(unique_id=str(config.CLEARING_AGENT_ID), config=config)
     financial_market = FinancialMarket(unique_id="financial_market", config=config)
-    labor_market = LaborMarket(unique_id="labor_market", config=config)
+    labor_market = LaborMarket(unique_id=str(config.LABOR_MARKET_ID), config=config)
     environmental_agency = EnvironmentalAgency(unique_id="environmental_agency", config=config)
 
     households = create_households(config)
@@ -312,6 +345,142 @@ def _m1_proxy(households: list[Household], companies: list[Company], retailers: 
         total += max(0.0, getattr(r, "sight_balance", 0.0))
     total += max(0.0, getattr(state, "sight_balance", 0.0))
     return total
+
+
+def _sample_household_age_days(config: SimulationConfig, *, working_age_only: bool = False) -> int:
+    """Sample an initial age (in days) for newly created households.
+
+    Used for:
+    - initial population seeding (create_households)
+    - turnover replacements after deaths
+
+    The distribution is intentionally simple (triangular) and configurable via
+    HouseholdConfig.initial_age_* fields.
+    """
+
+    days_per_year = int(getattr(getattr(config, "time", None), "days_per_year", 360) or 360)
+    cfg = config.household
+
+    min_y = int(getattr(cfg, "initial_age_min_years", 0))
+    mode_y = int(getattr(cfg, "initial_age_mode_years", 35))
+    max_y = int(getattr(cfg, "initial_age_max_years", int(getattr(cfg, "max_age", 70))))
+    max_y = max(min_y, min(max_y, int(getattr(cfg, "max_age", max_y))))
+    mode_y = max(min_y, min(mode_y, max_y))
+
+    if working_age_only:
+        min_y = max(min_y, int(getattr(cfg, "fertility_age_min", 18)))
+        mode_y = max(min_y, mode_y)
+
+    age_years = float(random.triangular(min_y, max_y, mode_y))
+    return int(age_years * days_per_year)
+
+
+def _settle_household_estate(
+    *,
+    deceased: Household,
+    heir: Household | None,
+    state: State,
+    savings_bank: SavingsBank,
+    config: SimulationConfig,
+) -> None:
+    """Settle debts and transfer remaining wealth on household death.
+
+    Expliziter Bezug: doc/issues.md Abschnitt 4) → "Einfaches Wachstums- und
+    Sterbe-Verhalten" (Generationenwechsel / Vermögensübergang).
+
+    Rules (minimal but Warengeld-consistent):
+    - Outstanding Sparkasse loan is repaid from estate if possible (sight, then
+      local savings, then SavingsBank deposits).
+    - Remaining estate is transferred to heir (preferred) or state.
+    - No money creation: only transfers and internal netting.
+    """
+
+    did = str(getattr(deceased, "unique_id", ""))
+    if not did:
+        return
+
+    # 1) Gather estate
+    estate_sight = float(getattr(deceased, "sight_balance", getattr(deceased, "checking_account", 0.0)) or 0.0)
+    estate_local = float(getattr(deceased, "local_savings", 0.0) or 0.0)
+    estate_deposit = float(savings_bank.savings_accounts.get(did, 0.0) or 0.0)
+
+    # 2) Settle Sparkasse loan against the estate
+    outstanding = float(savings_bank.active_loans.get(did, 0.0) or 0.0)
+    if outstanding > 0:
+        # Repay from sight (cash returns to bank)
+        pay = min(outstanding, max(0.0, estate_sight))
+        if pay > 0:
+            estate_sight -= pay
+            outstanding -= pay
+            savings_bank.available_funds += pay
+
+        # Repay from local savings (cash returns to bank)
+        pay = min(outstanding, max(0.0, estate_local))
+        if pay > 0:
+            estate_local -= pay
+            outstanding -= pay
+            savings_bank.available_funds += pay
+
+        # Repay by netting deposits (no cash movement, just balance sheet netting)
+        pay = min(outstanding, max(0.0, estate_deposit))
+        if pay > 0:
+            estate_deposit -= pay
+            outstanding -= pay
+
+        # Update loan ledger
+        if outstanding <= 0:
+            savings_bank.active_loans.pop(did, None)
+        else:
+            savings_bank.active_loans[did] = outstanding
+
+    # 3) Any remaining outstanding loan is written off (risk reserve, then liquidity)
+    remaining_loan = float(savings_bank.active_loans.get(did, 0.0) or 0.0)
+    if remaining_loan > 0:
+        reserve_cover = min(remaining_loan, float(getattr(savings_bank, "risk_reserve", 0.0) or 0.0))
+        if reserve_cover > 0:
+            savings_bank.risk_reserve = float(savings_bank.risk_reserve) - reserve_cover
+            remaining_loan -= reserve_cover
+
+        if remaining_loan > 0:
+            # Reduce liquidity (bank absorbs loss)
+            absorb = min(remaining_loan, float(getattr(savings_bank, "available_funds", 0.0) or 0.0))
+            savings_bank.available_funds = float(savings_bank.available_funds) - absorb
+            remaining_loan -= absorb
+
+        savings_bank.active_loans.pop(did, None)
+
+    # 4) Transfer remaining estate
+    share = float(getattr(config.household, "inheritance_share_on_death", 1.0) or 1.0)
+    share = max(0.0, min(1.0, share))
+    receiver: Any = heir if heir is not None else state
+
+    # Sight + local savings transfer into receiver sight.
+    if estate_sight > 0:
+        receiver.sight_balance = float(getattr(receiver, "sight_balance", 0.0)) + estate_sight * share
+        if share < 1.0:
+            state.sight_balance = float(state.sight_balance) + estate_sight * (1.0 - share)
+
+    if estate_local > 0:
+        receiver.sight_balance = float(getattr(receiver, "sight_balance", 0.0)) + estate_local * share
+        if share < 1.0:
+            state.sight_balance = float(state.sight_balance) + estate_local * (1.0 - share)
+
+    # Deposits: move the savings account liability from deceased to receiver.
+    if estate_deposit > 0:
+        rid = str(getattr(receiver, "unique_id", "state"))
+        savings_bank.savings_accounts[rid] = float(savings_bank.savings_accounts.get(rid, 0.0)) + estate_deposit * share
+        if share < 1.0:
+            # Remaining share: withdraw to state sight for simplicity
+            savings_bank.savings_accounts["state"] = float(savings_bank.savings_accounts.get("state", 0.0)) + estate_deposit * (1.0 - share)
+
+    # Remove deceased deposit entry.
+    savings_bank.savings_accounts.pop(did, None)
+
+    # 5) Zero the deceased balances (should not matter after removal, but avoids reuse)
+    if hasattr(deceased, "sight_balance"):
+        deceased.sight_balance = 0.0
+    if hasattr(deceased, "local_savings"):
+        deceased.local_savings = 0.0
 
 
 def run_simulation(config: SimulationConfig) -> dict[str, Any]:
@@ -394,6 +563,21 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
         # Safe fallback: keep computed next_household_idx.
         pass
 
+    # Companies: keep numeric IDs for newly founded firms (Milestone 1);
+    # Milestone 5 tightens this to *all* company births incl. splits.
+    configured_companies = int(getattr(getattr(config, "population", None), "num_companies", 0) or 0)
+    next_company_idx = configured_companies if configured_companies > 0 else len(companies)
+    prefix = str(config.COMPANY_ID_PREFIX)
+    numeric_suffixes: list[int] = []
+    for c in companies:
+        uid = str(getattr(c, "unique_id", ""))
+        if uid.startswith(prefix):
+            tail = uid[len(prefix):]
+            if tail.isdigit():
+                numeric_suffixes.append(int(tail))
+    if numeric_suffixes:
+        next_company_idx = max(next_company_idx, max(numeric_suffixes) + 1)
+
     for step in range(steps):
         clock.day_index = step
         # Reset per-step retailer flow counters (used by metrics exports).
@@ -440,6 +624,26 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
 
             if death_now:
                 deaths_this_step += 1
+                # Estate settlement & wealth transition (doc/issues.md Abschnitt 4)
+                region_id = getattr(h, "region_id", "region_0")
+                h_savings_bank = savings_by_region.get(region_id, savings_banks[0])
+                heir_candidates = [
+                    hh
+                    for hh in households
+                    if hh is not h and getattr(hh, "region_id", "region_0") == region_id
+                ]
+                younger = [hh for hh in heir_candidates if int(getattr(hh, "age_days", 0) or 0) < age_days]
+                if younger:
+                    heir_candidates = younger
+                heir = random.choice(heir_candidates) if heir_candidates else None
+                _settle_household_estate(
+                    deceased=h,
+                    heir=heir,
+                    state=state,
+                    savings_bank=h_savings_bank,
+                    config=config,
+                )
+
                 labor_market.deregister_worker(h)
                 # Also remove from its current employer (if any).
                 employer_id = getattr(h, "employer_id", None)
@@ -459,6 +663,8 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
                     config=config,
                 )
                 replacement.region_id = getattr(h, "region_id", "region_0")
+                replacement.age_days = _sample_household_age_days(config, working_age_only=True)
+                replacement.age = replacement.age_days // max(1, days_per_year)
                 next_household_idx += 1
                 collector.register_household(replacement)
                 labor_market.register_worker(replacement)
@@ -479,6 +685,8 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
                 config=config,
             )
             seed_household.region_id = "region_0"
+            seed_household.age_days = _sample_household_age_days(config, working_age_only=True)
+            seed_household.age = seed_household.age_days // max(1, days_per_year)
             labor_market.register_worker(seed_household)
             collector.register_household(seed_household)
             next_household_idx += 1
@@ -486,6 +694,133 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
 
         households = alive_households
         agents["households"] = households
+
+        # 0b) Company population dynamics: founding & mergers
+        # Expliziter Bezug: doc/issues.md Abschnitt 4) → Wachstums- und Sterbe-Verhalten (Unternehmen).
+        # Assumption: founding is transfer-funded by a household in the same region (no money creation).
+        opportunity_by_region: dict[str, float] = {}
+        for r in retailers:
+            target = float(getattr(r, "target_inventory_value", getattr(config.retailer, "target_inventory_value", 0.0)) or 0.0)
+            current = float(getattr(r, "inventory_value", 0.0) or 0.0)
+            shortage = max(0.0, target - current)
+            rid = getattr(r, "region_id", "region_0")
+            opportunity_by_region.setdefault(rid, 0.0)
+            # accumulate shortage ratio numerator; denominator handled below
+            opportunity_by_region[rid] += shortage
+
+        # normalize by total target per region
+        target_by_region: dict[str, float] = {}
+        for r in retailers:
+            rid = getattr(r, "region_id", "region_0")
+            target_by_region[rid] = target_by_region.get(rid, 0.0) + float(getattr(r, "target_inventory_value", 0.0) or 0.0)
+
+        for rid, shortage in list(opportunity_by_region.items()):
+            denom = max(1e-9, float(target_by_region.get(rid, 0.0) or 0.0))
+            opportunity_by_region[rid] = max(0.0, min(1.0, shortage / denom))
+
+        # Founding
+        found_base = float(getattr(config.company, "founding_base_annual", 0.0) or 0.0)
+        found_sens = float(getattr(config.company, "founding_opportunity_sensitivity", 0.0) or 0.0)
+        min_capital = float(getattr(config.company, "founding_min_capital", 0.0) or 0.0)
+        share_capital = float(getattr(config.company, "founding_capital_share_of_founder_wealth", 0.0) or 0.0)
+
+        for region_id in list(banks_by_region.keys()):
+            opportunity = float(opportunity_by_region.get(region_id, 0.0) or 0.0)
+            p_found = (found_base / float(max(1, days_per_year))) * (1.0 + found_sens * opportunity)
+            if p_found > 0 and random.random() < min(1.0, p_found):
+                sb = savings_by_region.get(region_id, savings_banks[0])
+                region_households = [h for h in households if getattr(h, "region_id", "region_0") == region_id]
+                if region_households:
+                    # Choose the wealthiest founder to reduce random collapse.
+                    def _wealth(hh: Household) -> float:
+                        return float(getattr(hh, "sight_balance", 0.0) or 0.0) + float(getattr(hh, "local_savings", 0.0) or 0.0) + float(sb.savings_accounts.get(hh.unique_id, 0.0) or 0.0)
+
+                    founder = max(region_households, key=_wealth)
+                    founder_wealth = _wealth(founder)
+                    buffer = float(getattr(config.household, "transaction_buffer", 0.0) or 0.0)
+                    available = max(0.0, founder_wealth - buffer)
+                    desired = max(min_capital, founder_wealth * share_capital)
+                    invest = min(desired, available)
+
+                    if invest >= min_capital and invest > 0:
+                        remaining = invest
+                        # Take from disposable sight
+                        disposable_sight = max(0.0, float(founder.sight_balance) - buffer)
+                        from_sight = min(disposable_sight, remaining)
+                        if from_sight > 0:
+                            founder.sight_balance -= from_sight
+                            remaining -= from_sight
+
+                        # Take from local savings
+                        from_local = min(max(0.0, float(founder.local_savings)), remaining)
+                        if from_local > 0:
+                            founder.local_savings -= from_local
+                            remaining -= from_local
+
+                        # Withdraw from Sparkasse deposits as needed
+                        if remaining > 0:
+                            withdrawn = sb.withdraw_savings(founder, remaining)
+                            if withdrawn > 0:
+                                founder.sight_balance -= withdrawn
+                                remaining -= withdrawn
+
+                        transferred = invest - max(0.0, remaining)
+                        if transferred >= min_capital and transferred > 0:
+                            template = config.population.company_template
+                            new_company = Company(
+                                unique_id=f"{config.COMPANY_ID_PREFIX}{next_company_idx}",
+                                production_capacity=template.production_capacity,
+                                config=config,
+                            )
+                            new_company.region_id = region_id
+                            new_company.sight_balance = float(transferred)
+                            next_company_idx += 1
+                            companies.append(new_company)
+                            collector.register_company(new_company)
+                            company_births_this_step += 1
+                            log(
+                                f"founding: company {new_company.unique_id} founded by {founder.unique_id} capital={transferred:.2f} at step={step}",
+                                level="INFO",
+                            )
+
+        # Mergers (distressed -> absorbed)
+        merge_base = float(getattr(config.company, "merger_rate_annual", 0.0) or 0.0)
+        distress = float(getattr(config.company, "merger_distress_threshold", 0.0) or 0.0)
+        min_acq = float(getattr(config.company, "merger_min_acquirer_balance", 0.0) or 0.0)
+        synergy = float(getattr(config.company, "merger_capacity_synergy", 1.0) or 1.0)
+
+        if merge_base > 0:
+            p_merge = min(1.0, merge_base / float(max(1, days_per_year)))
+            if random.random() < p_merge:
+                # Select one region event per day for simplicity.
+                regions = [rid for rid in banks_by_region.keys() if rid]
+                if regions:
+                    region_id = random.choice(regions)
+                    region_companies = [c for c in companies if getattr(c, "region_id", "region_0") == region_id]
+                    targets = [c for c in region_companies if float(getattr(c, "sight_balance", 0.0) or 0.0) < distress]
+                    acquirers = [c for c in region_companies if float(getattr(c, "sight_balance", 0.0) or 0.0) >= min_acq]
+
+                    if targets and acquirers:
+                        target = min(targets, key=lambda c: float(getattr(c, "sight_balance", 0.0) or 0.0))
+                        acquirer = max(acquirers, key=lambda c: float(getattr(c, "sight_balance", 0.0) or 0.0))
+                        if target is not acquirer:
+                            # Transfer employees and assets
+                            for e in list(getattr(target, "employees", [])):
+                                if e not in acquirer.employees:
+                                    acquirer.employees.append(e)
+                                e.employer_id = acquirer.unique_id
+                                e.employed = True
+
+                            acquirer.sight_balance = float(getattr(acquirer, "sight_balance", 0.0) or 0.0) + float(getattr(target, "sight_balance", 0.0) or 0.0)
+                            acquirer.finished_goods_units = float(getattr(acquirer, "finished_goods_units", 0.0) or 0.0) + float(getattr(target, "finished_goods_units", 0.0) or 0.0)
+                            acquirer.production_capacity = float(getattr(acquirer, "production_capacity", 0.0) or 0.0) + float(getattr(target, "production_capacity", 0.0) or 0.0) * synergy
+
+                            companies = [c for c in companies if c is not target]
+                            company_deaths_this_step += 1
+                            log(
+                                f"merger: target={target.unique_id} absorbed_by={acquirer.unique_id} at step={step}",
+                                level="INFO",
+                            )
 
         # 1) Firms: post labor demand (but don't liquidate for missing staff yet)
         new_companies: list[Company] = []
@@ -512,6 +847,10 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
 
             if isinstance(result, Company):
                 company_births_this_step += 1
+                # Milestone 5 (doc/issues.md Abschnitt 5): enforce numeric ID
+                # convention for *all* company births (including splits).
+                result.unique_id = f"{config.COMPANY_ID_PREFIX}{next_company_idx}"
+                next_company_idx += 1
                 log(
                     f"growth: company split parent={c.unique_id} child={result.unique_id} at step={step}",
                     level="INFO",
@@ -565,7 +904,14 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
             if isinstance(maybe_new, Household):
                 births_this_step += 1
                 # Ensure unique IDs for newborns in the global simulation namespace.
-                maybe_new.unique_id = f"{config.HOUSEHOLD_ID_PREFIX}{next_household_idx}"
+                old_id = str(getattr(maybe_new, "unique_id", ""))
+                new_id = f"{config.HOUSEHOLD_ID_PREFIX}{next_household_idx}"
+                # Milestone 5 (doc/issues.md Abschnitt 5): renaming must migrate
+                # any pre-created Sparkasse ledger entries (e.g. split-household
+                # savings transfers) to avoid orphaned accounts.
+                if h_savings_bank is not None and hasattr(h_savings_bank, "rename_agent_id"):
+                    h_savings_bank.rename_agent_id(old_id, new_id)
+                maybe_new.unique_id = new_id
                 next_household_idx += 1
                 collector.register_household(maybe_new)
                 # New households must participate in labor matching.
@@ -616,8 +962,11 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
             clearing.apply_sight_decay([*households, *companies, *retailers, state])
     
             # Savings bank bookkeeping
-            for sb in savings_banks:
-                sb.step(current_step=step)
+            for region_id, sb in savings_by_region.items():
+                region_companies = [
+                    c for c in companies if str(getattr(c, "region_id", "region_0")) == str(region_id)
+                ]
+                sb.step(current_step=step, companies=region_companies)
     
         # 8) Periodic clearing audits / reserve adjustments
         if clock.is_period_end(int(config.clearing.audit_interval), step):

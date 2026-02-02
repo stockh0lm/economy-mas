@@ -231,16 +231,20 @@ class Household(BaseAgent):
             self.last_month_saved = 0.0
             return 0.0
 
-        self.sight_balance -= saved_amount
-
+        deposited: float
         if savings_bank is None:
+            # Cash-at-home savings.
+            self.sight_balance -= saved_amount
             self.local_savings += saved_amount
+            deposited = float(saved_amount)
         else:
-            savings_bank.deposit_savings(self, saved_amount)
+            # Banked savings: cap may bind, so only deduct what was actually booked.
+            deposited = float(savings_bank.deposit_savings(self, saved_amount))
+            self.sight_balance -= deposited
 
-        self.last_month_saved = float(saved_amount)
-        log(f"Household {self.unique_id}: Saved {saved_amount:.2f}.", level="INFO")
-        return float(saved_amount)
+        self.last_month_saved = float(deposited)
+        log(f"Household {self.unique_id}: Saved {deposited:.2f}.", level="INFO")
+        return float(deposited)
 
 
     def _repay_savings_loans(self, savings_bank: SavingsBank | None) -> float:
@@ -400,6 +404,129 @@ class Household(BaseAgent):
 
         return child
 
+    # --- Fertility / household formation ---
+    def _fertility_probability_daily(self, *, savings_bank: "SavingsBank") -> float:
+        """Compute daily probability of a birth/household-formation event.
+
+        Expliziter Bezug: doc/issues.md Abschnitt 4) → "Einfaches Wachstums- und
+        Sterbe-Verhalten" (Geburten abhängig von Alter, Einkommen und Sparverhalten).
+
+        The model is intentionally simple and bounded:
+        - Eligible age window: [fertility_age_min, fertility_age_max]
+        - Age factor peaks at fertility_peak_age (triangular shape)
+        - Income and wealth act as multiplicative elasticities
+        - Converted from annual to daily probability using the global calendar
+        """
+
+        cfg = self.config.household
+        days_per_year = int(getattr(self.config.time, "days_per_year", 360) or 360)
+
+        age = int(getattr(self, "age", 0))
+        amin = int(getattr(cfg, "fertility_age_min", 18))
+        amax = int(getattr(cfg, "fertility_age_max", 42))
+        peak = int(getattr(cfg, "fertility_peak_age", 30))
+
+        if age < amin or age > amax:
+            return 0.0
+
+        # Age factor: triangular around the peak.
+        if peak <= amin:
+            peak = amin
+        if peak >= amax:
+            peak = amax
+
+        if age <= peak:
+            denom = max(1, peak - amin)
+            age_factor = max(0.0, min(1.0, (age - amin) / denom))
+        else:
+            denom = max(1, amax - peak)
+            age_factor = max(0.0, min(1.0, (amax - age) / denom))
+
+        base_income = float(getattr(cfg, "base_income", 100.0) or 100.0)
+        income = float(getattr(self, "income", 0.0) or 0.0)
+        income_rel = income / base_income if base_income > 0 else 1.0
+        income_elasticity = float(getattr(cfg, "fertility_income_sensitivity", 0.0) or 0.0)
+        # Bound to avoid extreme behavior.
+        income_factor = max(0.25, min(4.0, income_rel ** income_elasticity))
+
+        # Wealth includes sight + local savings + bank deposits.
+        bank_savings = float(savings_bank.savings_accounts.get(self.unique_id, 0.0))
+        wealth = float(self.sight_balance) + float(self.local_savings) + bank_savings
+        trigger = float(getattr(cfg, "savings_growth_trigger", 1.0) or 1.0)
+        wealth_rel = wealth / max(1.0, trigger)
+        wealth_elasticity = float(getattr(cfg, "fertility_wealth_sensitivity", 0.0) or 0.0)
+        wealth_factor = max(0.25, min(4.0, wealth_rel ** wealth_elasticity))
+
+        base_annual = float(getattr(cfg, "fertility_base_annual", 0.0) or 0.0)
+        annual = base_annual * age_factor * income_factor * wealth_factor
+        daily = annual / float(max(1, days_per_year))
+        return max(0.0, min(1.0, daily))
+
+    def _birth_new_household(self, *, savings_bank: "SavingsBank") -> "Household | None":
+        """Create a newborn household funded by a transfer from the parent.
+
+        The transfer follows a strict *no money creation* rule:
+        - take from disposable sight first
+        - then local savings
+        - finally withdraw from SavingsBank deposits
+        """
+
+        cfg = self.config.household
+        share = float(getattr(cfg, "birth_endowment_share", 0.0) or 0.0)
+        if share <= 0:
+            return None
+
+        bank_savings = float(savings_bank.savings_accounts.get(self.unique_id, 0.0))
+        wealth = float(self.sight_balance) + float(self.local_savings) + bank_savings
+
+        buffer = float(getattr(cfg, "transaction_buffer", 0.0) or 0.0)
+        # Do not drain the household below a small transactional buffer.
+        transferable_total = max(0.0, wealth - buffer)
+        desired = share * transferable_total
+        if desired <= 0:
+            return None
+
+        remaining = desired
+
+        # 1) Sight balance (keep buffer)
+        disposable_sight = max(0.0, float(self.sight_balance) - buffer)
+        from_sight = min(disposable_sight, remaining)
+        if from_sight > 0:
+            self.sight_balance -= from_sight
+            remaining -= from_sight
+
+        # 2) Local savings
+        from_local = min(max(0.0, float(self.local_savings)), remaining)
+        if from_local > 0:
+            self.local_savings -= from_local
+            remaining -= from_local
+
+        # 3) SavingsBank deposits (withdraw -> sight -> transfer)
+        if remaining > 0 and bank_savings > 0:
+            withdrawn = savings_bank.withdraw_savings(self, min(bank_savings, remaining))
+            if withdrawn > 0:
+                # withdraw_savings already credited our sight_balance; transfer it out.
+                self.sight_balance -= withdrawn
+                remaining -= withdrawn
+
+        transferred = desired - max(0.0, remaining)
+        if transferred <= 0:
+            return None
+
+        child = Household(
+            unique_id=f"{self.unique_id}_child_{self.generation + 1}",
+            income=self.income,
+            land_area=self.land_area,
+            environmental_impact=self.environmental_impact,
+            config=self.config,
+        )
+        child.region_id = getattr(self, "region_id", "region_0")
+        child.generation = int(self.generation + 1)
+        child.sight_balance = float(transferred)
+        child.age_days = 0
+
+        return child
+
     # --- Lifecycle / step ---
     def step(
         self,
@@ -469,6 +596,13 @@ class Household(BaseAgent):
             # Limit generations if configured.
             if int(self.generation) < int(self.max_generation):
                 newborn = self.split_household(savings_bank=savings_bank)
+
+        # Natural births: probabilistic household-formation based on age,
+        # income and savings/wealth.
+        if newborn is None and int(self.generation) < int(self.max_generation):
+            p_daily = self._fertility_probability_daily(savings_bank=savings_bank)
+            if p_daily > 0 and random.random() < p_daily:
+                newborn = self._birth_new_household(savings_bank=savings_bank)
 
         # Aging / lifecycle end (handled by scheduler; we only log here)
         if self.age_days >= self.max_age_days:

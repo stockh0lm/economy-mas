@@ -138,6 +138,7 @@ class ClearingAgent(BaseAgent):
                         retailer=r,
                         amount=gap,
                         companies_by_id=companies_by_id or {},
+                        current_step=current_step,
                     )
 
         # If repeated problems: increase required reserve ratio as competition sanction.
@@ -180,13 +181,17 @@ class ClearingAgent(BaseAgent):
         retailer: Any,
         amount: float,
         companies_by_id: dict[str, Any],
+        current_step: int | None = None,
     ) -> float:
         """Destroy money to correct an uncovered CC exposure.
+
+        Expliziter Bezug: doc/issues.md Abschnitt 2 → "Fraud/Wertberichtigung-Rechenregel".
 
         Order of loss allocation (simple, simulation-friendly):
         1) Retailer write-down reserve (if available)
         2) Retailer sight balance
-        3) Haircut on recent recipient companies of this retailer's financed purchases (pro-rata)
+        3) Haircut on recipient companies of this retailer's financed purchases
+           (pro-rata via bank ledger; robust reallocation if some recipients can't pay)
         4) Bank reserve deposit at clearing
 
         This is not a full legal recovery model; it is a *monetary correction*.
@@ -212,17 +217,77 @@ class ClearingAgent(BaseAgent):
         if remaining > 0 and hasattr(bank, "goods_purchase_ledger"):
             rid = str(getattr(retailer, "unique_id", "retailer"))
             records = [r for r in getattr(bank, "goods_purchase_ledger", []) if r.retailer_id == rid]
-            total = sum(float(r.amount) for r in records)
-            if total > 0:
-                # pro-rata across companies
-                for rec in records:
-                    if remaining <= 0:
+
+            # Optional fairness window: only consider reasonably recent flows
+            # (defaults to audit interval if available).
+            if current_step is not None:
+                lookback = int(getattr(self.config.clearing, "audit_interval", 0))
+                if lookback > 0:
+                    min_step = int(current_step) - lookback
+                    records = [r for r in records if int(getattr(r, "step", 0)) >= min_step]
+
+            # Aggregate by recipient to avoid bias from record ordering.
+            weights: dict[str, float] = {}
+            for rec in records:
+                sid = str(getattr(rec, "seller_id", ""))
+                amt = float(getattr(rec, "amount", 0.0) or 0.0)
+                if amt <= 0 or not sid:
+                    continue
+                weights[sid] = weights.get(sid, 0.0) + amt
+
+            total_weight = sum(weights.values())
+            if total_weight > 0:
+                # Robust pro-rata: if some recipients have insufficient sight
+                # balances, redistribute the leftover across the remaining
+                # recipients proportionally to their weights.
+                remaining_to_allocate = float(remaining)
+                capacities: dict[str, float] = {
+                    sid: max(0.0, float(getattr(companies_by_id.get(sid), "sight_balance", 0.0) or 0.0))
+                    for sid in weights
+                    if companies_by_id.get(sid) is not None
+                }
+
+                eligible: dict[str, float] = {
+                    sid: w for sid, w in weights.items() if sid in capacities and capacities[sid] > 0
+                }
+
+                # Iterate until the remaining amount is allocated or everyone is dry.
+                while remaining_to_allocate > 1e-9 and eligible:
+                    weight_sum = sum(eligible.values())
+                    if weight_sum <= 0:
                         break
-                    company = companies_by_id.get(rec.seller_id)
-                    if company is None:
-                        continue
-                    share = remaining * (float(rec.amount) / total)
-                    remaining -= self._extinguish_from_sight(company, share)
+
+                    # Allocate a pro-rata slice for this round.
+                    planned: dict[str, float] = {
+                        sid: remaining_to_allocate * (w / weight_sum) for sid, w in eligible.items()
+                    }
+
+                    total_taken = 0.0
+                    for sid, planned_take in planned.items():
+                        if planned_take <= 0:
+                            continue
+                        cap = capacities.get(sid, 0.0)
+                        take = min(cap, planned_take)
+                        if take <= 0:
+                            continue
+                        company = companies_by_id.get(sid)
+                        if company is None:
+                            continue
+                        actual = self._extinguish_from_sight(company, take)
+                        capacities[sid] = max(0.0, cap - actual)
+                        total_taken += actual
+
+                    if total_taken <= 1e-12:
+                        break
+
+                    remaining_to_allocate = max(0.0, remaining_to_allocate - total_taken)
+                    eligible = {
+                        sid: w for sid, w in eligible.items() if capacities.get(sid, 0.0) > 1e-9
+                    }
+
+                # Apply what was actually extinguished.
+                extinguished_from_recipients = float(remaining) - remaining_to_allocate
+                remaining -= extinguished_from_recipients
 
         # 4) Bank reserves at clearing
         if remaining > 0:

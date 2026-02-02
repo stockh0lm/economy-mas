@@ -40,6 +40,72 @@ class SavingsBank(BaseAgent):
         # Risk reserve (can be used to absorb write-offs)
         self.risk_reserve: float = float(self.config.savings_bank.initial_liquidity * 0.05)
 
+        # Milestone 4 (doc/issues.md Abschnitt 2): expected credit demand proxy.
+        self.expected_credit_demand: float = 0.0
+
+    # --- Sparkassen-Regeln / Spargrenzen (Milestone 4) ---
+    def _base_savings_cap_for_agent(self, agent: Any) -> float:
+        """Return static savings cap by agent type.
+
+        Expliziter Bezug: doc/issues.md Abschnitt 2 → "Sparkassen-Regeln (Spargrenze / Invest-Nachfrage-Kopplung)".
+        """
+
+        uid = str(getattr(agent, "unique_id", ""))
+        cfg = self.config
+        sb_cfg = cfg.savings_bank
+
+        if uid.startswith(cfg.HOUSEHOLD_ID_PREFIX):
+            cap = float(sb_cfg.max_savings_household)
+        elif uid.startswith(cfg.COMPANY_ID_PREFIX) or uid.startswith(cfg.RETAILER_ID_PREFIX):
+            cap = float(sb_cfg.max_savings_company)
+        else:
+            # Unknown agent type: fall back to legacy single cap.
+            cap = float(sb_cfg.max_savings_per_account)
+
+        # Defensive: never exceed the legacy cap unless explicitly configured.
+        if cap <= 0:
+            cap = float(sb_cfg.max_savings_per_account)
+        return cap
+
+    def _effective_savings_cap(self, base_cap: float) -> float:
+        """Apply demand coupling to a base cap."""
+
+        sb_cfg = self.config.savings_bank
+        strength = float(sb_cfg.savings_cap_demand_coupling_strength)
+        if strength <= 0:
+            return float(base_cap)
+
+        total_savings = float(self.total_savings)
+        ratio = float(self.expected_credit_demand) / max(1.0, total_savings)
+
+        target_scale = max(
+            float(sb_cfg.savings_cap_min_scale),
+            min(float(sb_cfg.savings_cap_max_scale), ratio),
+        )
+        scale = 1.0 + strength * (target_scale - 1.0)
+        return float(base_cap) * float(scale)
+
+    def rename_agent_id(self, old_id: str, new_id: str) -> None:
+        """Migrate internal ledger keys when an agent ID is standardized.
+
+        Expliziter Bezug: doc/issues.md Abschnitt 5 → "Agent-IDs auf einfache Finance-Sim-Konvention standardisieren".
+        """
+
+        old_id = str(old_id)
+        new_id = str(new_id)
+        if not old_id or not new_id or old_id == new_id:
+            return
+
+        if old_id in self.savings_accounts:
+            amt = float(self.savings_accounts.pop(old_id))
+            if amt != 0:
+                self.savings_accounts[new_id] = float(self.savings_accounts.get(new_id, 0.0)) + amt
+
+        if old_id in self.active_loans:
+            amt = float(self.active_loans.pop(old_id))
+            if amt != 0:
+                self.active_loans[new_id] = float(self.active_loans.get(new_id, 0.0)) + amt
+
     # --- Spec vocabulary aliases ---
     @property
     def savings_pool(self) -> float:
@@ -70,8 +136,10 @@ class SavingsBank(BaseAgent):
         hid = str(getattr(household, "unique_id", "household"))
         amount = float(amount)
 
-        # Enforce per-account cap (prevents unbounded accumulation in small sims)
-        cap = float(getattr(self.config.savings_bank, "max_savings_per_account", 1e18) or 1e18)
+        # Enforce dynamic per-account cap (Milestone 4: split by agent type and
+        # optionally coupled to expected credit demand).
+        base_cap = self._base_savings_cap_for_agent(household)
+        cap = self._effective_savings_cap(base_cap)
         current = float(self.savings_accounts.get(hid, 0.0))
         depositable = max(0.0, min(amount, cap - current))
         if depositable <= 0:
@@ -184,9 +252,32 @@ class SavingsBank(BaseAgent):
         return paid
 
     # --- Step (optional interest/default dynamics) ---
-    def step(self, current_step: int) -> None:
-        # Intentionally minimal: interest/defaults can be added later.
-        return
+    def step(self, current_step: int, *, companies: list[Any] | None = None) -> None:
+        """Update internal state.
+
+        Expliziter Bezug: doc/issues.md Abschnitt 2 → "Sparkassen-Regeln (Spargrenze / Invest-Nachfrage-Kopplung)".
+
+        We approximate *expected credit demand* via the aggregate capital gap to
+        the company investment threshold.
+        """
+
+        if not companies:
+            return
+
+        threshold = float(getattr(self.config.company, "investment_threshold", 0.0) or 0.0)
+        demand = 0.0
+        for c in companies:
+            gap = threshold - float(getattr(c, "sight_balance", 0.0) or 0.0)
+            if gap > 0:
+                demand += gap
+
+        alpha = float(getattr(self.config.savings_bank, "expected_credit_demand_smoothing", 0.0) or 0.0)
+        if alpha <= 0:
+            self.expected_credit_demand = demand
+        elif alpha >= 1:
+            self.expected_credit_demand = demand
+        else:
+            self.expected_credit_demand = (1.0 - alpha) * float(self.expected_credit_demand) + alpha * demand
 
     @property
     def total_savings(self) -> float:

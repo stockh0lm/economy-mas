@@ -182,6 +182,48 @@ class HouseholdConfig(BaseConfigModel):
     mortality_senescence_annual: float = Field(0.15, ge=0)
     mortality_shape: float = Field(3.0, ge=0.1)
 
+    # --- Demography (fertility / births) ---
+    # Births are modeled as *household formation* events. They MUST be funded
+    # by transfers from the parent household (no money creation).
+    fertility_base_annual: float = Field(
+        0.02,
+        ge=0,
+        description="Baseline annual birth probability for eligible households",
+    )
+    fertility_age_min: PositiveInt = 18
+    fertility_age_max: PositiveInt = 42
+    fertility_peak_age: PositiveInt = 30
+    fertility_income_sensitivity: float = Field(
+        0.5,
+        ge=0,
+        description="Elasticity of fertility to income (relative to base_income)",
+    )
+    fertility_wealth_sensitivity: float = Field(
+        0.5,
+        ge=0,
+        description="Elasticity of fertility to (sight+savings) wealth relative to savings_growth_trigger",
+    )
+    birth_endowment_share: float = Field(
+        0.2,
+        ge=0,
+        le=1,
+        description="Share of parent's liquid net worth transferred to the newborn household",
+    )
+
+    # --- Estate / inheritance ---
+    inheritance_share_on_death: float = Field(
+        1.0,
+        ge=0,
+        le=1,
+        description="Share of remaining estate transferred to heirs (rest can go to state)",
+    )
+
+    # --- Initial age distribution ---
+    # Used for initial population seeding and turnover replacements.
+    initial_age_min_years: int = Field(0, ge=0)
+    initial_age_mode_years: int = Field(35, ge=0)
+    initial_age_max_years: int = Field(70, ge=0)
+
 
 class CompanyConfig(BaseConfigModel):
     base_wage: float = Field(5.0, ge=0)  # Renamed from wage_rate
@@ -225,6 +267,51 @@ class CompanyConfig(BaseConfigModel):
         description="Deterministic mapping: currency needed per +1 production_capacity",
     )
 
+    # --- Company demography (founding / mergers) ---
+    # The main simulation loop may spawn new companies if market opportunities
+    # exist and founders can provide real capital (transfer from households).
+    founding_base_annual: float = Field(
+        0.01,
+        ge=0,
+        description="Baseline annual probability (per region) to found a new company",
+    )
+    founding_min_capital: float = Field(
+        200.0,
+        ge=0,
+        description="Minimum startup capital required to found a company (must be transferred, no money creation)",
+    )
+    founding_capital_share_of_founder_wealth: float = Field(
+        0.25,
+        ge=0,
+        le=1,
+        description="Share of founder household wealth invested as startup capital",
+    )
+    founding_opportunity_sensitivity: float = Field(
+        2.0,
+        ge=0,
+        description="Multiplier on founding probability from market shortage (0..1)",
+    )
+
+    merger_rate_annual: float = Field(
+        0.01,
+        ge=0,
+        description="Annual probability (per region) for a distressed firm to be merged into a healthier one",
+    )
+    merger_distress_threshold: float = Field(
+        -50.0,
+        description="Companies below this sight_balance may be considered merger targets",
+    )
+    merger_min_acquirer_balance: float = Field(
+        300.0,
+        ge=0,
+        description="Minimum sight_balance required for an acquirer to absorb a target",
+    )
+    merger_capacity_synergy: float = Field(
+        0.9,
+        ge=0,
+        le=1.5,
+        description="Capacity multiplier applied to target capacity when merged into acquirer",
+    )
 
 class RetailerConfig(BaseConfigModel):
     # Kontokorrent-Kreditrahmen (zinsenfrei) wird bei Initialisierung gesetzt; Anpassung ist politisch/vertraglich geregelt.
@@ -235,6 +322,20 @@ class RetailerConfig(BaseConfigModel):
     price_markup: float = Field(0.2, ge=0)
     # Abschreibung / Obsoleszenz (pro Schritt, wenn Schritt=Tag)
     obsolescence_rate: float = Field(0.001, ge=0, le=1)
+
+    # Warenbewertung: cost / market / Niederstwertprinzip
+    inventory_valuation_method: Literal[
+        "cost", "market", "lower_of_cost_or_market"
+    ] = "cost"
+
+    # Artikelgruppen / Obsoleszenz je Gruppe
+    default_article_group: str = "default"
+    obsolescence_rate_by_group: dict[str, float] = Field(default_factory=dict)
+
+    # "Unverkaufbar"-Kriterium (bewertet Lot = 0)
+    unsellable_after_days: int = Field(365, ge=0)
+    # Wenn Marktpreis sehr niedrig ggü. Einstand, gilt die Ware als faktisch unverkäuflich.
+    unsellable_market_price_floor_ratio: float = Field(0.05, ge=0, le=1)
     # Anteil des geschätzten Gewinns, der in Warenwertberichtigungskonten fließt
     write_down_reserve_share: float = Field(0.05, ge=0, le=1)
     # Automatische Tilgung: ab welchem Überschuss wird Kontokorrent zurückgeführt?
@@ -264,7 +365,18 @@ class BankConfig(BaseConfigModel):
 
 
 class SavingsBankConfig(BaseConfigModel):
+    # Legacy / fallback (pre-M4). Still read, but superseded by the split caps.
     max_savings_per_account: float = Field(10_000.0, ge=0)
+
+    # Milestone 4 (doc/issues.md Abschnitt 2): split caps by agent type.
+    max_savings_household: float = Field(10_000.0, ge=0)
+    max_savings_company: float = Field(50_000.0, ge=0)
+
+    # Demand coupling: effective cap is scaled by expected credit demand.
+    savings_cap_min_scale: float = Field(0.5, ge=0)
+    savings_cap_max_scale: float = Field(2.0, ge=0)
+    savings_cap_demand_coupling_strength: float = Field(0.0, ge=0, le=1)
+    expected_credit_demand_smoothing: float = Field(0.2, ge=0, le=1)
     loan_interest_rate: float = 0.0
     initial_liquidity: float = Field(500.0, ge=0)
 
@@ -396,14 +508,14 @@ class SimulationConfig(BaseConfigModel):
     JSON_INDENT: PositiveInt = 4
     metrics_export_path: str = output_dir + "metrics"
     metrics_config: dict[str, MetricConfigModel] = Field(default_factory=dict)
-    STATE_ID: str = "state_1"
+    STATE_ID: str = "state_0"
     BANK_ID: str = "bank_1"
     SAVINGS_BANK_ID: str = "savings_bank_1"
-    CLEARING_AGENT_ID: str = "clearing_1"
+    CLEARING_AGENT_ID: str = "clearing_0"
     ENV_AGENCY_ID: str = "env_agency_1"
     RECYCLING_COMPANY_ID: str = "recycling_1"
     FINANCIAL_MARKET_ID: str = "financial_market_1"
-    LABOR_MARKET_ID: str = "labor_market_1"
+    LABOR_MARKET_ID: str = "labor_market_0"
     HOUSEHOLD_ID_PREFIX: str = "household_"
     COMPANY_ID_PREFIX: str = "company_"
     RETAILER_ID_PREFIX: str = "retailer_"

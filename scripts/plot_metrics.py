@@ -9,6 +9,7 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 
 # TODO(plot_metrics): The metrics schema is evolving. When adding new columns to the CSV export,
@@ -112,12 +113,17 @@ def extract_series(
     df = rows.sort_values('time_step')
     steps = df['time_step'].astype(int).tolist()
 
-    # Vectorized extraction with NaN handling
+    # Vectorized extraction with NaN, infinite, and extreme value handling
     series = {}
     for column in columns:
         if column in df.columns:
-            # Fill NaN values with 0.0 and convert to float - all vectorized
-            series[column] = df[column].fillna(0.0).astype(float).tolist()
+            # Fill NaN values with 0.0, replace infinite values with 0.0,
+            # clip extreme values to reasonable range, and convert to float - all vectorized
+            series_data = df[column].fillna(0.0).replace([np.inf, -np.inf], 0.0).astype(float)
+            # Clip extreme values that would break matplotlib's tick calculation
+            max_reasonable_value = 1e10  # Reasonable upper bound for economic metrics
+            series_data = series_data.clip(upper=max_reasonable_value)
+            series[column] = series_data.tolist()
         else:
             # If column doesn't exist, return empty list
             series[column] = []

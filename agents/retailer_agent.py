@@ -36,6 +36,46 @@ class RetailSaleResult:
     gross_profit: float
 
 
+@dataclass
+class InventoryLot:
+    """Single inventory lot with group metadata and per-lot depreciation.
+
+    Expliziter Bezug: doc/issues.md Abschnitt 2 → "Warenbewertung & Abschreibung".
+    """
+
+    group_id: str
+    units: float
+    unit_cost: float
+    unit_market_price: float
+    obsolescence_factor: float = 1.0
+    age_days: int = 0
+
+    def _base_unit_value(self, *, valuation_method: str) -> float:
+        if valuation_method == "market":
+            return float(self.unit_market_price)
+        if valuation_method == "lower_of_cost_or_market":
+            return float(min(self.unit_cost, self.unit_market_price))
+        # default: cost
+        return float(self.unit_cost)
+
+    def is_unsellable(self, *, config: SimulationConfig) -> bool:
+        if int(self.age_days) >= int(config.retailer.unsellable_after_days):
+            return True
+        floor = float(config.retailer.unsellable_market_price_floor_ratio)
+        if self.unit_cost > 0 and float(self.unit_market_price) <= float(self.unit_cost) * floor:
+            return True
+        return False
+
+    def carrying_unit_value(self, *, config: SimulationConfig) -> float:
+        if self.is_unsellable(config=config):
+            return 0.0
+        base = self._base_unit_value(valuation_method=str(config.retailer.inventory_valuation_method))
+        return max(0.0, base * float(self.obsolescence_factor))
+
+    def carrying_value(self, *, config: SimulationConfig) -> float:
+        return float(self.units) * self.carrying_unit_value(config=config)
+
+
 class RetailerAgent(BaseAgent):
     """Einzelhandelskaufmann/-frau mit Kontokorrentlinie."""
 
@@ -62,7 +102,13 @@ class RetailerAgent(BaseAgent):
 
         # Inventory
         self.inventory_units: float = 0.0
-        self.inventory_value: float = 0.0  # valued at cost
+        # `inventory_value` is the *carrying value* under the chosen valuation
+        # rule (cost/market/lower-of...). Default config keeps this identical to
+        # historic behaviour ("cost").
+        self.inventory_value: float = 0.0
+        # Inventory lots are opt-in and created automatically when the retailer
+        # restocks or when a legacy test sets only aggregate fields.
+        self.inventory_lots: list[InventoryLot] = []
         self.target_inventory_value: float = float(
             target_inventory_value if target_inventory_value is not None else self.config.retailer.target_inventory_value
         )
@@ -93,6 +139,7 @@ class RetailerAgent(BaseAgent):
         self.sales_total: float = 0.0
         self.purchases_total: float = 0.0
         self.write_downs_total: float = 0.0
+        self.write_down_history: list[tuple[int, float, float]] = []
         # Explicit money-destruction tracking (reset each step by main loop)
         self.repaid_total: float = 0.0
         self.inventory_write_down_extinguished_total: float = 0.0
@@ -148,6 +195,112 @@ class RetailerAgent(BaseAgent):
         return decrease_ratio <= max_monthly_decrease
 
     # --- Inventory + pricing ---
+    def _sync_inventory_totals_from_lots(self) -> None:
+        self.inventory_units = float(sum(float(l.units) for l in self.inventory_lots))
+        self.inventory_value = float(sum(float(l.carrying_value(config=self.config)) for l in self.inventory_lots))
+
+        # Defensive clamps: small negatives can appear from float ops.
+        if self.inventory_units < 0:
+            self.inventory_units = 0.0
+        if self.inventory_value < 0:
+            self.inventory_value = 0.0
+
+    def _ensure_legacy_lot(self) -> None:
+        """Compatibility shim for older tests/code.
+
+        Some tests assign only `inventory_units` and `inventory_value` directly
+        (without lots). To keep those tests stable while adding grouped/lot
+        valuation, we materialize a single lot on-demand.
+        """
+
+        if self.inventory_lots:
+            return
+        if self.inventory_units <= 0:
+            return
+        unit_value = self.last_unit_cost
+        if self.inventory_value > 0:
+            unit_value = float(self.inventory_value / max(self.inventory_units, 1e-9))
+        group_id = str(self.config.retailer.default_article_group)
+        self.inventory_lots = [
+            InventoryLot(
+                group_id=group_id,
+                units=float(self.inventory_units),
+                unit_cost=float(unit_value),
+                unit_market_price=float(unit_value),
+                obsolescence_factor=1.0,
+                age_days=0,
+            )
+        ]
+        self._sync_inventory_totals_from_lots()
+
+    def add_inventory_lot(
+        self,
+        *,
+        group_id: str,
+        units: float,
+        unit_cost: float,
+        unit_market_price: float | None = None,
+        age_days: int = 0,
+    ) -> None:
+        """Add a new inventory lot.
+
+        Public helper used by restocking logic and tests.
+        """
+
+        if units <= 0:
+            return
+        mp = float(unit_cost if unit_market_price is None else unit_market_price)
+        self.inventory_lots.append(
+            InventoryLot(
+                group_id=str(group_id),
+                units=float(units),
+                unit_cost=float(unit_cost),
+                unit_market_price=mp,
+                obsolescence_factor=1.0,
+                age_days=int(age_days),
+            )
+        )
+        self._sync_inventory_totals_from_lots()
+
+    def _sellable_units(self) -> float:
+        self._ensure_legacy_lot()
+        return float(sum(float(l.units) for l in self.inventory_lots if not l.is_unsellable(config=self.config)))
+
+    def _consume_units_fifo(self, quantity: float) -> float:
+        """Consume inventory FIFO and return carried cost value.
+
+        Unsellable lots are not consumed.
+        """
+
+        if quantity <= 0:
+            return 0.0
+        self._ensure_legacy_lot()
+
+        remaining = float(quantity)
+        cost_value = 0.0
+        new_lots: list[InventoryLot] = []
+
+        for lot in self.inventory_lots:
+            if remaining <= 1e-9:
+                new_lots.append(lot)
+                continue
+            if lot.units <= 1e-9:
+                continue
+            if lot.is_unsellable(config=self.config):
+                new_lots.append(lot)
+                continue
+            take = min(float(lot.units), remaining)
+            unit_val = lot.carrying_unit_value(config=self.config)
+            cost_value += take * float(unit_val)
+            lot.units = float(lot.units) - take
+            remaining -= take
+            if lot.units > 1e-9:
+                new_lots.append(lot)
+
+        self.inventory_lots = new_lots
+        self._sync_inventory_totals_from_lots()
+        return float(cost_value)
+
     def _avg_unit_cost(self) -> float:
         if self.inventory_units <= 0:
             return float(self.last_unit_cost)
@@ -202,9 +355,16 @@ class RetailerAgent(BaseAgent):
             producer.finished_goods_units += sold_qty
             return 0.0
 
-        # Inventory increases at cost.
-        self.inventory_units += sold_qty
-        self.inventory_value += financed
+        # Inventory increases as a fresh lot (per-lot valuation & depreciation).
+        default_group = self.config.retailer.default_article_group
+        unit_cost = financed / sold_qty if sold_qty > 0 else unit_price
+        self.add_inventory_lot(
+            group_id=default_group,
+            units=sold_qty,
+            unit_cost=unit_cost,
+            unit_market_price=unit_cost,
+            age_days=0,
+        )
         self.purchases_total += financed
 
         log(
@@ -219,20 +379,19 @@ class RetailerAgent(BaseAgent):
         This does NOT create or destroy money by itself: it is a transfer.
         Money is destroyed when the retailer later repays Kontokorrent.
         """
-        if budget <= 0 or self.inventory_units <= 0:
+        sellable_units = self._sellable_units()
+        if budget <= 0 or sellable_units <= 0:
             return RetailSaleResult(0.0, 0.0, 0.0, 0.0)
 
         price = self.unit_sale_price()
         if price <= 0:
             return RetailSaleResult(0.0, 0.0, 0.0, 0.0)
 
-        qty = min(self.inventory_units, budget / price)
+        qty = min(sellable_units, budget / price)
         if qty <= 0:
             return RetailSaleResult(0.0, 0.0, 0.0, 0.0)
 
         sale_value = qty * price
-        unit_cost = self._avg_unit_cost()
-        cost_value = qty * unit_cost
 
         # Transfer (money-neutral)
         paid = household.pay(sale_value)
@@ -244,15 +403,12 @@ class RetailerAgent(BaseAgent):
             scale = paid / sale_value
             qty *= scale
             sale_value = paid
-            cost_value = qty * unit_cost
+
+        cost_value = self._consume_units_fifo(qty)
 
         self.cogs_total += float(cost_value)
         self.sight_balance += sale_value
         self.sales_total += sale_value
-
-        # Inventory reduction at cost
-        self.inventory_units -= qty
-        self.inventory_value = max(0.0, self.inventory_value - cost_value)
 
         gross_profit = max(0.0, sale_value - cost_value)
 
@@ -280,7 +436,8 @@ class RetailerAgent(BaseAgent):
         money-creation paths (e.g. WarengeldBank.finance_goods_purchase).
         """
 
-        if budget <= 0 or self.inventory_units <= 0:
+        sellable_units = self._sellable_units()
+        if budget <= 0 or sellable_units <= 0:
             return RetailSaleResult(0.0, 0.0, 0.0, 0.0)
 
         price = self.unit_sale_price()
@@ -293,14 +450,11 @@ class RetailerAgent(BaseAgent):
         if effective_budget <= 0:
             return RetailSaleResult(0.0, 0.0, 0.0, 0.0)
 
-        qty = min(self.inventory_units, effective_budget / price)
+        qty = min(sellable_units, effective_budget / price)
         if qty <= 0:
             return RetailSaleResult(0.0, 0.0, 0.0, 0.0)
 
         sale_value = qty * price
-        unit_cost = self._avg_unit_cost()
-        cost_value = qty * unit_cost
-
         paid = state.pay(sale_value, budget_bucket=budget_bucket)
         if paid <= 0:
             return RetailSaleResult(0.0, 0.0, 0.0, 0.0)
@@ -310,14 +464,12 @@ class RetailerAgent(BaseAgent):
             scale = paid / sale_value
             qty *= scale
             sale_value = paid
-            cost_value = qty * unit_cost
+
+        cost_value = self._consume_units_fifo(qty)
 
         self.cogs_total += float(cost_value)
         self.sight_balance += sale_value
         self.sales_total += sale_value
-
-        self.inventory_units -= qty
-        self.inventory_value = max(0.0, self.inventory_value - cost_value)
 
         gross_profit = max(0.0, sale_value - cost_value)
         reserve_add = gross_profit * self.config.retailer.write_down_reserve_share
@@ -360,24 +512,48 @@ class RetailerAgent(BaseAgent):
         the retailer's sight balance. Remaining uncovered write-down is left as
         a mismatch and should be picked up by audits / insolvency handling.
         """
-        rate = self.config.retailer.obsolescence_rate
-        if rate <= 0 or self.inventory_value <= 0:
+        self._ensure_legacy_lot()
+
+        if not self.inventory_lots:
             return 0.0
 
-        write_down = self.inventory_value * rate
-        if write_down <= 0:
+        base_rate = float(self.config.retailer.obsolescence_rate)
+        unsellable_after_days = int(self.config.retailer.unsellable_after_days)
+
+        write_down_total = 0.0
+        for lot in self.inventory_lots:
+            old_value = lot.carrying_value(config=self.config)
+
+            # Ageing happens daily (this method is called from settle_accounts).
+            lot.age_days += 1
+
+            # Unsellable criterion: once triggered, the lot is written down to 0.
+            if unsellable_after_days > 0 and lot.age_days >= unsellable_after_days:
+                lot.obsolescence_factor = 0.0
+            else:
+                group_rate = float(
+                    self.config.retailer.obsolescence_rate_by_group.get(lot.group_id, base_rate)
+                )
+                if group_rate > 0:
+                    lot.obsolescence_factor *= max(0.0, 1.0 - group_rate)
+
+            new_value = lot.carrying_value(config=self.config)
+            if new_value < old_value:
+                write_down_total += (old_value - new_value)
+
+        if write_down_total <= 0:
             return 0.0
 
-        self.inventory_value = max(0.0, self.inventory_value - write_down)
-        self.write_downs_total += write_down
+        self.write_downs_total += write_down_total
+        self._sync_inventory_totals_from_lots()
 
         destroyed = 0.0
-        use_reserve = min(self.write_down_reserve, write_down)
+        use_reserve = min(self.write_down_reserve, write_down_total)
         if use_reserve > 0:
             self.write_down_reserve -= use_reserve
             destroyed += use_reserve
 
-        remaining = write_down - use_reserve
+        remaining = write_down_total - use_reserve
         if remaining > 0:
             use_sight = min(self.sight_balance, remaining)
             self.sight_balance -= use_sight
@@ -385,8 +561,11 @@ class RetailerAgent(BaseAgent):
 
         if destroyed > 0:
             self.inventory_write_down_extinguished_total += destroyed
+            self.write_down_history.append(
+                (int(current_step), float(write_down_total), float(destroyed))
+            )
             log(
-                f"Retailer {self.unique_id}: Inventory write-down={write_down:.2f}, extinguished={destroyed:.2f} at step {current_step}.",
+                f"Retailer {self.unique_id}: Inventory write-down={write_down_total:.2f}, extinguished={destroyed:.2f} at step {current_step}.",
                 level="INFO",
             )
 
