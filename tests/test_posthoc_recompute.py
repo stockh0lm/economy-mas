@@ -44,16 +44,16 @@ def test_posthoc_recompute() -> None:
     assert cf.loc[0, "gdp_alt"] == pytest.approx(100.0 - 0.0)
     assert cf.loc[1, "gdp_alt"] == pytest.approx(120.0 - 20.0)
 
-    # Assert: price_index_alt folgt der (kopierten) Preis-Formel
+    # Assert: price_index_alt folgt der (kopierten) Preis-Formel (stabilisiert / konvergent)
     # Default-Config: price_index_base=100, target=1.0, sensitivity=0.05, mode=money_supply_to_gdp.
-    # Step 0: gdp_alt=100 -> pressure=1.0 => price 100
-    # Step 1: gdp_alt=100 -> pressure=1.2 => price 100*(1+0.05*0.2)=101
-    expected_p1 = 100.0 * (1.0 + 0.05 * (1.2 - 1.0))
+    # Step 0: pressure=1.0 => desired=100 -> price 100
+    # Step 1: pressure=1.2 => desired=120 -> price = 100 + 0.05*(120-100) = 101
+    expected_p1 = 100.0 + 0.05 * (120.0 - 100.0)
     assert cf.loc[0, "price_index_alt"] == pytest.approx(100.0)
     assert cf.loc[1, "price_index_alt"] == pytest.approx(expected_p1)
 
-    # Step 2 repeats the same pressure => grows again by +1%
-    expected_p2 = expected_p1 * (1.0 + 0.05 * (1.2 - 1.0))
+    # Step 2 repeats the same pressure => converges further (no endless compounding)
+    expected_p2 = expected_p1 + 0.05 * (120.0 - expected_p1)
     assert cf.loc[2, "price_index_alt"] == pytest.approx(expected_p2)
     assert cf.loc[1, "inflation_rate_alt"] == pytest.approx((expected_p1 - 100.0) / 100.0)
     assert cf.loc[2, "inflation_rate_alt"] == pytest.approx((expected_p2 - expected_p1) / expected_p1)

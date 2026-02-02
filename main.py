@@ -31,7 +31,6 @@ from agents.bank import WarengeldBank
 from agents.clearing_agent import ClearingAgent
 from agents.company_agent import Company
 from agents.environmental_agency import EnvironmentalAgency
-from agents.financial_market import FinancialMarket
 from agents.household_agent import Household
 from agents.labor_market import LaborMarket
 from agents.retailer_agent import RetailerAgent
@@ -254,7 +253,6 @@ class SimulationAgents:
     warengeld_bank: WarengeldBank
     savings_bank: SavingsBank
     clearing: ClearingAgent
-    financial_market: FinancialMarket
     labor_market: LaborMarket
     environmental_agency: EnvironmentalAgency
 
@@ -278,7 +276,6 @@ def initialize_agents(config: SimulationConfig) -> dict[str, Any]:
     for rid, sb in zip(region_ids, savings_banks):
         sb.region_id = rid
     clearing = ClearingAgent(unique_id=str(config.CLEARING_AGENT_ID), config=config)
-    financial_market = FinancialMarket(unique_id="financial_market", config=config)
     labor_market = LaborMarket(unique_id=str(config.LABOR_MARKET_ID), config=config)
     environmental_agency = EnvironmentalAgency(unique_id="environmental_agency", config=config)
 
@@ -322,7 +319,6 @@ def initialize_agents(config: SimulationConfig) -> dict[str, Any]:
         "banks_by_region": banks_by_region,
         "savings_by_region": savings_by_region,
         "clearing_agent": clearing,
-        "financial_market": financial_market,
         "labor_market": labor_market,
         "environmental_agency": environmental_agency,
     }

@@ -30,10 +30,10 @@ und konkrete nächste Schritte – mit Fokus auf **Schlankheit, Verständlichkei
 
 ## 4) Code-Smells / Komplexität / Refactor-Vorschläge (schlank halten)
 
-- [ ] **Einheitliche Balance-Sheet-Namen (Company/Producer)**
+- [x] **Einheitliche Balance-Sheet-Namen (Company/Producer)**
   - TODO: konsistent `sight_balance` statt gemischter Namen.
 
-- [ ] **FinancialMarket abschalten**
+- [x] **FinancialMarket abschalten**
   - Spec-Interpretation: Börsenschließung / Finanzmarkt stark reduziert.
   - Status: `FinancialMarket` existiert noch als Agent; prüfen, ob er in `main.py` tatsächlich Einfluss hat oder nur noop ist.
 
@@ -43,7 +43,7 @@ und konkrete nächste Schritte – mit Fokus auf **Schlankheit, Verständlichkei
 ## 5) Neue ToDos (aus aktuellem Review)
 
 
-- [ ] **Hyperinflation / Numerische Überläufe in Preisindex-Berechnung - KRITISCH**
+- [x] **Hyperinflation / Numerische Überläufe in Preisindex-Berechnung - KRITISCH**
   - **Problem**: Preisindex wächst exponentiell bis zu numerischem Overflow (1.5e+308 → inf)
   - **Symptom**: IndexError in matplotlib beim Plotten, da unendliche Werte nicht dargestellt werden können
   - **Root Cause Analysis**:

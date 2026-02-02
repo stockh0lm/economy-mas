@@ -153,6 +153,17 @@ class RetailerAgent(BaseAgent):
     def balance(self, value: float) -> None:
         self.sight_balance = float(value)
 
+    @property
+    def sight_allowance(self) -> float:
+        """Freibetrag/Buffer für automatische Kontokorrent-Tilgung.
+
+        Spezifikation: doc/specs.md Section 4.2.
+        Der Retailer hält diesen Betrag als Working-Capital-Puffer; nur der
+        Überschuss wird automatisiert zur CC-Tilgung verwendet.
+        """
+
+        return float(self.config.retailer.working_capital_buffer)
+
     # --- CC-Limit Policy helpers ---
     def push_cogs_history(self, *, window_days: int) -> None:
         # Finalize current-step COGS into the rolling history.
@@ -485,22 +496,14 @@ class RetailerAgent(BaseAgent):
         return RetailSaleResult(qty, sale_value, cost_value, gross_profit)
 
     def auto_repay_kontokorrent(self, bank: WarengeldBank) -> float:
-        """Use excess sight balances to repay Kontokorrent (money extinguishing)."""
+        """Use excess sight balances to repay Kontokorrent (money extinguishing).
+
+        Spezifikation: doc/specs.md Section 4.2.
+        """
         if not self.config.retailer.auto_repay:
             return 0.0
 
-        if self.cc_balance >= 0:
-            return 0.0
-
-        available = max(0.0, self.sight_balance - self.config.retailer.working_capital_buffer)
-        if available <= 0:
-            return 0.0
-
-        repay = min(available, abs(self.cc_balance))
-        if repay <= 0:
-            return 0.0
-
-        repaid = bank.process_repayment(self, repay)
+        repaid = bank.auto_repay_cc_from_sight(self)
         if repaid > 0:
             self.repaid_total += float(repaid)
         return repaid
@@ -572,20 +575,31 @@ class RetailerAgent(BaseAgent):
         return destroyed
 
 
+    def apply_inventory_write_downs(self, *, current_step: int, bank: "WarengeldBank") -> float:
+        """Abschreibungen auf Warenlager (Geldvernichtung) + CC-Exposure-Anpassung.
+
+        Spezifikation: doc/specs.md Section 4.6.
+        Expliziter Bezug: doc/issues.md Abschnitt 4/5 → "Hyperinflation / Numerische Überläufe ...".
+        """
+
+        destroyed = self.apply_obsolescence_write_down(current_step)
+        if destroyed > 0:
+            # Inventory value corrections must also reduce outstanding CC exposure.
+            bank.write_down_cc(self, destroyed, reason="inventory_write_downs")
+        return float(destroyed)
+
+
     def settle_accounts(self, bank: WarengeldBank, current_step: int | None = None) -> dict[str, float]:
         """End-of-day settlements.
 
         This is where the *extinguishing* side of the Warengeld cycle primarily happens.
         """
         repaid = self.auto_repay_kontokorrent(bank)
-        destroyed = self.apply_obsolescence_write_down(current_step or 0)
+        destroyed = self.apply_inventory_write_downs(current_step=int(current_step or 0), bank=bank)
+        # Spec 4.1: enforce inventory-backed CC limits (additional destruction).
+        bank.enforce_inventory_backing(self)
 
-        # Inventory value corrections must also reduce outstanding CC exposure,
-        # otherwise retailers accumulate permanent debt and eventually stop ordering.
-        if destroyed > 0:
-            bank.write_down_cc(self, destroyed, reason="inventory_obsolescence")
-
-        return {"repaid": repaid, "inventory_write_down": destroyed}
+        return {"repaid": float(repaid), "inventory_write_down": float(destroyed)}
 
 
     def step(

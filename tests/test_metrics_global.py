@@ -11,18 +11,18 @@ def test_calculate_global_metrics_tracks_macro_outputs() -> None:
 
     collector.company_metrics = {
         "c1": {
-            0: {"balance": 80.0},
+                0: {"sight_balance": 80.0},
             1: {
-                "balance": 100.0,
+                    "sight_balance": 100.0,
                 "production_capacity": 60.0,
                 "rd_investment": 10.0,
                 "environmental_impact": 3.0,
             },
         },
         "c2": {
-            0: {"balance": 60.0},
+                0: {"sight_balance": 60.0},
             1: {
-                "balance": 200.0,
+                    "sight_balance": 200.0,
                 "production_capacity": 40.0,
                 "rd_investment": 5.0,
                 "environmental_impact": 2.0,
@@ -77,9 +77,11 @@ def test_calculate_global_metrics_tracks_macro_outputs() -> None:
     assert math.isclose(metrics["household_consumption"], 30.0)
     assert math.isclose(metrics["consumption_pct_gdp"], 0.3)
 
-    expected_price_index = 137.7
+    # Preisniveau-Dynamik konvergiert gegen Gleichgewicht (siehe metrics._price_dynamics).
+    # Referenz: doc/issues.md Abschnitt 4/5 → „Hyperinflation / Numerische Überläufe ...“.
+    expected_price_index = 133.75
     assert math.isclose(metrics["price_index"], expected_price_index, rel_tol=1e-9)
-    assert math.isclose(metrics["inflation_rate"], 0.1475, rel_tol=1e-9)
+    assert math.isclose(metrics["inflation_rate"], (expected_price_index - 120.0) / 120.0, rel_tol=1e-9)
 
     assert math.isclose(metrics["employment_rate"], 0.5)
     assert math.isclose(metrics["unemployment_rate"], 0.5)
@@ -98,7 +100,7 @@ def test_calculate_global_metrics_handles_zero_gdp_and_no_prior_price() -> None:
     collector.registered_companies = {"c1"}
     collector.company_metrics = {
         "c1": {
-            2: {"balance": 10.0, "production_capacity": 0.0, "rd_investment": 0.0},
+            2: {"sight_balance": 10.0, "production_capacity": 0.0, "rd_investment": 0.0},
         }
     }
     collector.household_metrics = {
@@ -121,14 +123,14 @@ def test_calculate_global_metrics_accumulates_multiple_states_and_bankruptcies()
     collector.company_metrics = {
         "c_alive": {
             3: {
-                "balance": 80.0,
+                    "sight_balance": 80.0,
                 "production_capacity": 30.0,
                 "rd_investment": 5.0,
                 "environmental_impact": 1.0,
             },
         },
         "c_dead": {
-            2: {"balance": 20.0, "production_capacity": 10.0},
+                2: {"sight_balance": 20.0, "production_capacity": 10.0},
         },
     }
 
@@ -161,7 +163,7 @@ def test_calculate_global_metrics_gini_and_blended_price_pressure() -> None:
         collector.company_metrics = {
             "c1": {
                 1: {
-                    "balance": 50.0,
+                        "sight_balance": 50.0,
                     "production_capacity": 20.0,
                     "rd_investment": 5.0,
                     "environmental_impact": 1.0,
@@ -194,7 +196,7 @@ def test_calculate_global_metrics_tracks_employment_and_labor_snapshot() -> None
         "h3": {4: {"employed": True, "income": 15.0, "checking_account": 8.0, "savings": 4.0}},
     }
     collector.company_metrics = {
-        "c1": {4: {"balance": 30.0, "production_capacity": 10.0, "rd_investment": 2.0}},
+        "c1": {4: {"sight_balance": 30.0, "production_capacity": 10.0, "rd_investment": 2.0}},
     }
     collector.latest_labor_metrics = {
         "registered_workers": 3.0,

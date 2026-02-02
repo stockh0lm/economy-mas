@@ -394,6 +394,9 @@ class MarketConfig(BaseConfigModel):
     demand_default: float = Field(50.0, ge=0)
     speculation_limit: float = Field(10_000.0, ge=0)
     price_index_base: float = Field(100.0, ge=0)
+    # Safety cap: prevents numerical overflow in long runs when pressures are extreme.
+    # Referenz: doc/issues.md Abschnitt 4/5 → „Hyperinflation / Numerische Überläufe in Preisindex-Berechnung - KRITISCH“.
+    price_index_max: float = Field(1000.0, ge=0)
     price_index_pressure_target: float = Field(1.0, ge=0)
     price_index_sensitivity: float = Field(0.05, ge=0)
     price_index_pressure_ratio: str = "money_supply_to_gdp"
@@ -514,7 +517,6 @@ class SimulationConfig(BaseConfigModel):
     CLEARING_AGENT_ID: str = "clearing_0"
     ENV_AGENCY_ID: str = "env_agency_1"
     RECYCLING_COMPANY_ID: str = "recycling_1"
-    FINANCIAL_MARKET_ID: str = "financial_market_1"
     LABOR_MARKET_ID: str = "labor_market_0"
     HOUSEHOLD_ID_PREFIX: str = "household_"
     COMPANY_ID_PREFIX: str = "company_"

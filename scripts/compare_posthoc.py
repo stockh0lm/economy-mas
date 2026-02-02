@@ -130,6 +130,7 @@ def recompute_price_dynamics(
     """
 
     price_index_base = float(config.market.price_index_base)
+    price_index_max = float(getattr(config.market, "price_index_max", 1000.0))
     pressure_target = float(config.market.price_index_pressure_target)
     price_sensitivity = float(config.market.price_index_sensitivity)
     pressure_mode = str(config.market.price_index_pressure_ratio)
@@ -155,9 +156,19 @@ def recompute_price_dynamics(
         else:
             price_pressure = money_supply_pressure
 
-        deviation = price_pressure - pressure_target
-        current_price = prev_price * (1 + price_sensitivity * deviation)
-        current_price = max(current_price, 0.01)
+        # Copy of MetricsCollector._price_dynamics (stability fix):
+        # converge to an equilibrium price level instead of compounding indefinitely.
+        if pressure_target > 0:
+            desired_price = price_index_base * (price_pressure / pressure_target)
+        else:
+            desired_price = price_index_base
+
+        current_price = prev_price + price_sensitivity * (desired_price - prev_price)
+        current_price = max(float(current_price), 0.01)
+        if price_index_max > 0:
+            current_price = min(float(current_price), float(price_index_max))
+        if not (current_price == current_price) or current_price in (float("inf"), float("-inf")):
+            current_price = float(price_index_max) if price_index_max > 0 else price_index_base
         infl = ((current_price - prev_price) / prev_price) if prev_price > 0 else 0.0
 
         pressure.append(price_pressure)

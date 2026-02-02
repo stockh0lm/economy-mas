@@ -327,18 +327,23 @@ class ClearingAgent(BaseAgent):
 
         destroyed_total = 0.0
         hyperwealth = float(getattr(self.config.clearing, "hyperwealth_threshold", 0.0))
+        window = int(getattr(self.config.clearing, "sight_allowance_window_days", 30) or 30)
+        days_per_month = int(getattr(self.config.time, "days_per_month", 30) or 30)
         for h in accounts:
             if not hasattr(h, "sight_balance"):
                 continue
-            spend_hist = getattr(h, "consumption_history", [])
+            spend_hist = list(getattr(h, "consumption_history", []) or [])
             if spend_hist:
-                avg_spend = sum(spend_hist) / len(spend_hist)
+                tail = spend_hist[-window:]
+                avg_daily = sum(tail) / float(len(tail)) if tail else 0.0
+                avg_monthly_spend = avg_daily * float(days_per_month)
+                allowance = max(0.0, k * avg_monthly_spend)
             else:
                 # Fallback: for non-households this should not constantly burn
                 # operational balances; only act on extreme hoarding.
-                avg_spend = float(getattr(h, "income", 0.0))
-
-            allowance = max(hyperwealth, k * avg_spend)
+                avg_daily = float(getattr(h, "income", 0.0))
+                avg_monthly_spend = avg_daily * float(days_per_month)
+                allowance = max(hyperwealth, k * avg_monthly_spend)
             excess = max(0.0, float(h.sight_balance) - allowance)
             if excess <= 0:
                 continue

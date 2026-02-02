@@ -6,11 +6,12 @@ This module tracks key economic indicators across different agent types,
 calculates aggregate statistics, and provides data for visualization.
 """
 
+import math
 import statistics
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
-from typing import Protocol, TypedDict, cast
+from typing import Any, Iterable, Protocol, TypedDict, cast
 
 from agents.company_agent import Company
 from agents.household_agent import Household
@@ -18,6 +19,68 @@ from config import CONFIG_MODEL, SimulationConfig
 from logger import log
 
 MIN_GLOBAL_METRICS_POINTS = 10  # Minimal steps required for cycle detection
+
+
+def apply_sight_decay(agents: Iterable[Any], *, config: SimulationConfig | None = None) -> float:
+    """Sichtguthaben-Abschmelzung (nur Überschuss über Freibetrag).
+
+    Spezifikation: doc/specs.md Section 4.7 (monatlich).
+    Expliziter Bezug: doc/issues.md Abschnitt 4/5 → "Hyperinflation / Numerische Überläufe ...".
+
+    Hinweis zur Einheitenkonsistenz:
+    - `consumption_history` wird in der Simulation täglich geführt.
+    - Der Freibetrag orientiert sich an *monatlichen* Ausgaben.
+      => Wir skalieren die rollierende Tages-Mean mit `days_per_month`.
+
+    Returns:
+        destroyed_total: Summe der abgeschmolzenen Sichtguthaben.
+    """
+
+    cfg = config or CONFIG_MODEL
+    factor = float(getattr(getattr(cfg, "clearing", None), "sight_excess_decay_rate", 0.0))
+    k = float(getattr(getattr(cfg, "clearing", None), "sight_allowance_multiplier", 0.0))
+    window = int(getattr(getattr(cfg, "clearing", None), "sight_allowance_window_days", 30) or 30)
+    hyperwealth = float(getattr(getattr(cfg, "clearing", None), "hyperwealth_threshold", 0.0) or 0.0)
+    days_per_month = int(getattr(getattr(cfg, "time", None), "days_per_month", 30) or 30)
+
+    if factor <= 0 or k <= 0 or window <= 0 or days_per_month <= 0:
+        return 0.0
+
+    destroyed_total = 0.0
+    for a in agents:
+        if not hasattr(a, "sight_balance"):
+            continue
+        bal = float(getattr(a, "sight_balance", 0.0))
+        if bal <= 0:
+            continue
+
+        hist = list(getattr(a, "consumption_history", []) or [])
+        if hist:
+            tail = hist[-window:]
+            avg_daily = float(sum(tail) / len(tail)) if tail else 0.0
+        else:
+            # Fallback: approximate spend from income if available.
+            avg_daily = float(getattr(a, "income", 0.0))
+
+        avg_monthly_spend = avg_daily * float(days_per_month)
+        allowance = max(0.0, k * avg_monthly_spend)
+        # Conservative default: only apply to non-households when balances are extreme.
+        if not hist and hyperwealth > 0:
+            allowance = max(allowance, hyperwealth)
+
+        excess = max(0.0, bal - allowance)
+        if excess <= 0:
+            continue
+
+        decay = factor * excess
+        if decay <= 0:
+            continue
+
+        burned = min(bal, decay)
+        setattr(a, "sight_balance", bal - burned)
+        destroyed_total += burned
+
+    return float(destroyed_total)
 
 # Type definitions for improved readability
 AgentID = str
@@ -160,9 +223,9 @@ class MetricsCollector:
                 "aggregation": "sum",
                 "critical_threshold": None,
             },
-            "balance": {
+            "sight_balance": {
                 "enabled": True,
-                "display_name": "Company Balance",
+                "display_name": "Company Sight Balance",
                 "unit": "$",
                 "aggregation": "sum",
                 "critical_threshold": None,
@@ -471,7 +534,7 @@ class MetricsCollector:
 
             # Collect metrics if they exist on the company object
             for attr in [
-                "balance",
+                "sight_balance",
                 "service_sales_total",
                 "production_capacity",
                 "inventory",
@@ -1016,7 +1079,9 @@ class MetricsCollector:
             if not data:
                 continue
             # Prefer spec name, fall back to legacy
-            bal = float(data.get("sight_balance", data.get("balance", 0.0)))
+            # Kanonischer Kontoname: sight_balance
+            # Referenz: doc/issues.md Abschnitt 4 → „Einheitliche Balance-Sheet-Namen (Company/Producer)“
+            bal = float(data.get("sight_balance", 0.0))
             m1 += max(0.0, bal)
             m2 += max(0.0, bal)
             service_tx_volume += float(data.get("service_sales_total", 0.0))
@@ -1087,6 +1152,7 @@ class MetricsCollector:
     ) -> MetricDict:
         metrics: MetricDict = {}
         price_index_base = float(self.config.market.price_index_base)
+        price_index_max = float(getattr(self.config.market, "price_index_max", 1000.0))
         pressure_target = float(self.config.market.price_index_pressure_target)
         price_sensitivity = float(self.config.market.price_index_sensitivity)
         pressure_mode = str(
@@ -1115,9 +1181,24 @@ class MetricsCollector:
         else:
             prev_price = price_index_base
 
-        deviation = price_pressure - pressure_target
-        current_price = prev_price * (1 + price_sensitivity * deviation)
-        current_price = max(current_price, 0.01)
+        # --- Preisniveau-Dynamik (Stabilitäts-Fix) ---
+        # Referenz: doc/issues.md Abschnitt 4/5 → „Hyperinflation / Numerische Überläufe in Preisindex-Berechnung - KRITISCH“.
+        # Ziel: Bei konstantem Preisdruck soll das Preisniveau gegen ein Gleichgewicht konvergieren
+        #       (anstatt pro Tick mit konstanter Rate exponentiell zu wachsen).
+        if pressure_target > 0:
+            desired_price = price_index_base * (price_pressure / pressure_target)
+        else:
+            desired_price = price_index_base
+
+        # Exponentielle Glättung zum Zielpreis (sensitivity = Anpassungsgeschwindigkeit).
+        current_price = prev_price + price_sensitivity * (desired_price - prev_price)
+
+        # Defensive clamps (Numerik / Negativwerte)
+        current_price = max(float(current_price), 0.01)
+        if price_index_max > 0:
+            current_price = min(float(current_price), float(price_index_max))
+        if not math.isfinite(current_price):
+            current_price = float(price_index_max) if price_index_max > 0 else price_index_base
         inflation_rate = ((current_price - prev_price) / prev_price) if prev_price > 0 else 0.0
 
         metrics["price_index"] = current_price
