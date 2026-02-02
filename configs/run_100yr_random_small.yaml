@@ -1,0 +1,14 @@
+simulation_steps: 20000
+
+time:
+  days_per_month: 30
+
+spatial:
+  num_regions: 2
+  local_trade_bias: 0.8
+
+population:
+  num_households: 6
+  num_companies: 2
+  num_retailers: 1
+  seed: 42
