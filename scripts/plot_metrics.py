@@ -21,7 +21,15 @@ import matplotlib
 # Default to a non-interactive backend for faster, headless rendering.
 # Users who want interactive display can override via MPLBACKEND env var.
 if os.environ.get("MPLBACKEND") is None:
-    matplotlib.use("Agg", force=True)
+    # Check if live display is requested by looking at command line args
+    import sys
+    live_display_requested = '--live-display' in sys.argv
+    if live_display_requested:
+        # Use an interactive backend for live display
+        matplotlib.use("TkAgg", force=True)
+    else:
+        # Use Agg backend for headless rendering (default)
+        matplotlib.use("Agg", force=True)
 
 import matplotlib.pyplot as plt
 import numpy as np
