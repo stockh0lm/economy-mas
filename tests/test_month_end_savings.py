@@ -28,7 +28,13 @@ def test_households_only_save_at_month_end(tmp_path):
     cfg.household.savings_rate = 0.5
     cfg.household.transaction_buffer = 0.0
 
-    setup_logger(level=cfg.logging_level, log_file=cfg.log_file, log_format=cfg.log_format, file_mode="w")
+    setup_logger(
+        level=cfg.logging_level,
+        log_file=cfg.log_file,
+        log_format=cfg.log_format,
+        file_mode="w",
+        config=cfg,
+    )
     run_simulation(cfg)
 
     metrics_dir = Path(cfg.metrics_export_path)

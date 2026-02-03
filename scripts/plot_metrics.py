@@ -1,11 +1,28 @@
-"""Generate Matplotlib plots for the latest simulation metrics export."""
+"""Generate Matplotlib plots for the latest simulation metrics export.
+
+Milestone 1 (doc/issues.md Abschnitt 5): Plot-Metrics Performance
+- CSV-Caching (mehrere Plot-Läufe in einem Prozess)
+- Lazy Loading (nur benötigte Spalten laden)
+- Matplotlib Optimierungen: Agg Backend + Vermeidung teurer Tight-Bounding-Box Berechnungen
+"""
+
 from __future__ import annotations
+
 import argparse
 import csv
+import os
 import shutil
 from collections import defaultdict
 from collections.abc import Callable, Iterable
 from pathlib import Path
+
+import matplotlib
+
+# Default to a non-interactive backend for faster, headless rendering.
+# Users who want interactive display can override via MPLBACKEND env var.
+if os.environ.get("MPLBACKEND") is None:
+    matplotlib.use("Agg", force=True)
+
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -13,6 +30,34 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 METRICS_DIR = REPO_ROOT / 'output' / 'metrics'
 PLOTS_DIR = REPO_ROOT / 'output' / 'plots'
 PlotFunc = Callable[[pd.DataFrame], tuple[plt.Figure, str]]
+
+
+# -------------------------
+# CSV loading + caching
+# -------------------------
+
+_CSV_CACHE: dict[tuple[str, int, tuple[str, ...], tuple[str, ...]], pd.DataFrame] = {}
+_CSV_CACHE_HITS = 0
+_CSV_CACHE_MISSES = 0
+
+
+def clear_csv_cache() -> None:
+    """Clear the in-process CSV cache (useful for tests)."""
+
+    global _CSV_CACHE_HITS, _CSV_CACHE_MISSES
+    _CSV_CACHE.clear()
+    _CSV_CACHE_HITS = 0
+    _CSV_CACHE_MISSES = 0
+
+
+def csv_cache_info() -> dict[str, int]:
+    """Return basic cache statistics."""
+
+    return {
+        "entries": len(_CSV_CACHE),
+        "hits": int(_CSV_CACHE_HITS),
+        "misses": int(_CSV_CACHE_MISSES),
+    }
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Render plots for the most recent metrics export using Matplotlib.')
@@ -32,26 +77,64 @@ def detect_latest_run_id(metrics_dir: Path) -> str:
         raise ValueError(f'Unable to parse run identifier from file name: {latest.name}.')
     return suffix
 
-def load_csv_rows(path: Path, skip_fields: Iterable[str] | None=None) -> pd.DataFrame:
-    """Load a metrics CSV into a DataFrame.
+def load_csv_rows(
+    path: Path,
+    skip_fields: Iterable[str] | None = None,
+    *,
+    usecols: Iterable[str] | None = None,
+    cache: bool = True,
+) -> pd.DataFrame:
+    """Load a metrics CSV into a DataFrame (fast path).
 
-    Tests (and downstream plotting helpers) expect a pandas.DataFrame.
+    Milestone 1 (doc/issues.md Abschnitt 5): CSV-Caching + Lazy Loading.
+
+    Notes:
+    - `skip_fields` columns are kept as strings (no numeric coercion).
+    - Non-skip numeric columns are coerced via vectorized pandas.to_numeric.
+    - `time_step` is always present (filled with 0 when missing) and stored as int.
     """
-    skip_fields = set(skip_fields or [])
-    parsed_rows: list[dict[str, object]] = []
-    with path.open(newline='', encoding='utf-8') as handle:
-        reader = csv.DictReader(handle)
-        for raw in reader:
-            parsed: dict[str, object] = {}
-            for key, value in raw.items():
-                if key == 'time_step':
-                    parsed[key] = int(value) if value not in (None, '') else 0
-                elif key in skip_fields:
-                    parsed[key] = value
-                else:
-                    parsed[key] = try_float(value)
-            parsed_rows.append(parsed)
-    return pd.DataFrame(parsed_rows)
+
+    global _CSV_CACHE_HITS, _CSV_CACHE_MISSES
+
+    skip_set = frozenset(skip_fields) if skip_fields is not None else frozenset()
+    usecols_set = frozenset(usecols) if usecols is not None else frozenset()
+    resolved = path.resolve()
+
+    # Cache-key includes mtime to keep correctness when a run overwrites CSV files.
+    mtime_ns = resolved.stat().st_mtime_ns if resolved.exists() else 0
+    cache_key = (str(resolved), int(mtime_ns), tuple(sorted(skip_set)), tuple(sorted(usecols_set)))
+
+    if cache and cache_key in _CSV_CACHE:
+        _CSV_CACHE_HITS += 1
+        return _CSV_CACHE[cache_key]
+
+    _CSV_CACHE_MISSES += 1
+
+    if usecols is not None:
+        desired = set(usecols_set)
+        desired.add("time_step")
+        desired.update(skip_set)
+        df = pd.read_csv(resolved, usecols=lambda c: c in desired, dtype=str)
+    else:
+        df = pd.read_csv(resolved, dtype=str)
+
+    # Normalize/convert types.
+    if "time_step" not in df.columns:
+        df["time_step"] = pd.Series([], dtype=int)
+    df["time_step"] = (
+        pd.to_numeric(df["time_step"], errors="coerce")
+        .fillna(0)
+        .astype(int)
+    )
+
+    for col in df.columns:
+        if col == "time_step" or col in skip_set:
+            continue
+        df[col] = pd.to_numeric(df[col], errors="coerce").astype(float)
+
+    if cache:
+        _CSV_CACHE[cache_key] = df
+    return df
 
 def extract_series(rows: pd.DataFrame, *columns: str) -> tuple[list[int], dict[str, list[float]]]:
     """Extract time series data using optimized pandas operations.
@@ -435,20 +518,73 @@ def main() -> None:
     run_id = args.run_id or detect_latest_run_id(metrics_dir)
     run_dir = plots_dir / run_id
     latest_dir = ensure_dirs(run_dir)
-    global_rows = load_csv_rows(metrics_dir / f'global_metrics_{run_id}.csv')
-    state_rows = load_csv_rows(metrics_dir / f'state_metrics_{run_id}.csv', skip_fields={'agent_id'})
-    company_rows = load_csv_rows(metrics_dir / f'company_metrics_{run_id}.csv', skip_fields={'agent_id'})
-    household_rows = load_csv_rows(metrics_dir / f'household_metrics_{run_id}.csv', skip_fields={'agent_id'})
+
+    # Lazy-load only the columns needed for the plot set.
+    # (Reducible I/O + parsing time dominates for repeated plot runs.)
+    global_cols = {
+        "time_step",
+        "gdp",
+        "household_consumption",
+        "government_spending",
+        "m1_proxy",
+        "m2_proxy",
+        "cc_exposure",
+        "inventory_value_total",
+        "velocity_proxy",
+        "employment_rate",
+        "unemployment_rate",
+        "bankruptcy_rate",
+        "average_nominal_wage",
+        "average_real_wage",
+        "price_index",
+        "inflation_rate",
+        "environment_budget",
+        "infrastructure_budget",
+        "social_budget",
+        # Crash diagnostics
+        "goods_tx_volume",
+        "issuance_volume",
+        "extinguish_volume",
+        "cc_headroom_total",
+        "avg_cc_utilization",
+        "retailers_at_cc_limit_share",
+        "retailers_stockout_share",
+    }
+    state_cols = {"time_step", "agent_id", "environment_budget", "infrastructure_budget", "social_budget"}
+    company_cols = {
+        "time_step",
+        "agent_id",
+        "sight_balance",
+        "balance",
+        "rd_investment",
+        "production_capacity",
+    }
+    household_cols = {"time_step", "agent_id"}
+
+    global_rows = load_csv_rows(metrics_dir / f"global_metrics_{run_id}.csv", usecols=global_cols)
+    state_rows = load_csv_rows(
+        metrics_dir / f"state_metrics_{run_id}.csv",
+        skip_fields={"agent_id"},
+        usecols=state_cols,
+    )
+    company_rows = load_csv_rows(
+        metrics_dir / f"company_metrics_{run_id}.csv",
+        skip_fields={"agent_id"},
+        usecols=company_cols,
+    )
+    household_rows = load_csv_rows(
+        metrics_dir / f"household_metrics_{run_id}.csv",
+        skip_fields={"agent_id"},
+        usecols=household_cols,
+    )
     data_by_scope = {'global': global_rows, 'state': state_rows, 'company': company_rows, 'household': household_rows}
     figures: list[plt.Figure] = []
     axes: list[plt.Axes] = []
-    try:
-        fig, filename = plot_overview_dashboard(data_by_scope)
-        figures.append(fig)
-        axes.extend(fig.axes)
-        save_figure(fig, filename, run_dir, latest_dir, close_figure=not args.live_display)
-    except Exception:
-        pass
+
+    fig, filename = plot_overview_dashboard(data_by_scope)
+    figures.append(fig)
+    axes.extend(fig.axes)
+    save_figure(fig, filename, run_dir, latest_dir, close_figure=not args.live_display)
     for scope, plot_func in PLOT_SPECS:
         fig, filename = plot_func(data_by_scope[scope])
         figures.append(fig)
@@ -541,7 +677,8 @@ def save_figure(fig: plt.Figure, filename: str, run_dir: Path, latest_dir: Path,
         close_figure: Whether to close the figure after saving
     """
     save_path = latest_dir / filename
-    fig.savefig(save_path, bbox_inches='tight', dpi=150)
+    # Avoid bbox_inches='tight' (expensive text-layout hotpath in profiling).
+    fig.savefig(save_path, dpi=150)
     if close_figure:
         plt.close(fig)
 

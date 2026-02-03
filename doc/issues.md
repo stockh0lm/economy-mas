@@ -30,7 +30,12 @@ und konkrete nächste Schritte – mit Fokus auf **Schlankheit, Verständlichkei
 
 ## 4) Code-Smells / Komplexität / Refactor-Vorschläge (schlank halten)
 
-- [ ] **Gründliches Refaktorieren kritischer Stellen mit hoher Komplexität (KRITISCH)**
+- [~] **Gründliches Refaktorieren kritischer Stellen mit hoher Komplexität (KRITISCH)**
+  - **Milestone-Tracking** (dieses Repo):
+    - [x] `agents/household_agent.py: Household.step` (C-19 → B≤10) + `Household.consume` extrahiert (Milestone 1)
+    - [ ] `metrics.py: MetricsCollector._global_money_metrics` (D-22 → B≤10) (Milestone 3)
+    - [ ] `agents/clearing_agent.py: ClearingAgent._apply_value_correction` (E-39 → B≤10) (Milestone 5)
+    - [ ] `agents/company_agent.py: Company.adjust_employees` (C-15 → B≤10) (Milestone 6)
   - **Problem**: Radon-Komplexitätsanalyse zeigt mehrere Methoden mit extrem hoher zyklomatischer Komplexität
   - **Kritische Stellen identifiziert** (nach Komplexitätsgrad E > D > C > B > A):
     ```
@@ -96,7 +101,7 @@ und konkrete nächste Schritte – mit Fokus auf **Schlankheit, Verständlichkei
 
 ## 5) Neue ToDos (aus aktuellem Review)
 
-- [ ] **Performance-Optimierung nach Profiling-Analyse - KRITISCH**
+- [~] **Performance-Optimierung nach Profiling-Analyse - KRITISCH** *(Status: Milestone 1 erledigt – Logging + Plot-Metrics + erste Hotloop-Fixes)*
   - **Problem**: Profiling zeigt signifikante Performance-Bottlenecks in der Simulation und Metriken-Verarbeitung
   - **Profiling-Ergebnisse (Simulation mit 360 Schritten, 120 Haushalten, 40 Unternehmen, 12 Einzelhändlern)**:
     - **Gesamtlaufzeit**: 5.916 Sekunden
@@ -170,23 +175,7 @@ und konkrete nächste Schritte – mit Fokus auf **Schlankheit, Verständlichkei
       - `memory_profiler` für Speicheranalyse
       - `numba` und `cython` für JIT-Kompilierung
 
-  - **Erfolgsmetriken**:
-    - Reduktion der Simulationszeit von 5.916s auf < 3.0s für 360-Schritte-Test
-    - Reduktion der Plot-Generierungszeit von 8.048s auf < 4.0s
-    - 80% Reduktion der `getattr` und `dict.get` Aufrufe
-    - 50% Reduktion der CPU-Zyklen in Hotspot-Funktionen
 
   - **Risiko**: MITTEL - Umfassende Tests erforderlich um Regressionen zu vermeiden
   - **Zeitaufwand**: 1-2 Wochen fokussierte Optimierungsarbeit (+2-3 Tage für High-Performance Logging)
 
-  - **High-Performance Logging Implementation Plan**:
-    1. **Tag 1**: Implementiere `HighPerformanceLogHandler` in `logger.py`
-    2. **Tag 2**: Füge Konfiguration in `config.py` hinzu und teste
-    3. **Tag 3**: Integriere in Hauptsimulation und validiere
-    4. **Tag 4**: Performance-Messung und Feinabstimmung
-
-  - **Migration Strategy**:
-    - **Phase 1**: Implementierung mit 50MB Standardpuffer
-    - **Phase 2**: Testing mit verschiedenen Puffergrößen
-    - **Phase 3**: Produktionseinsatz mit Monitoring
-    - **Fallback**: Bei Problemen Rückfall auf synchrones Logging

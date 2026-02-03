@@ -42,7 +42,13 @@ def test_newborn_and_replacement_households_are_registered_on_labor_market(tmp_p
     # Ensure firms want to hire enough workers.
     cfg.company.employee_capacity_ratio = 10.0
 
-    setup_logger(level=cfg.logging_level, log_file=cfg.log_file, log_format=cfg.log_format, file_mode="w")
+    setup_logger(
+        level=cfg.logging_level,
+        log_file=cfg.log_file,
+        log_format=cfg.log_format,
+        file_mode="w",
+        config=cfg,
+    )
     run_simulation(cfg)
 
     metrics_dir = Path(cfg.metrics_export_path)
@@ -91,7 +97,13 @@ def test_firms_rehire_after_mass_turnover(tmp_path):
 
     cfg.company.employee_capacity_ratio = 10.0
 
-    setup_logger(level=cfg.logging_level, log_file=cfg.log_file, log_format=cfg.log_format, file_mode="w")
+    setup_logger(
+        level=cfg.logging_level,
+        log_file=cfg.log_file,
+        log_format=cfg.log_format,
+        file_mode="w",
+        config=cfg,
+    )
     run_simulation(cfg)
 
     metrics_dir = Path(cfg.metrics_export_path)

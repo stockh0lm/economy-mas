@@ -987,7 +987,8 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
         agents["companies"] = companies
 
         # 4) Retail restocking (money creation point)
-        local_trade_bias = float(getattr(getattr(config, "spatial", None), "local_trade_bias", 0.8))
+        # Milestone 1: avoid repeated getattr() in the hot loop.
+        local_trade_bias = float(config.spatial.local_trade_bias)
         for r in retailers:
             bank = banks_by_region.get(r.region_id, warengeld_banks[0])
             # Preference for local producers, but allow cross-region trade.
@@ -1004,18 +1005,31 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
 
         alive_households = []
         newborns: list[Household] = []
+        # Performance: process households per region to enable batch consumption.
+        # Referenz: doc/issues.md Abschnitt 5 → "Performance-Optimierung nach Profiling-Analyse"
+        households_by_region: dict[str, list[Household]] = {}
         for h in households:
-            h_retailers = retailers_by_region.get(h.region_id, retailers)
-            h_savings_bank = savings_by_region.get(h.region_id, savings_banks[0])
+            households_by_region.setdefault(h.region_id, []).append(h)
+
+        for region_id, region_households in households_by_region.items():
+            h_retailers = retailers_by_region.get(region_id, retailers)
+            h_savings_bank = savings_by_region.get(region_id, savings_banks[0])
 
             # Attach for metrics: households report savings as local + bank deposits.
-            h._savings_bank_ref = h_savings_bank
+            for h in region_households:
+                h._savings_bank_ref = h_savings_bank
 
-            maybe_new = h.step(
-                current_step=step, clock=clock, savings_bank=h_savings_bank, retailers=h_retailers
+            region_newborns = Household.batch_step(
+                region_households,
+                current_step=step,
+                clock=clock,
+                savings_bank=h_savings_bank,
+                retailers=h_retailers,
             )
 
-            if isinstance(maybe_new, Household):
+            alive_households.extend(region_households)
+
+            for maybe_new in region_newborns:
                 births_this_step += 1
                 # Ensure unique IDs for newborns in the global simulation namespace.
                 old_id = str(getattr(maybe_new, "unique_id", ""))
@@ -1034,11 +1048,9 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
                 labor_market.register_worker(maybe_new)
                 newborns.append(maybe_new)
                 log(
-                    f"birth: household {maybe_new.unique_id} parent={h.unique_id} at step={step}",
+                    f"birth: household {maybe_new.unique_id} parent={old_id} at step={step}",
                     level="INFO",
                 )
-
-            alive_households.append(h)
 
         if newborns:
             alive_households.extend(newborns)
@@ -1192,7 +1204,11 @@ def main() -> None:
     cfg = _resolve_config_from_args_or_env()
     # Ensure logging is configured before any agents emit logs.
     setup_logger(
-        level=cfg.logging_level, log_file=cfg.log_file, log_format=cfg.log_format, file_mode="w"
+        level=cfg.logging_level,
+        log_file=cfg.log_file,
+        log_format=cfg.log_format,
+        file_mode="w",
+        config=cfg,
     )
     run_simulation(cfg)
 

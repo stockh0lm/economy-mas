@@ -511,6 +511,11 @@ class SimulationConfig(BaseConfigModel):
     logging_level: str = "DEBUG"
     log_file: str = output_dir + "simulation.log"
     log_format: str = "%(asctime)s - %(levelname)s - %(message)s"
+
+    # Milestone 1 (doc/issues.md Abschnitt 5): optional buffered logging.
+    # Default: enabled with 50MB buffer to reduce per-record I/O overhead.
+    use_high_performance_logging: bool = True
+    high_performance_log_buffer_mb: PositiveInt = 50
     SUMMARY_FILE: str = output_dir + "simulation_summary.json"
     JSON_INDENT: PositiveInt = 4
     metrics_export_path: str = output_dir + "metrics"
