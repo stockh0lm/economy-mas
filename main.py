@@ -434,14 +434,16 @@ def _settle_household_estate(
         if pay > 0:
             estate_sight -= pay
             outstanding -= pay
-            savings_bank.available_funds += pay
+            # Note: available_funds should not be increased here as this is just netting
+            # The money is moving from deceased to bank, but it's already in the system
 
         # Repay from local savings (cash returns to bank)
         pay = min(outstanding, max(0.0, estate_local))
         if pay > 0:
             estate_local -= pay
             outstanding -= pay
-            savings_bank.available_funds += pay
+            # Note: available_funds should not be increased here as this is just netting
+            # The money is moving from deceased to bank, but it's already in the system
 
         # Repay by netting deposits (no cash movement, just balance sheet netting)
         pay = min(outstanding, max(0.0, estate_deposit))
@@ -482,18 +484,30 @@ def _settle_household_estate(
 
     # Sight + local savings transfer into receiver sight.
     if estate_sight > 0:
-        receiver.sight_balance = (
-            float(getattr(receiver, "sight_balance", 0.0)) + estate_sight * share
-        )
-        if share < 1.0:
-            state.sight_balance = float(state.sight_balance) + estate_sight * (1.0 - share)
+        if receiver is state:
+            # For state, we need to use tax_revenue to handle sub-budgets properly
+            state.tax_revenue += estate_sight * share
+            if share < 1.0:
+                state.tax_revenue += estate_sight * (1.0 - share)
+        else:
+            receiver.sight_balance = (
+                float(getattr(receiver, "sight_balance", 0.0)) + estate_sight * share
+            )
+            if share < 1.0:
+                state.tax_revenue += estate_sight * (1.0 - share)
 
     if estate_local > 0:
-        receiver.sight_balance = (
-            float(getattr(receiver, "sight_balance", 0.0)) + estate_local * share
-        )
-        if share < 1.0:
-            state.sight_balance = float(state.sight_balance) + estate_local * (1.0 - share)
+        if receiver is state:
+            # For state, we need to use tax_revenue to handle sub-budgets properly
+            state.tax_revenue += estate_local * share
+            if share < 1.0:
+                state.tax_revenue += estate_local * (1.0 - share)
+        else:
+            receiver.sight_balance = (
+                float(getattr(receiver, "sight_balance", 0.0)) + estate_local * share
+            )
+            if share < 1.0:
+                state.tax_revenue += estate_local * (1.0 - share)
 
     # Deposits: move the savings account liability from deceased to receiver.
     if estate_deposit > 0:

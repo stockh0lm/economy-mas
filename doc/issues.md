@@ -30,13 +30,6 @@ und konkrete nächste Schritte – mit Fokus auf **Schlankheit, Verständlichkei
 
 ## 4) Code-Smells / Komplexität / Refactor-Vorschläge (schlank halten)
 
-- [x] **Einheitliche Balance-Sheet-Namen (Company/Producer)**
-  - TODO: konsistent `sight_balance` statt gemischter Namen.
-
-- [x] **FinancialMarket abschalten**
-  - Spec-Interpretation: Börsenschließung / Finanzmarkt stark reduziert.
-  - Status: `FinancialMarket` existiert noch als Agent; prüfen, ob er in `main.py` tatsächlich Einfluss hat oder nur noop ist.
-
 - [ ] **Gründliches Refaktorieren kritischer Stellen mit hoher Komplexität (KRITISCH)**
   - **Problem**: Radon-Komplexitätsanalyse zeigt mehrere Methoden mit extrem hoher zyklomatischer Komplexität
   - **Kritische Stellen identifiziert** (nach Komplexitätsgrad E > D > C > B > A):
@@ -184,6 +177,16 @@ und konkrete nächste Schritte – mit Fokus auf **Schlankheit, Verständlichkei
     - 50% Reduktion der CPU-Zyklen in Hotspot-Funktionen
 
   - **Risiko**: MITTEL - Umfassende Tests erforderlich um Regressionen zu vermeiden
-  - **Zeitaufwand**: 1-2 Wochen fokussierte Optimierungsarbeit
+  - **Zeitaufwand**: 1-2 Wochen fokussierte Optimierungsarbeit (+2-3 Tage für High-Performance Logging)
 
-  
+  - **High-Performance Logging Implementation Plan**:
+    1. **Tag 1**: Implementiere `HighPerformanceLogHandler` in `logger.py`
+    2. **Tag 2**: Füge Konfiguration in `config.py` hinzu und teste
+    3. **Tag 3**: Integriere in Hauptsimulation und validiere
+    4. **Tag 4**: Performance-Messung und Feinabstimmung
+
+  - **Migration Strategy**:
+    - **Phase 1**: Implementierung mit 50MB Standardpuffer
+    - **Phase 2**: Testing mit verschiedenen Puffergrößen
+    - **Phase 3**: Produktionseinsatz mit Monitoring
+    - **Fallback**: Bei Problemen Rückfall auf synchrones Logging
