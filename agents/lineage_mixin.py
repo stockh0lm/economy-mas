@@ -44,4 +44,3 @@ class LineageMixin:
         """Generate the next unique ID for a child/spinoff agent."""
         next_suffix = self._reserve_lineage_suffix()
         return f"{self._lineage_root_id}_g{next_suffix}"
-

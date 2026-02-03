@@ -63,8 +63,12 @@ class LaborMarket(BaseAgent):
         # Configuration parameters
         self.default_wage: float = self.config.labor_market.starting_wage
         self.minimum_wage_floor: float = self.config.labor_market.minimum_wage_floor
-        self.wage_unemployment_sensitivity: float = self.config.labor_market.wage_unemployment_sensitivity
-        self.wage_price_index_sensitivity: float = self.config.labor_market.wage_price_index_sensitivity
+        self.wage_unemployment_sensitivity: float = (
+            self.config.labor_market.wage_unemployment_sensitivity
+        )
+        self.wage_price_index_sensitivity: float = (
+            self.config.labor_market.wage_price_index_sensitivity
+        )
         self.target_unemployment_rate: float = self.config.labor_market.target_unemployment_rate
         self.target_inflation_rate: float = self.config.labor_market.target_inflation_rate
         self.latest_unemployment_rate: float = 0.0
@@ -110,7 +114,8 @@ class LaborMarket(BaseAgent):
         if worker not in self.registered_workers:
             self.registered_workers.append(worker)
             log(
-                f"LaborMarket {self.unique_id}: Registered worker {worker.unique_id}.", level="DEBUG"
+                f"LaborMarket {self.unique_id}: Registered worker {worker.unique_id}.",
+                level="DEBUG",
             )
 
     def compute_unemployment_rate(self) -> float:
@@ -218,9 +223,9 @@ class LaborMarket(BaseAgent):
         Workers without a current wage are assigned the default wage from configuration.
         """
         for worker in self.registered_workers:
-            if (
-                not hasattr(worker, "current_wage") or worker.current_wage is None
-            ) and not getattr(worker, "employed", False):
+            if (not hasattr(worker, "current_wage") or worker.current_wage is None) and not getattr(
+                worker, "employed", False
+            ):
                 worker.current_wage = self.default_wage
                 log(
                     f"LaborMarket {self.unique_id}: Set default wage {self.default_wage:.2f} "
@@ -277,7 +282,7 @@ class LaborMarket(BaseAgent):
             self.registered_workers.remove(worker)
             log(
                 f"LaborMarket {self.unique_id}: Deregistered worker {worker.unique_id}.",
-                    level="DEBUG",
+                level="DEBUG",
             )
             return True
         except ValueError:

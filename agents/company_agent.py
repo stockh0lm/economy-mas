@@ -276,7 +276,6 @@ class Company(BaseAgent, LineageMixin):
         self.finished_goods_units -= qty
         return float(qty), float(value)
 
-
     def sell_service_to_household(self, household: Household, budget: float) -> float:
         """Sell services to a household (money-neutral transfer, no inventory).
 
@@ -305,7 +304,6 @@ class Company(BaseAgent, LineageMixin):
             level="INFO",
         )
         return paid
-
 
     def sell_goods(self, demand: float | None = None) -> float:
         """LEGACY: Producer selling directly to a generic market.
@@ -570,7 +568,8 @@ class Company(BaseAgent, LineageMixin):
         """
         if self.sight_balance < self.bankruptcy_threshold:
             log(
-                f"Company {self.unique_id} declared bankrupt with " f"balance {self.sight_balance:.2f}.",
+                f"Company {self.unique_id} declared bankrupt with "
+                f"balance {self.sight_balance:.2f}.",
                 level="WARNING",
             )
             return True
@@ -666,7 +665,7 @@ class Company(BaseAgent, LineageMixin):
         current_step: int,
         state: State | None = None,
         savings_bank: SavingsBank | None = None,
-        #labor_market: LaborMarket | None = None,
+        # labor_market: LaborMarket | None = None,
     ) -> "Company | None":
         """
         Execute one simulation step for the company.

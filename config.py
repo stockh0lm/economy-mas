@@ -83,12 +83,16 @@ def _default_companies() -> list[InitialCompany]:
     ]
 
 
-
 def _default_retailers() -> list[InitialRetailer]:
     return [
-        InitialRetailer(initial_cc_limit=500, target_inventory_value=200, land_area=20, environmental_impact=1),
-        InitialRetailer(initial_cc_limit=500, target_inventory_value=200, land_area=20, environmental_impact=1),
+        InitialRetailer(
+            initial_cc_limit=500, target_inventory_value=200, land_area=20, environmental_impact=1
+        ),
+        InitialRetailer(
+            initial_cc_limit=500, target_inventory_value=200, land_area=20, environmental_impact=1
+        ),
     ]
+
 
 def _default_state_budget_allocation() -> dict[str, float]:
     return {"infrastructure": 0.5, "social": 0.3, "environment": 0.2}
@@ -227,7 +231,7 @@ class HouseholdConfig(BaseConfigModel):
 
 class CompanyConfig(BaseConfigModel):
     base_wage: float = Field(5.0, ge=0)  # Renamed from wage_rate
-    
+
     employee_capacity_ratio: float = Field(11.0, gt=0)
     investment_threshold: float = Field(1000.0, ge=0)  # Renamed from growth_balance_trigger
     growth_threshold: PositiveInt = 5
@@ -313,6 +317,7 @@ class CompanyConfig(BaseConfigModel):
         description="Capacity multiplier applied to target capacity when merged into acquirer",
     )
 
+
 class RetailerConfig(BaseConfigModel):
     # Kontokorrent-Kreditrahmen (zinsenfrei) wird bei Initialisierung gesetzt; Anpassung ist politisch/vertraglich geregelt.
     initial_cc_limit: float = Field(500.0, ge=0)
@@ -324,9 +329,7 @@ class RetailerConfig(BaseConfigModel):
     obsolescence_rate: float = Field(0.001, ge=0, le=1)
 
     # Warenbewertung: cost / market / Niederstwertprinzip
-    inventory_valuation_method: Literal[
-        "cost", "market", "lower_of_cost_or_market"
-    ] = "cost"
+    inventory_valuation_method: Literal["cost", "market", "lower_of_cost_or_market"] = "cost"
 
     # Artikelgruppen / Obsoleszenz je Gruppe
     default_article_group: str = "default"
@@ -340,6 +343,7 @@ class RetailerConfig(BaseConfigModel):
     write_down_reserve_share: float = Field(0.05, ge=0, le=1)
     # Automatische Tilgung: ab welchem Überschuss wird Kontokorrent zurückgeführt?
     auto_repay: bool = True
+
 
 class BankConfig(BaseConfigModel):
     base_account_fee: float = Field(0.0, ge=0)
@@ -525,7 +529,9 @@ class SimulationConfig(BaseConfigModel):
     INITIAL_COMPANIES: list[InitialCompany] = Field(default_factory=_default_companies)
     INITIAL_RETAILERS: list[InitialRetailer] = Field(default_factory=_default_retailers)
     INITIAL_JOB_POSITIONS_PER_COMPANY: PositiveInt = 3
-    state_budget_allocation: dict[str, float] = Field(default_factory=_default_state_budget_allocation)
+    state_budget_allocation: dict[str, float] = Field(
+        default_factory=_default_state_budget_allocation
+    )
 
     @property
     def initial_households(self) -> list[InitialHousehold]:
@@ -534,7 +540,6 @@ class SimulationConfig(BaseConfigModel):
     @property
     def initial_companies(self) -> list[InitialCompany]:
         return self.INITIAL_COMPANIES
-
 
     @property
     def initial_retailers(self) -> list[InitialRetailer]:
@@ -595,7 +600,6 @@ class SimulationConfig(BaseConfigModel):
             return self.population.num_companies
         return len(self.INITIAL_COMPANIES)
 
-
     def get_effective_retailer_count(self) -> int:
         """Get the effective number of retailers that will be created."""
         if self.population.num_retailers is not None:
@@ -606,7 +610,9 @@ class SimulationConfig(BaseConfigModel):
         """Validate that economic parameters are within reasonable bounds."""
         # Check that tax rates are reasonable
         if self.tax_rates.bodensteuer + self.tax_rates.umweltsteuer > 0.5:
-            raise ValueError("Combined tax rates exceed 50% - this may cause simulation instability")
+            raise ValueError(
+                "Combined tax rates exceed 50% - this may cause simulation instability"
+            )
 
         # Check that wage parameters are consistent
         if self.labor_market.minimum_wage_floor > self.labor_market.starting_wage:
@@ -621,7 +627,7 @@ class SimulationConfig(BaseConfigModel):
         self.validate_economic_parameters()
 
         # Validate that all required directories exist or can be created
-        for path_attr in ['log_file', 'SUMMARY_FILE', 'metrics_export_path']:
+        for path_attr in ["log_file", "SUMMARY_FILE", "metrics_export_path"]:
             path_value = getattr(self, path_attr)
             if isinstance(path_value, str):
                 try:
@@ -629,8 +635,10 @@ class SimulationConfig(BaseConfigModel):
                 except Exception as e:
                     raise ValueError(f"Cannot create directory for {path_attr}: {str(e)}")
 
+
 class ConfigValidationError(Exception):
     """Exception raised when configuration validation fails."""
+
     def __init__(self, message: str, config_errors: list[str] | None = None):
         self.message = message
         self.config_errors = config_errors or []
@@ -691,6 +699,7 @@ def load_simulation_config_from_yaml(path: str) -> SimulationConfig:
 
     # Let schema validation errors propagate as-is (tests assert this).
     from pydantic import ValidationError as PydanticValidationError  # type: ignore
+
     try:
         from pydantic_core import ValidationError as CoreValidationError  # type: ignore
     except Exception:  # pragma: no cover
@@ -705,6 +714,7 @@ def load_simulation_config_from_yaml(path: str) -> SimulationConfig:
         if type(e).__module__.startswith("pydantic"):
             raise
         raise ConfigValidationError(f"Configuration validation failed: {str(e)}", [str(e)])
+
 
 def validate_config_compatibility(config: SimulationConfig) -> None:
     """
@@ -736,8 +746,10 @@ def validate_config_compatibility(config: SimulationConfig) -> None:
     if errors:
         raise ConfigValidationError("Configuration compatibility issues found", errors)
 
+
 class SimulationError(Exception):
     """Base exception for simulation errors."""
+
     def __init__(self, message: str, agent_id: str | None = None):
         self.message = message
         self.agent_id = agent_id
@@ -748,8 +760,10 @@ class SimulationError(Exception):
             return f"Agent {self.agent_id}: {self.message}"
         return self.message
 
+
 class InsufficientFundsError(SimulationError):
     """Exception for insufficient funds situations."""
+
     def __init__(self, message: str, agent_id: str, required: float, available: float):
         self.required = required
         self.available = available
@@ -759,12 +773,16 @@ class InsufficientFundsError(SimulationError):
         base_msg = super()._format_message()
         return f"{base_msg} (Required: {self.required:.2f}, Available: {self.available:.2f})"
 
+
 class AgentLifecycleError(SimulationError):
     """Exception for agent lifecycle management errors."""
+
     pass
+
 
 class EconomicParameterError(SimulationError):
     """Exception for invalid economic parameter values."""
+
     pass
 
 

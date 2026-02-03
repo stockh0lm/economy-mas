@@ -3,9 +3,11 @@
 import json
 import time
 from typing import Any, Dict, Literal, Optional
+
 from logger import log
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+
 
 class SimulationLogger:
     """
@@ -89,7 +91,7 @@ class SimulationLogger:
             "component": self.component_name,
             "agent_id": self.agent_id,
             "event_type": event_type,
-            "data": data
+            "data": data,
         }
 
         log_message = f"EVENT: {event_type}"
@@ -98,7 +100,9 @@ class SimulationLogger:
 
         self.info(log_message, event_data)
 
-    def log_performance(self, operation: str, duration: float, details: Optional[Dict] = None) -> None:
+    def log_performance(
+        self, operation: str, duration: float, details: Optional[Dict] = None
+    ) -> None:
         """
         Log performance metrics.
 
@@ -111,7 +115,7 @@ class SimulationLogger:
             "operation": operation,
             "duration_seconds": duration,
             "component": self.component_name,
-            "agent_id": self.agent_id
+            "agent_id": self.agent_id,
         }
 
         if details:
@@ -125,8 +129,9 @@ class SimulationLogger:
             "component": self.component_name,
             "agent_id": self.agent_id,
             "log_count": self._log_count,
-            "uptime_seconds": time.time() - self._start_time
+            "uptime_seconds": time.time() - self._start_time,
         }
+
 
 class AgentLogger(SimulationLogger):
     """
@@ -144,7 +149,9 @@ class AgentLogger(SimulationLogger):
         super().__init__(agent_type, agent_id)
         self.agent_type = agent_type
 
-    def log_state_change(self, old_state: str, new_state: str, reason: Optional[str] = None) -> None:
+    def log_state_change(
+        self, old_state: str, new_state: str, reason: Optional[str] = None
+    ) -> None:
         """
         Log agent state change.
 
@@ -153,14 +160,12 @@ class AgentLogger(SimulationLogger):
             new_state: New state
             reason: Optional reason for change
         """
-        data = {
-            "old_state": old_state,
-            "new_state": new_state,
-            "reason": reason
-        }
+        data = {"old_state": old_state, "new_state": new_state, "reason": reason}
         self.info(f"State change: {old_state} -> {new_state}", data)
 
-    def log_financial_transaction(self, transaction_type: str, amount: float, balance: float) -> None:
+    def log_financial_transaction(
+        self, transaction_type: str, amount: float, balance: float
+    ) -> None:
         """
         Log financial transaction.
 
@@ -169,12 +174,9 @@ class AgentLogger(SimulationLogger):
             amount: Transaction amount
             balance: Resulting balance
         """
-        data = {
-            "transaction_type": transaction_type,
-            "amount": amount,
-            "balance": balance
-        }
+        data = {"transaction_type": transaction_type, "amount": amount, "balance": balance}
         self.debug(f"Financial transaction: {transaction_type} {amount:.2f}", data)
+
 
 class SystemLogger(SimulationLogger):
     """
@@ -199,12 +201,9 @@ class SystemLogger(SimulationLogger):
             value: Metric value
             unit: Optional unit of measurement
         """
-        data = {
-            "metric": metric_name,
-            "value": value,
-            "unit": unit
-        }
+        data = {"metric": metric_name, "value": value, "unit": unit}
         self.debug(f"System metric: {metric_name} = {value}{f' {unit}' if unit else ''}", data)
+
 
 def create_agent_logger(agent_id: str, agent_type: str) -> AgentLogger:
     """
@@ -218,6 +217,7 @@ def create_agent_logger(agent_id: str, agent_type: str) -> AgentLogger:
         Configured AgentLogger instance
     """
     return AgentLogger(agent_id, agent_type)
+
 
 def create_system_logger(system_name: str) -> SystemLogger:
     """

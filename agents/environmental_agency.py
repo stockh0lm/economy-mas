@@ -115,13 +115,18 @@ class EnvironmentalAgency(BaseAgent):
             if isinstance(agent, BillingAgent):
                 billing_agent = cast(BillingAgent, agent)
                 if hasattr(billing_agent, "sight_balance"):
-                    billing_agent.sight_balance = float(getattr(billing_agent, "sight_balance")) - tax
+                    billing_agent.sight_balance = (
+                        float(getattr(billing_agent, "sight_balance")) - tax
+                    )
                 else:
                     billing_agent.balance -= tax
 
             # Route waste to recycling company if available
             if self.recycling_company:
-                waste = agent.environmental_impact * self.config.environmental.waste_output_per_env_impact
+                waste = (
+                    agent.environmental_impact
+                    * self.config.environmental.waste_output_per_env_impact
+                )
                 if waste > 0:
                     self.recycling_company.collect_waste(cast(BaseAgent, agent), waste)
 
@@ -170,7 +175,9 @@ class EnvironmentalAgency(BaseAgent):
             if isinstance(company, BillingAgent):
                 billing_company = cast(BillingAgent, company)
                 if hasattr(billing_company, "sight_balance"):
-                    billing_company.sight_balance = float(getattr(billing_company, "sight_balance")) - penalty
+                    billing_company.sight_balance = (
+                        float(getattr(billing_company, "sight_balance")) - penalty
+                    )
                 else:
                     billing_company.balance -= penalty
 

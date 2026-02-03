@@ -14,6 +14,8 @@ from typing import Set, List, Tuple, Optional
 import tokenize
 from io import BytesIO
 
+from logger import log
+
 class BalanceToSightBalanceTransformer(ast.NodeTransformer):
     """AST transformer that renames 'balance' references to 'sight_balance'."""
 
@@ -228,54 +230,54 @@ def main():
     files_to_process = [f for f in files_to_process if f.is_file() and f.suffix == '.py']
 
     if not files_to_process:
-        print("No Python files found to process.")
+        log("No Python files found to process.", level="INFO")
         return
 
     total_files = len(files_to_process)
     modified_files = 0
     error_files = 0
 
-    print(f"Processing {total_files} Python files...")
+    log(f"Processing {total_files} Python files...", level="INFO")
 
     for file_path in files_to_process:
         if args.scan_only:
             references = scan_file_for_balance_references(file_path)
             if references:
-                print(f"\nFile: {file_path}")
-                print(f"Found {len(references)} 'balance' references:")
+                log(f"File: {file_path}", level="INFO")
+                log(f"Found {len(references)} 'balance' references:", level="INFO")
                 for line_num, line in references[:10]:  # Show first 10
-                    print(f"  {line_num}: {line}")
+                    log(f"  {line_num}: {line}", level="INFO")
                 if len(references) > 10:
-                    print(f"  ... and {len(references) - 10} more")
+                    log(f"  ... and {len(references) - 10} more", level="INFO")
         else:
             if args.verbose:
-                print(f"Processing: {file_path}")
+                log(f"Processing: {file_path}", level="INFO")
 
             success, message = migrate_file(file_path, args.dry_run)
 
             if success and "Updated" in message:
                 modified_files += 1
                 if args.verbose:
-                    print(f"  ✓ {message}")
+                    log(f"  ✓ {message}", level="INFO")
             elif success and "Would update" in message:
                 modified_files += 1
                 if args.verbose:
-                    print(f"  ✓ {message}")
+                    log(f"  ✓ {message}", level="INFO")
             elif not success and "Error" in message:
                 error_files += 1
-                print(f"  ✗ {message}")
+                log(f"  ✗ {message}", level="WARNING")
             elif args.verbose:
-                print(f"  - {message}")
+                log(f"  - {message}", level="INFO")
 
-    print(f"\nMigration complete:")
-    print(f"  Files processed: {total_files}")
-    print(f"  Files modified: {modified_files}")
-    print(f"  Errors: {error_files}")
+    log("Migration complete:", level="INFO")
+    log(f"  Files processed: {total_files}", level="INFO")
+    log(f"  Files modified: {modified_files}", level="INFO")
+    log(f"  Errors: {error_files}", level="INFO")
 
     if args.dry_run:
-        print("\nNo changes were made (dry run mode).")
+        log("No changes were made (dry run mode).", level="INFO")
     elif args.scan_only:
-        print("\nScan complete. Use without --scan-only to migrate.")
+        log("Scan complete. Use without --scan-only to migrate.", level="INFO")
 
 if __name__ == "__main__":
     main()

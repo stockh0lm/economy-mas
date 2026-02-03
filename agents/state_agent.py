@@ -60,7 +60,6 @@ class State(BaseAgent):
         # Reference to labor market (set after initialization)
         self.labor_market: LaborMarket | None = None
 
-
     @property
     def sight_balance(self) -> float:
         """Total state sight balances (sum of sub-budgets).
@@ -74,7 +73,6 @@ class State(BaseAgent):
             + self.social_budget
             + self.environment_budget
         )
-
 
     def pay(self, amount: float, *, budget_bucket: str | None = None) -> float:
         """Pay from state deposits (money-neutral transfer).
@@ -103,7 +101,12 @@ class State(BaseAgent):
 
         # Fallback: spend from buckets in a deterministic order.
         remaining = float(amount)
-        for bucket in ["tax_revenue", "infrastructure_budget", "social_budget", "environment_budget"]:
+        for bucket in [
+            "tax_revenue",
+            "infrastructure_budget",
+            "social_budget",
+            "environment_budget",
+        ]:
             if remaining <= 0:
                 break
             available = float(max(0.0, getattr(self, bucket)))
@@ -114,7 +117,6 @@ class State(BaseAgent):
             remaining -= paid
 
         return float(amount - remaining)
-
 
     def collect_taxes(self, agents: AgentCollection) -> None:
         """

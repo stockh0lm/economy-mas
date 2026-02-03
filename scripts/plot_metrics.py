@@ -74,7 +74,8 @@ def extract_series(rows: pd.DataFrame, *columns: str) -> tuple[list[int], dict[s
             series_data = series_data.clip(upper=max_reasonable_value)
             series[column] = series_data.tolist()
         else:
-            series[column] = []
+            # Keep shapes consistent for plotting; missing columns become a 0-series.
+            series[column] = [0.0 for _ in steps]
     return (steps, series)
 
 def aggregate_company_metrics(rows: pd.DataFrame) -> tuple[list[int], dict[str, list[float]]]:
@@ -87,15 +88,36 @@ def aggregate_company_metrics(rows: pd.DataFrame) -> tuple[list[int], dict[str, 
         Tuple of (time_steps, aggregated_data) where aggregated_data contains
         sums for sight_balance, rd_investment, and production_capacity
     """
-    available_columns = ['sight_balance', 'rd_investment', 'production_capacity']
-    existing_columns = [col for col in available_columns if col in rows.columns]
-    if not existing_columns:
-        return ([], {'sight_balance': [], 'rd_investment': [], 'production_capacity': []})
+    # Backward-compatibility: older exports (and some tests) use `balance`
+    # instead of `sight_balance`.
+    has_sight = 'sight_balance' in rows.columns
+    has_balance = 'balance' in rows.columns
+    balance_col = 'sight_balance' if has_sight else ('balance' if has_balance else None)
+
+    available_columns: list[str] = []
+    if balance_col is not None:
+        available_columns.append(balance_col)
+    for col in ['rd_investment', 'production_capacity']:
+        if col in rows.columns:
+            available_columns.append(col)
+
+    if not available_columns:
+        return ([], {'sight_balance': [], 'balance': [], 'rd_investment': [], 'production_capacity': []})
     df = rows.copy()
     df['time_step'] = df['time_step'].astype(int)
-    result = df.groupby('time_step')[existing_columns].sum().fillna(0.0)
+    result = df.groupby('time_step')[available_columns].sum().fillna(0.0)
     steps = sorted(result.index.tolist())
-    aggregated = {'sight_balance': result.get('sight_balance', pd.Series([], dtype=float)).tolist(), 'rd_investment': result.get('rd_investment', pd.Series([], dtype=float)).tolist(), 'production_capacity': result.get('production_capacity', pd.Series([], dtype=float)).tolist()}
+    # Always expose both keys (`balance` and `sight_balance`) for robustness.
+    if balance_col is not None and balance_col in result.columns:
+        bal_series = result[balance_col]
+    else:
+        bal_series = pd.Series([0.0 for _ in steps], index=steps, dtype=float)
+    aggregated = {
+        'sight_balance': bal_series.tolist(),
+        'balance': bal_series.tolist(),
+        'rd_investment': result.get('rd_investment', pd.Series([0.0 for _ in steps], index=steps, dtype=float)).tolist(),
+        'production_capacity': result.get('production_capacity', pd.Series([0.0 for _ in steps], index=steps, dtype=float)).tolist(),
+    }
     return (steps, aggregated)
 
 def count_agents_per_step(rows: pd.DataFrame) -> tuple[list[int], list[int]]:
@@ -148,6 +170,59 @@ def plot_monetary_system(global_rows: pd.DataFrame) -> tuple[plt.Figure, str]:
     ax_left.legend(lines, labels, loc='upper left')
     return (fig, 'monetary_system.png')
 
+def plot_crash_diagnostics(global_rows: pd.DataFrame) -> tuple[plt.Figure, str]:
+    """Crash diagnostics (separate from the dashboard).
+
+    High-signal indicators for debugging systemic stalls:
+    - goods_tx_volume, issuance_volume, extinguish_volume (real economy + Warengeld cycle)
+    - cc_exposure vs cc_headroom_total (credit saturation / deadlock risk)
+    - retailers_at_cc_limit_share, retailers_stockout_share (micro state that predicts freezes)
+    """
+    steps, data = extract_series(
+        global_rows,
+        'goods_tx_volume',
+        'issuance_volume',
+        'extinguish_volume',
+        'cc_exposure',
+        'cc_headroom_total',
+        'retailers_at_cc_limit_share',
+        'retailers_stockout_share',
+        'inventory_value_total',
+    )
+
+    fig, axes = plt.subplots(nrows=3, ncols=1, figsize=(12, 10), sharex=True)
+
+    ax0 = axes[0]
+    ax0.plot(steps, data['goods_tx_volume'], label='Goods Tx Volume', color='tab:blue')
+    ax0.plot(steps, data['issuance_volume'], label='Issuance (Money Creation)', color='tab:green', linestyle='--')
+    ax0.plot(steps, data['extinguish_volume'], label='Extinguish (Money Destruction)', color='tab:red', linestyle=':')
+    ax0.set_ylabel('Flow ($/step)')
+    ax0.set_title('Crash Diagnostics: Flows')
+    ax0.grid(True, alpha=0.3)
+    ax0.legend(loc='upper right')
+
+    ax1 = axes[1]
+    ax1.plot(steps, data['cc_exposure'], label='CC Exposure', color='tab:purple')
+    ax1.plot(steps, data['cc_headroom_total'], label='Total CC Headroom', color='tab:orange', linestyle='--')
+    ax1.plot(steps, data['inventory_value_total'], label='Retail Inventory Value', color='tab:gray', linestyle=':')
+    ax1.set_ylabel('Stock / Exposure ($)')
+    ax1.set_title('Credit Saturation vs Inventory')
+    ax1.grid(True, alpha=0.3)
+    ax1.legend(loc='upper right')
+
+    ax2 = axes[2]
+    ax2.plot(steps, data['retailers_at_cc_limit_share'], label='Retailers at CC Limit (share)', color='tab:brown')
+    ax2.plot(steps, data['retailers_stockout_share'], label='Retailers Stockout (share)', color='tab:cyan', linestyle='--')
+    ax2.set_xlabel('Time Step')
+    ax2.set_ylabel('Share')
+    ax2.set_ylim(0, 1.05)
+    ax2.set_title('Micro Crash Predictors')
+    ax2.grid(True, alpha=0.3)
+    ax2.legend(loc='upper right')
+
+    fig.tight_layout()
+    return (fig, 'crash_diagnostics.png')
+
 def plot_labor_market(global_rows: pd.DataFrame) -> tuple[plt.Figure, str]:
     steps, data = extract_series(global_rows, 'employment_rate', 'unemployment_rate', 'bankruptcy_rate')
     fig, ax = plt.subplots(figsize=(10, 6))
@@ -198,7 +273,8 @@ def plot_state_budgets(state_rows: pd.DataFrame) -> tuple[plt.Figure, str]:
 def plot_company_health(company_rows: pd.DataFrame) -> tuple[plt.Figure, str]:
     steps, data = aggregate_company_metrics(company_rows)
     fig, ax_balance = plt.subplots(figsize=(10, 6))
-    ax_balance.plot(steps, data['sight_balance'], label='Aggregate Balance', color='tab:blue')
+    series = data.get('sight_balance') or data.get('balance') or [0.0 for _ in steps]
+    ax_balance.plot(steps, series, label='Aggregate Balance', color='tab:blue')
     ax_balance.set_xlabel('Time Step')
     ax_balance.set_ylabel('Balance ($)')
     ax_activity = ax_balance.twinx()
@@ -339,7 +415,18 @@ def plot_overview_dashboard(data_by_scope: dict[str, pd.DataFrame]) -> tuple[plt
     ax.legend()
     fig.tight_layout()
     return (fig, 'overview_dashboard.png')
-PLOT_SPECS: list[tuple[str, PlotFunc]] = [('global', plot_global_output), ('global', plot_monetary_system), ('global', plot_labor_market), ('global', plot_prices_and_wages), ('state', plot_state_budgets), ('company', plot_company_health), ('household', plot_household_population), ('company', plot_company_population)]
+PLOT_SPECS: list[tuple[str, PlotFunc]] = [
+    ('global', plot_global_output),
+    ('global', plot_monetary_system),
+    ('global', plot_labor_market),
+    ('global', plot_prices_and_wages),
+    # Separate crash/debug plot (not part of the dashboard)
+    ('global', plot_crash_diagnostics),
+    ('state', plot_state_budgets),
+    ('company', plot_company_health),
+    ('household', plot_household_population),
+    ('company', plot_company_population),
+]
 
 def main() -> None:
     args = parse_args()

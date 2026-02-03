@@ -1,10 +1,12 @@
 """Configuration caching system for performance optimization."""
 
 from typing import Any, ClassVar, Dict, Generic, TypeVar
+
 from config import SimulationConfig
 from logger import log
 
-T = TypeVar('T')
+T = TypeVar("T")
+
 
 class ConfigCache(Generic[T]):
     """
@@ -40,6 +42,7 @@ class ConfigCache(Generic[T]):
             Cached or newly computed value
         """
         import time
+
         current_time = time.time()
 
         # Check if value is in cache and not expired
@@ -82,11 +85,14 @@ class ConfigCache(Generic[T]):
     def get_stats(self) -> dict:
         """Get cache performance statistics."""
         return {
-            'cache_size': len(self._cache),
-            'hit_rate': self._hits / (self._hits + self._misses) if (self._hits + self._misses) > 0 else 0,
-            'hits': self._hits,
-            'misses': self._misses
+            "cache_size": len(self._cache),
+            "hit_rate": (
+                self._hits / (self._hits + self._misses) if (self._hits + self._misses) > 0 else 0
+            ),
+            "hits": self._hits,
+            "misses": self._misses,
         }
+
 
 class AgentConfigCache:
     """
@@ -116,9 +122,10 @@ class AgentConfigCache:
         Returns:
             Configuration value
         """
+
         def getter():
             try:
-                keys = path.split('.')
+                keys = path.split(".")
                 value = self._config
                 for key in keys:
                     value = getattr(value, key)
@@ -150,15 +157,13 @@ class AgentConfigCache:
 
     def get_all_stats(self) -> dict:
         """Get statistics for all caches."""
-        stats = {
-            'main_cache': self._cache.get_stats(),
-            'section_caches': {}
-        }
+        stats = {"main_cache": self._cache.get_stats(), "section_caches": {}}
 
         for section, cache in self._section_caches.items():
-            stats['section_caches'][section] = cache.get_stats()
+            stats["section_caches"][section] = cache.get_stats()
 
         return stats
+
 
 class GlobalConfigCache:
     """
@@ -203,7 +208,7 @@ class GlobalConfigCache:
 
         def getter():
             try:
-                keys = path.split('.')
+                keys = path.split(".")
                 value = self._config
                 for key in keys:
                     value = getattr(value, key)
@@ -220,6 +225,7 @@ class GlobalConfigCache:
     def get_cache_stats(self) -> dict:
         """Get global cache statistics."""
         return self._cache.get_stats()
+
 
 # Convenience function for easy access
 def get_cached_config_value(path: str) -> Any:

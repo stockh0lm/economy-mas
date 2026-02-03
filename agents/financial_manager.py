@@ -1,11 +1,13 @@
 """Financial management system for household agents."""
 
 from typing import TYPE_CHECKING
+
 from agents.savings_bank_agent import SavingsBank
 from logger import log
 
 if TYPE_CHECKING:
     from agents.household_agent import Household
+
 
 class FinancialManager:
     """
@@ -69,6 +71,7 @@ class FinancialManager:
             return 0.0
 
         import random
+
         supplier = random.choice(companies)
         if not hasattr(supplier, "sell_to_household"):
             return 0.0
@@ -85,7 +88,10 @@ class FinancialManager:
         return spent
 
     def _consume_legacy(self, consumption_rate: float) -> float:
-        consumption_amount = float(getattr(self.household, "sight_balance", self.household.checking_account)) * consumption_rate
+        consumption_amount = (
+            float(getattr(self.household, "sight_balance", self.household.checking_account))
+            * consumption_rate
+        )
         if hasattr(self.household, "sight_balance"):
             self.household.sight_balance -= consumption_amount
         else:
@@ -225,7 +231,7 @@ class FinancialManager:
 
         # If the bank API returned a different amount, reconcile the difference.
         if repaid != repay_budget:
-            self.household.checking_account += (repay_budget - repaid)
+            self.household.checking_account += repay_budget - repaid
 
         if repaid > 0:
             self._record_transaction("loan_repayment", -repaid)
@@ -254,7 +260,9 @@ class FinancialManager:
         Returns:
             Financial health score
         """
-        total_assets = float(getattr(self.household, "sight_balance", self.household.checking_account)) + float(self.household.local_savings)
+        total_assets = float(
+            getattr(self.household, "sight_balance", self.household.checking_account)
+        ) + float(self.household.local_savings)
         income_stability = min(1.0, self.household.income / 100.0)
         health_score = min(1.0, total_assets / 1000.0) * 0.6 + income_stability * 0.4
         return health_score
@@ -303,7 +311,9 @@ class FinancialManager:
             Financial summary dictionary
         """
         return {
-            "checking_account": float(getattr(self.household, "sight_balance", self.household.checking_account)),
+            "checking_account": float(
+                getattr(self.household, "sight_balance", self.household.checking_account)
+            ),
             "savings": float(self.household.local_savings),
             "income": self.household.income,
             "financial_health_score": self.get_financial_health_score(),

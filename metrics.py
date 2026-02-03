@@ -40,7 +40,9 @@ def apply_sight_decay(agents: Iterable[Any], *, config: SimulationConfig | None 
     factor = float(getattr(getattr(cfg, "clearing", None), "sight_excess_decay_rate", 0.0))
     k = float(getattr(getattr(cfg, "clearing", None), "sight_allowance_multiplier", 0.0))
     window = int(getattr(getattr(cfg, "clearing", None), "sight_allowance_window_days", 30) or 30)
-    hyperwealth = float(getattr(getattr(cfg, "clearing", None), "hyperwealth_threshold", 0.0) or 0.0)
+    hyperwealth = float(
+        getattr(getattr(cfg, "clearing", None), "hyperwealth_threshold", 0.0) or 0.0
+    )
     days_per_month = int(getattr(getattr(cfg, "time", None), "days_per_month", 30) or 30)
 
     if factor <= 0 or k <= 0 or window <= 0 or days_per_month <= 0:
@@ -81,6 +83,7 @@ def apply_sight_decay(agents: Iterable[Any], *, config: SimulationConfig | None 
         destroyed_total += burned
 
     return float(destroyed_total)
+
 
 # Type definitions for improved readability
 AgentID = str
@@ -455,7 +458,10 @@ class MetricsCollector:
         if agent_id not in self.registered_retailers:
             self.registered_retailers.add(agent_id)
             self.retailer_metrics[agent_id] = {}
-            log(f"MetricsCollector: Registered retailer {agent_id} for metrics tracking", level="DEBUG")
+            log(
+                f"MetricsCollector: Registered retailer {agent_id} for metrics tracking",
+                level="DEBUG",
+            )
 
     def register_bank(self, bank: EconomicAgent) -> None:
         """
@@ -499,6 +505,12 @@ class MetricsCollector:
                 "checking_account",
                 "savings",
                 "income",
+                # Actual wage signal from the labor market (nominal wage rate).
+                # This is the correct basis for "nominal/real wage" metrics.
+                "current_wage",
+                # Optional cashflow counters (useful for debugging transfer vs. money creation).
+                "income_received_this_month",
+                "last_income_received",
                 "consumption",
                 "age",
                 "generation",
@@ -593,6 +605,10 @@ class MetricsCollector:
 
             step_metrics: dict[str, ValueType] = {}
             step_metrics["liquidity"] = float(getattr(bank, "liquidity", 0.0))
+            # Include bank's own sight balance (fee income stock) so broad-money
+            # proxies can remain transfer-invariant when fees move to the bank.
+            if hasattr(bank, "sight_balance"):
+                step_metrics["sight_balance"] = float(getattr(bank, "sight_balance", 0.0))
 
             if hasattr(bank, "credit_lines"):
                 credit_lines = getattr(bank, "credit_lines")
@@ -673,9 +689,7 @@ class MetricsCollector:
             step_metrics["registered_workers"] = float(num_registered_workers)
 
             employed_workers = sum(
-                1
-                for w in labor_market.registered_workers
-                if hasattr(w, "employed") and w.employed
+                1 for w in labor_market.registered_workers if hasattr(w, "employed") and w.employed
             )
             step_metrics["employed_workers"] = float(employed_workers)
 
@@ -729,7 +743,9 @@ class MetricsCollector:
             )
         )
 
-        money_for_price = float(money_metrics.get("total_money_supply", money_metrics.get("m2_proxy", 0.0)))
+        money_for_price = float(
+            money_metrics.get("total_money_supply", money_metrics.get("m2_proxy", 0.0))
+        )
         if pressure_mode == "blended":
             money_for_price = float(money_metrics.get("m1_proxy", 0.0))
 
@@ -828,7 +844,9 @@ class MetricsCollector:
     def aggregate_metrics(self, step: TimeStep) -> dict[str, dict[str, ValueType]]:
         """Aggregate metrics across agent types for a given time step."""
         result: dict[str, dict[str, ValueType]] = {
-            "household": self._aggregate_agent_metrics(self.household_metrics, step, default="mean"),
+            "household": self._aggregate_agent_metrics(
+                self.household_metrics, step, default="mean"
+            ),
             "company": self._aggregate_agent_metrics(self.company_metrics, step, default="mean"),
             "bank": self._aggregate_agent_metrics(self.bank_metrics, step, default="sum"),
             "state": self._first_state_snapshot(step),
@@ -1053,7 +1071,7 @@ class MetricsCollector:
     def _global_money_metrics(self, step: TimeStep) -> MetricDict:
         """Global monetary aggregates (diagnostic proxies).
 
-        - m1_proxy: sum of positive sight balances (households + companies + retailers)
+        - m1_proxy: sum of positive sight balances (households + companies + retailers + state + banks)
         - m2_proxy: m1_proxy + household savings (Sparkasse deposits)
         - cc_exposure: sum of absolute cc balances (retailers)
         - inventory_value_total: sum of retailer inventory values
@@ -1072,6 +1090,21 @@ class MetricsCollector:
         m2 = 0.0
 
         service_tx_volume = 0.0
+
+        # State deposits (budget buckets) are part of sight money; including them
+        # keeps M1/M2 invariant under pure transfers (e.g. taxes).
+        state_sight = 0.0
+        for _sid, time_series in self.state_metrics.items():
+            data = time_series.get(step)
+            if not data:
+                continue
+            state_sight += float(data.get("tax_revenue", 0.0))
+            state_sight += float(data.get("infrastructure_budget", 0.0))
+            state_sight += float(data.get("social_budget", 0.0))
+            state_sight += float(data.get("environment_budget", 0.0))
+            # Only one state is expected; if multiple exist, we sum them.
+        m1 += max(0.0, state_sight)
+        m2 += max(0.0, state_sight)
 
         # Companies (sight + services)
         for _cid, time_series in self.company_metrics.items():
@@ -1101,12 +1134,20 @@ class MetricsCollector:
         inventory_total = 0.0
         sales_total = 0.0
         extinguish_volume = 0.0
+        # Debugging / crash indicators (computed from retailer balance sheets).
+        cc_headroom_total = 0.0
+        cc_utilization_values: list[float] = []
+        retailers_at_cc_limit = 0
+        retailers_stockout = 0
+        retailers_count = 0
         for _rid, time_series in self.retailer_metrics.items():
             data = time_series.get(step)
             if not data:
                 continue
+            retailers_count += 1
             sight = float(data.get("sight_balance", 0.0))
             cc = float(data.get("cc_balance", 0.0))
+            cc_limit = float(data.get("cc_limit", 0.0))
             inv = float(data.get("inventory_value", 0.0))
             sales_total += float(data.get("sales_total", 0.0))
             extinguish_volume += float(data.get("repaid_total", 0.0))
@@ -1115,6 +1156,28 @@ class MetricsCollector:
             m2 += max(0.0, sight)
             cc_exposure += abs(cc)
             inventory_total += max(0.0, inv)
+
+            # CC headroom and utilization diagnostics.
+            # With negative `cc_balance` representing drawn credit, the remaining
+            # headroom is: cc_limit - abs(cc_balance).
+            headroom = max(0.0, cc_limit - abs(cc))
+            cc_headroom_total += headroom
+            if cc_limit > 0:
+                cc_utilization_values.append(min(1.0, abs(cc) / cc_limit))
+            if headroom <= 1e-9 and abs(cc) > 0:
+                retailers_at_cc_limit += 1
+            if inv <= 1e-9:
+                retailers_stockout += 1
+
+        # Banks: include their own sight balances (fee income stock).
+        bank_sight = 0.0
+        for _bid, time_series in self.bank_metrics.items():
+            data = time_series.get(step)
+            if not data:
+                continue
+            bank_sight += float(data.get("sight_balance", 0.0))
+        m1 += max(0.0, bank_sight)
+        m2 += max(0.0, bank_sight)
 
         # Issuance: sum across banks that provide per-step issuance_volume.
         issuance_volume = 0.0
@@ -1134,6 +1197,19 @@ class MetricsCollector:
         metrics["service_tx_volume"] = service_tx_volume
         metrics["issuance_volume"] = issuance_volume
         metrics["extinguish_volume"] = extinguish_volume
+        # Crash-indicative diagnostics:
+        metrics["cc_headroom_total"] = float(cc_headroom_total)
+        metrics["avg_cc_utilization"] = (
+            float(sum(cc_utilization_values) / len(cc_utilization_values))
+            if cc_utilization_values
+            else 0.0
+        )
+        metrics["retailers_at_cc_limit_share"] = (
+            float(retailers_at_cc_limit / retailers_count) if retailers_count > 0 else 0.0
+        )
+        metrics["retailers_stockout_share"] = (
+            float(retailers_stockout / retailers_count) if retailers_count > 0 else 0.0
+        )
 
         goods_value_total = sales_total
         service_value_total = service_tx_volume
@@ -1165,9 +1241,7 @@ class MetricsCollector:
         eps = 1e-9
 
         money_supply_pressure = total_money / (gdp + eps) if gdp > 0 else pressure_target
-        consumption_pressure = (
-            household_consumption / (gdp + eps) if gdp > 0 else pressure_target
-        )
+        consumption_pressure = household_consumption / (gdp + eps) if gdp > 0 else pressure_target
         if pressure_mode == "consumption_to_production":
             price_pressure = consumption_pressure
         elif pressure_mode == "blended":
@@ -1224,7 +1298,13 @@ class MetricsCollector:
         for household_id, time_series in self.household_metrics.items():
             data = time_series.get(step)
             if data and data.get("employed"):
-                nominal_wages.append(data.get("income", 0.0))
+                # Prefer the labor-market wage rate if available; fall back to
+                # legacy 'income' template parameter.
+                w = data.get("current_wage", None)
+                if isinstance(w, (int, float)) and float(w) > 0:
+                    nominal_wages.append(float(w))
+                else:
+                    nominal_wages.append(float(data.get("income", 0.0)))
 
         avg_nominal_wage = statistics.mean(nominal_wages) if nominal_wages else 0
         price_index_pct = price_index / 100

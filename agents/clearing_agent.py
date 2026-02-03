@@ -50,8 +50,12 @@ class ClearingAgent(BaseAgent):
     # --- Reserve management ---
     def register_bank(self, bank: Any) -> None:
         bank_id = str(getattr(bank, "unique_id", "bank"))
-        self.bank_reserves.setdefault(bank_id, float(getattr(bank, "clearing_reserve_deposit", 0.0)))
-        self.required_reserve_ratio.setdefault(bank_id, float(self.config.clearing.required_reserve_ratio))
+        self.bank_reserves.setdefault(
+            bank_id, float(getattr(bank, "clearing_reserve_deposit", 0.0))
+        )
+        self.required_reserve_ratio.setdefault(
+            bank_id, float(self.config.clearing.required_reserve_ratio)
+        )
 
     def _sync_bank_reserve_attr(self, bank: Any) -> None:
         bank_id = str(getattr(bank, "unique_id", "bank"))
@@ -130,7 +134,9 @@ class ClearingAgent(BaseAgent):
                 continue
             if inv < threshold * cc:
                 gap = max(0.0, cc - inv)
-                findings.append(AuditFinding(str(getattr(bank, "unique_id", "bank")), rid, inv, cc, gap))
+                findings.append(
+                    AuditFinding(str(getattr(bank, "unique_id", "bank")), rid, inv, cc, gap)
+                )
 
                 if gap > 0:
                     self._apply_value_correction(
@@ -216,7 +222,9 @@ class ClearingAgent(BaseAgent):
         # 3) Recipient companies (trace via bank ledger)
         if remaining > 0 and hasattr(bank, "goods_purchase_ledger"):
             rid = str(getattr(retailer, "unique_id", "retailer"))
-            records = [r for r in getattr(bank, "goods_purchase_ledger", []) if r.retailer_id == rid]
+            records = [
+                r for r in getattr(bank, "goods_purchase_ledger", []) if r.retailer_id == rid
+            ]
 
             # Optional fairness window: only consider reasonably recent flows
             # (defaults to audit interval if available).
@@ -242,13 +250,17 @@ class ClearingAgent(BaseAgent):
                 # recipients proportionally to their weights.
                 remaining_to_allocate = float(remaining)
                 capacities: dict[str, float] = {
-                    sid: max(0.0, float(getattr(companies_by_id.get(sid), "sight_balance", 0.0) or 0.0))
+                    sid: max(
+                        0.0, float(getattr(companies_by_id.get(sid), "sight_balance", 0.0) or 0.0)
+                    )
                     for sid in weights
                     if companies_by_id.get(sid) is not None
                 }
 
                 eligible: dict[str, float] = {
-                    sid: w for sid, w in weights.items() if sid in capacities and capacities[sid] > 0
+                    sid: w
+                    for sid, w in weights.items()
+                    if sid in capacities and capacities[sid] > 0
                 }
 
                 # Iterate until the remaining amount is allocated or everyone is dry.

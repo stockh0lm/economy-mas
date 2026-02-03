@@ -117,7 +117,6 @@ class SavingsBank(BaseAgent):
         """Outstanding principal of the Sparkasse loan book."""
         return float(sum(self.active_loans.values()))
 
-
     # --- Backwards-compatible alias ---
     @property
     def liquidity(self) -> float:
@@ -158,7 +157,7 @@ class SavingsBank(BaseAgent):
         if amount <= 0:
             return 0.0
 
-        hid = str(getattr(household, 'unique_id', 'household'))
+        hid = str(getattr(household, "unique_id", "household"))
         balance = float(self.savings_accounts.get(hid, 0.0))
         available = min(balance, float(self.available_funds))
         withdrawn = min(float(amount), available)
@@ -169,11 +168,11 @@ class SavingsBank(BaseAgent):
         self.available_funds -= withdrawn
 
         # Credit household sight balance (transfer from savings pool)
-        if hasattr(household, 'sight_balance'):
+        if hasattr(household, "sight_balance"):
             household.sight_balance = float(household.sight_balance) + withdrawn
-        elif hasattr(household, 'checking_account'):
+        elif hasattr(household, "checking_account"):
             household.checking_account = float(household.checking_account) + withdrawn
-        elif hasattr(household, 'balance'):
+        elif hasattr(household, "balance"):
             household.balance = float(household.balance) + withdrawn
 
         log(
@@ -183,7 +182,7 @@ class SavingsBank(BaseAgent):
         return withdrawn
 
     def get_household_savings(self, household: Any) -> float:
-        hid = str(getattr(household, 'unique_id', 'household'))
+        hid = str(getattr(household, "unique_id", "household"))
         return float(self.savings_accounts.get(hid, 0.0))
 
     # --- Lending ---
@@ -201,16 +200,16 @@ class SavingsBank(BaseAgent):
         if amount <= 0:
             return 0.0
 
-        bid = str(getattr(borrower, 'unique_id', 'borrower'))
+        bid = str(getattr(borrower, "unique_id", "borrower"))
         self.available_funds -= amount
         self.active_loans[bid] = self.active_loans.get(bid, 0.0) + amount
 
         # Credit borrower
-        if hasattr(borrower, 'request_funds_from_bank'):
+        if hasattr(borrower, "request_funds_from_bank"):
             borrower.request_funds_from_bank(amount)
-        elif hasattr(borrower, 'sight_balance'):
+        elif hasattr(borrower, "sight_balance"):
             borrower.sight_balance = float(borrower.sight_balance) + amount
-        elif hasattr(borrower, 'balance'):
+        elif hasattr(borrower, "balance"):
             borrower.balance = float(borrower.balance) + amount
 
         log(
@@ -222,17 +221,17 @@ class SavingsBank(BaseAgent):
     def receive_loan_repayment(self, borrower: Any, amount: float) -> float:
         if amount <= 0:
             return 0.0
-        bid = str(getattr(borrower, 'unique_id', 'borrower'))
+        bid = str(getattr(borrower, "unique_id", "borrower"))
         outstanding = float(self.active_loans.get(bid, 0.0))
         if outstanding <= 0:
             return 0.0
 
         # borrower must pay from sight
-        if hasattr(borrower, 'sight_balance'):
+        if hasattr(borrower, "sight_balance"):
             sight = float(borrower.sight_balance)
             paid = min(float(amount), sight, outstanding)
             borrower.sight_balance = sight - paid
-        elif hasattr(borrower, 'balance'):
+        elif hasattr(borrower, "balance"):
             sight = float(borrower.balance)
             paid = min(float(amount), sight, outstanding)
             borrower.balance = sight - paid
@@ -271,16 +270,19 @@ class SavingsBank(BaseAgent):
             if gap > 0:
                 demand += gap
 
-        alpha = float(getattr(self.config.savings_bank, "expected_credit_demand_smoothing", 0.0) or 0.0)
+        alpha = float(
+            getattr(self.config.savings_bank, "expected_credit_demand_smoothing", 0.0) or 0.0
+        )
         if alpha <= 0:
             self.expected_credit_demand = demand
         elif alpha >= 1:
             self.expected_credit_demand = demand
         else:
-            self.expected_credit_demand = (1.0 - alpha) * float(self.expected_credit_demand) + alpha * demand
+            self.expected_credit_demand = (1.0 - alpha) * float(
+                self.expected_credit_demand
+            ) + alpha * demand
 
     @property
     def total_savings(self) -> float:
         """Total savings deposits held at the bank (liability side)."""
         return float(sum(self.savings_accounts.values()))
-

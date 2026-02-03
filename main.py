@@ -103,7 +103,6 @@ def load_config(config_path: str | Path) -> SimulationConfig:
     path = Path(config_path)
     data = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else {}
 
-
     return SimulationConfig(**(data or {}))
 
 
@@ -159,7 +158,9 @@ def create_households(config: SimulationConfig) -> list[Household]:
     def _seed_age(h: Household) -> None:
         min_y = int(getattr(config.household, "initial_age_min_years", 0))
         mode_y = int(getattr(config.household, "initial_age_mode_years", 35))
-        max_y = int(getattr(config.household, "initial_age_max_years", int(config.household.max_age)))
+        max_y = int(
+            getattr(config.household, "initial_age_max_years", int(config.household.max_age))
+        )
         max_y = max(min_y, min(max_y, int(config.household.max_age)))
         mode_y = max(min_y, min(mode_y, max_y))
         age_years = float(rng.triangular(min_y, max_y, mode_y))
@@ -169,7 +170,9 @@ def create_households(config: SimulationConfig) -> list[Household]:
         count = int(config.population.num_households)
         template = config.population.household_template
         households = [
-            Household(unique_id=f"{config.HOUSEHOLD_ID_PREFIX}{i}", income=template.income, config=config)
+            Household(
+                unique_id=f"{config.HOUSEHOLD_ID_PREFIX}{i}", income=template.income, config=config
+            )
             for i in range(count)
         ]
         for h in households:
@@ -190,14 +193,22 @@ def create_companies(config: SimulationConfig) -> list[Company]:
         count = int(config.population.num_companies)
         template = config.population.company_template
         return [
-            Company(unique_id=f"{config.COMPANY_ID_PREFIX}{i}", production_capacity=template.production_capacity, config=config)
+            Company(
+                unique_id=f"{config.COMPANY_ID_PREFIX}{i}",
+                production_capacity=template.production_capacity,
+                config=config,
+            )
             for i in range(count)
         ]
 
     companies: list[Company] = []
     for i, c in enumerate(config.INITIAL_COMPANIES):
         companies.append(
-            Company(unique_id=f"{config.COMPANY_ID_PREFIX}{i}", production_capacity=c.production_capacity, config=config)
+            Company(
+                unique_id=f"{config.COMPANY_ID_PREFIX}{i}",
+                production_capacity=c.production_capacity,
+                config=config,
+            )
         )
     return companies
 
@@ -212,7 +223,9 @@ def create_retailers(config: SimulationConfig) -> list[RetailerAgent]:
                 unique_id=f"{config.RETAILER_ID_PREFIX}{i}",
                 config=config,
                 cc_limit=getattr(template, "initial_cc_limit", config.retailer.initial_cc_limit),
-                target_inventory_value=getattr(template, "target_inventory_value", config.retailer.target_inventory_value),
+                target_inventory_value=getattr(
+                    template, "target_inventory_value", config.retailer.target_inventory_value
+                ),
             )
             for i in range(count)
         ]
@@ -224,7 +237,9 @@ def create_retailers(config: SimulationConfig) -> list[RetailerAgent]:
                 unique_id=f"{config.RETAILER_ID_PREFIX}{i}",
                 config=config,
                 cc_limit=getattr(r, "initial_cc_limit", config.retailer.initial_cc_limit),
-                target_inventory_value=getattr(r, "target_inventory_value", config.retailer.target_inventory_value),
+                target_inventory_value=getattr(
+                    r, "target_inventory_value", config.retailer.target_inventory_value
+                ),
             )
         )
 
@@ -269,8 +284,12 @@ def initialize_agents(config: SimulationConfig) -> dict[str, Any]:
     num_regions = int(getattr(config.spatial, "num_regions", 1))
     region_ids = [f"region_{i}" for i in range(num_regions)]
 
-    warengeld_banks = [WarengeldBank(unique_id=f"warengeld_bank_{rid}", config=config) for rid in region_ids]
-    savings_banks = [SavingsBank(unique_id=f"savings_bank_{rid}", config=config) for rid in region_ids]
+    warengeld_banks = [
+        WarengeldBank(unique_id=f"warengeld_bank_{rid}", config=config) for rid in region_ids
+    ]
+    savings_banks = [
+        SavingsBank(unique_id=f"savings_bank_{rid}", config=config) for rid in region_ids
+    ]
     for rid, bank in zip(region_ids, warengeld_banks):
         bank.region_id = rid
     for rid, sb in zip(region_ids, savings_banks):
@@ -329,7 +348,12 @@ def initialize_agents(config: SimulationConfig) -> dict[str, Any]:
 # ---------------------------
 
 
-def _m1_proxy(households: list[Household], companies: list[Company], retailers: list[RetailerAgent], state: State) -> float:
+def _m1_proxy(
+    households: list[Household],
+    companies: list[Company],
+    retailers: list[RetailerAgent],
+    state: State,
+) -> float:
     """M1 proxy = sum of sight balances."""
 
     total = 0.0
@@ -396,7 +420,9 @@ def _settle_household_estate(
         return
 
     # 1) Gather estate
-    estate_sight = float(getattr(deceased, "sight_balance", getattr(deceased, "checking_account", 0.0)) or 0.0)
+    estate_sight = float(
+        getattr(deceased, "sight_balance", getattr(deceased, "checking_account", 0.0)) or 0.0
+    )
     estate_local = float(getattr(deceased, "local_savings", 0.0) or 0.0)
     estate_deposit = float(savings_bank.savings_accounts.get(did, 0.0) or 0.0)
 
@@ -432,14 +458,18 @@ def _settle_household_estate(
     # 3) Any remaining outstanding loan is written off (risk reserve, then liquidity)
     remaining_loan = float(savings_bank.active_loans.get(did, 0.0) or 0.0)
     if remaining_loan > 0:
-        reserve_cover = min(remaining_loan, float(getattr(savings_bank, "risk_reserve", 0.0) or 0.0))
+        reserve_cover = min(
+            remaining_loan, float(getattr(savings_bank, "risk_reserve", 0.0) or 0.0)
+        )
         if reserve_cover > 0:
             savings_bank.risk_reserve = float(savings_bank.risk_reserve) - reserve_cover
             remaining_loan -= reserve_cover
 
         if remaining_loan > 0:
             # Reduce liquidity (bank absorbs loss)
-            absorb = min(remaining_loan, float(getattr(savings_bank, "available_funds", 0.0) or 0.0))
+            absorb = min(
+                remaining_loan, float(getattr(savings_bank, "available_funds", 0.0) or 0.0)
+            )
             savings_bank.available_funds = float(savings_bank.available_funds) - absorb
             remaining_loan -= absorb
 
@@ -452,22 +482,30 @@ def _settle_household_estate(
 
     # Sight + local savings transfer into receiver sight.
     if estate_sight > 0:
-        receiver.sight_balance = float(getattr(receiver, "sight_balance", 0.0)) + estate_sight * share
+        receiver.sight_balance = (
+            float(getattr(receiver, "sight_balance", 0.0)) + estate_sight * share
+        )
         if share < 1.0:
             state.sight_balance = float(state.sight_balance) + estate_sight * (1.0 - share)
 
     if estate_local > 0:
-        receiver.sight_balance = float(getattr(receiver, "sight_balance", 0.0)) + estate_local * share
+        receiver.sight_balance = (
+            float(getattr(receiver, "sight_balance", 0.0)) + estate_local * share
+        )
         if share < 1.0:
             state.sight_balance = float(state.sight_balance) + estate_local * (1.0 - share)
 
     # Deposits: move the savings account liability from deceased to receiver.
     if estate_deposit > 0:
         rid = str(getattr(receiver, "unique_id", "state"))
-        savings_bank.savings_accounts[rid] = float(savings_bank.savings_accounts.get(rid, 0.0)) + estate_deposit * share
+        savings_bank.savings_accounts[rid] = (
+            float(savings_bank.savings_accounts.get(rid, 0.0)) + estate_deposit * share
+        )
         if share < 1.0:
             # Remaining share: withdraw to state sight for simplicity
-            savings_bank.savings_accounts["state"] = float(savings_bank.savings_accounts.get("state", 0.0)) + estate_deposit * (1.0 - share)
+            savings_bank.savings_accounts["state"] = float(
+                savings_bank.savings_accounts.get("state", 0.0)
+            ) + estate_deposit * (1.0 - share)
 
     # Remove deceased deposit entry.
     savings_bank.savings_accounts.pop(did, None)
@@ -489,8 +527,12 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
     state: State = agents["state"]
     warengeld_banks: list[WarengeldBank] = agents.get("warengeld_banks", [agents["warengeld_bank"]])
     savings_banks: list[SavingsBank] = agents.get("savings_banks", [agents["savings_bank"]])
-    banks_by_region: dict[str, WarengeldBank] = agents.get("banks_by_region", {"region_0": warengeld_banks[0]})
-    savings_by_region: dict[str, SavingsBank] = agents.get("savings_by_region", {"region_0": savings_banks[0]})
+    banks_by_region: dict[str, WarengeldBank] = agents.get(
+        "banks_by_region", {"region_0": warengeld_banks[0]}
+    )
+    savings_by_region: dict[str, SavingsBank] = agents.get(
+        "savings_by_region", {"region_0": savings_banks[0]}
+    )
     clearing: ClearingAgent = agents["clearing_agent"]
     labor_market: LaborMarket = agents["labor_market"]
     environmental_agency: EnvironmentalAgency = agents["environmental_agency"]
@@ -561,14 +603,16 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
 
     # Companies: keep numeric IDs for newly founded firms (Milestone 1);
     # Milestone 5 tightens this to *all* company births incl. splits.
-    configured_companies = int(getattr(getattr(config, "population", None), "num_companies", 0) or 0)
+    configured_companies = int(
+        getattr(getattr(config, "population", None), "num_companies", 0) or 0
+    )
     next_company_idx = configured_companies if configured_companies > 0 else len(companies)
     prefix = str(config.COMPANY_ID_PREFIX)
     numeric_suffixes: list[int] = []
     for c in companies:
         uid = str(getattr(c, "unique_id", ""))
         if uid.startswith(prefix):
-            tail = uid[len(prefix):]
+            tail = uid[len(prefix) :]
             if tail.isdigit():
                 numeric_suffixes.append(int(tail))
     if numeric_suffixes:
@@ -613,7 +657,7 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
             max_age_years = max(1e-9, max_age_days / float(days_per_year))
             age_frac = min(1.0, max(0.0, age_years / max_age_years))
 
-            annual_hazard = base_annual + senesce_annual * (age_frac ** shape)
+            annual_hazard = base_annual + senesce_annual * (age_frac**shape)
             daily_p = min(1.0, max(0.0, annual_hazard) / float(days_per_year))
 
             death_now = age_days >= max_age_days or (daily_p > 0 and random.random() < daily_p)
@@ -628,7 +672,9 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
                     for hh in households
                     if hh is not h and getattr(hh, "region_id", "region_0") == region_id
                 ]
-                younger = [hh for hh in heir_candidates if int(getattr(hh, "age_days", 0) or 0) < age_days]
+                younger = [
+                    hh for hh in heir_candidates if int(getattr(hh, "age_days", 0) or 0) < age_days
+                ]
                 if younger:
                     heir_candidates = younger
                 heir = random.choice(heir_candidates) if heir_candidates else None
@@ -696,7 +742,14 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
         # Assumption: founding is transfer-funded by a household in the same region (no money creation).
         opportunity_by_region: dict[str, float] = {}
         for r in retailers:
-            target = float(getattr(r, "target_inventory_value", getattr(config.retailer, "target_inventory_value", 0.0)) or 0.0)
+            target = float(
+                getattr(
+                    r,
+                    "target_inventory_value",
+                    getattr(config.retailer, "target_inventory_value", 0.0),
+                )
+                or 0.0
+            )
             current = float(getattr(r, "inventory_value", 0.0) or 0.0)
             shortage = max(0.0, target - current)
             rid = getattr(r, "region_id", "region_0")
@@ -708,7 +761,9 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
         target_by_region: dict[str, float] = {}
         for r in retailers:
             rid = getattr(r, "region_id", "region_0")
-            target_by_region[rid] = target_by_region.get(rid, 0.0) + float(getattr(r, "target_inventory_value", 0.0) or 0.0)
+            target_by_region[rid] = target_by_region.get(rid, 0.0) + float(
+                getattr(r, "target_inventory_value", 0.0) or 0.0
+            )
 
         for rid, shortage in list(opportunity_by_region.items()):
             denom = max(1e-9, float(target_by_region.get(rid, 0.0) or 0.0))
@@ -718,18 +773,26 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
         found_base = float(getattr(config.company, "founding_base_annual", 0.0) or 0.0)
         found_sens = float(getattr(config.company, "founding_opportunity_sensitivity", 0.0) or 0.0)
         min_capital = float(getattr(config.company, "founding_min_capital", 0.0) or 0.0)
-        share_capital = float(getattr(config.company, "founding_capital_share_of_founder_wealth", 0.0) or 0.0)
+        share_capital = float(
+            getattr(config.company, "founding_capital_share_of_founder_wealth", 0.0) or 0.0
+        )
 
         for region_id in list(banks_by_region.keys()):
             opportunity = float(opportunity_by_region.get(region_id, 0.0) or 0.0)
             p_found = (found_base / float(max(1, days_per_year))) * (1.0 + found_sens * opportunity)
             if p_found > 0 and random.random() < min(1.0, p_found):
                 sb = savings_by_region.get(region_id, savings_banks[0])
-                region_households = [h for h in households if getattr(h, "region_id", "region_0") == region_id]
+                region_households = [
+                    h for h in households if getattr(h, "region_id", "region_0") == region_id
+                ]
                 if region_households:
                     # Choose the wealthiest founder to reduce random collapse.
                     def _wealth(hh: Household) -> float:
-                        return float(getattr(hh, "sight_balance", 0.0) or 0.0) + float(getattr(hh, "local_savings", 0.0) or 0.0) + float(sb.savings_accounts.get(hh.unique_id, 0.0) or 0.0)
+                        return (
+                            float(getattr(hh, "sight_balance", 0.0) or 0.0)
+                            + float(getattr(hh, "local_savings", 0.0) or 0.0)
+                            + float(sb.savings_accounts.get(hh.unique_id, 0.0) or 0.0)
+                        )
 
                     founder = max(region_households, key=_wealth)
                     founder_wealth = _wealth(founder)
@@ -792,13 +855,27 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
                 regions = [rid for rid in banks_by_region.keys() if rid]
                 if regions:
                     region_id = random.choice(regions)
-                    region_companies = [c for c in companies if getattr(c, "region_id", "region_0") == region_id]
-                    targets = [c for c in region_companies if float(getattr(c, "sight_balance", 0.0) or 0.0) < distress]
-                    acquirers = [c for c in region_companies if float(getattr(c, "sight_balance", 0.0) or 0.0) >= min_acq]
+                    region_companies = [
+                        c for c in companies if getattr(c, "region_id", "region_0") == region_id
+                    ]
+                    targets = [
+                        c
+                        for c in region_companies
+                        if float(getattr(c, "sight_balance", 0.0) or 0.0) < distress
+                    ]
+                    acquirers = [
+                        c
+                        for c in region_companies
+                        if float(getattr(c, "sight_balance", 0.0) or 0.0) >= min_acq
+                    ]
 
                     if targets and acquirers:
-                        target = min(targets, key=lambda c: float(getattr(c, "sight_balance", 0.0) or 0.0))
-                        acquirer = max(acquirers, key=lambda c: float(getattr(c, "sight_balance", 0.0) or 0.0))
+                        target = min(
+                            targets, key=lambda c: float(getattr(c, "sight_balance", 0.0) or 0.0)
+                        )
+                        acquirer = max(
+                            acquirers, key=lambda c: float(getattr(c, "sight_balance", 0.0) or 0.0)
+                        )
                         if target is not acquirer:
                             # Transfer employees and assets
                             for e in list(getattr(target, "employees", [])):
@@ -807,9 +884,17 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
                                 e.employer_id = acquirer.unique_id
                                 e.employed = True
 
-                            acquirer.sight_balance = float(getattr(acquirer, "sight_balance", 0.0) or 0.0) + float(getattr(target, "sight_balance", 0.0) or 0.0)
-                            acquirer.finished_goods_units = float(getattr(acquirer, "finished_goods_units", 0.0) or 0.0) + float(getattr(target, "finished_goods_units", 0.0) or 0.0)
-                            acquirer.production_capacity = float(getattr(acquirer, "production_capacity", 0.0) or 0.0) + float(getattr(target, "production_capacity", 0.0) or 0.0) * synergy
+                            acquirer.sight_balance = float(
+                                getattr(acquirer, "sight_balance", 0.0) or 0.0
+                            ) + float(getattr(target, "sight_balance", 0.0) or 0.0)
+                            acquirer.finished_goods_units = float(
+                                getattr(acquirer, "finished_goods_units", 0.0) or 0.0
+                            ) + float(getattr(target, "finished_goods_units", 0.0) or 0.0)
+                            acquirer.production_capacity = (
+                                float(getattr(acquirer, "production_capacity", 0.0) or 0.0)
+                                + float(getattr(target, "production_capacity", 0.0) or 0.0)
+                                * synergy
+                            )
 
                             companies = [c for c in companies if c is not target]
                             company_deaths_this_step += 1
@@ -830,7 +915,20 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
         agents["companies"] = companies
 
         # 2) Labor market matching (same-step)
-        labor_market.step(current_step=step)
+        #
+        # IMPORTANT: Pass the latest known price index into the labor market so
+        # wage adjustment is consistent with the macro price dynamics tracked by
+        # the MetricsCollector (doc/specs.md: real wages vs. price level).
+        #
+        # We use the previous step's price index because global metrics for the
+        # current step are computed later in the pipeline.
+        if step > 0:
+            last_price_index = float(
+                collector.latest_global_metrics.get("price_index", config.market.price_index_base)
+            )
+        else:
+            last_price_index = float(config.market.price_index_base)
+        labor_market.step(current_step=step, price_index=last_price_index)
 
         # 3) Firms: now run operations + lifecycle using the updated employee lists
         new_companies = []
@@ -839,7 +937,11 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
             # Run the remainder of company.step but skip the already-done parts.
             # We call the existing step for maintainability, but temporarily disable
             # the zero-staff grace triggering before matching.
-            result = c.step(current_step=step, state=state, savings_bank=savings_by_region.get(c.region_id, savings_banks[0]))
+            result = c.step(
+                current_step=step,
+                state=state,
+                savings_bank=savings_by_region.get(c.region_id, savings_banks[0]),
+            )
 
             if isinstance(result, Company):
                 company_births_this_step += 1
@@ -895,7 +997,9 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
             # Attach for metrics: households report savings as local + bank deposits.
             h._savings_bank_ref = h_savings_bank
 
-            maybe_new = h.step(current_step=step, clock=clock, savings_bank=h_savings_bank, retailers=h_retailers)
+            maybe_new = h.step(
+                current_step=step, clock=clock, savings_bank=h_savings_bank, retailers=h_retailers
+            )
 
             if isinstance(maybe_new, Household):
                 births_this_step += 1
@@ -937,7 +1041,7 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
         for r in retailers:
             if hasattr(r, "push_cogs_history"):
                 r.push_cogs_history(window_days=int(config.bank.cc_limit_rolling_window_days))
-    
+
         # 7) Monthly policies
         if clock.is_month_end(step):
             # Bank account fees (no interest) ... by region.
@@ -948,38 +1052,49 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
                 bank_accounts += [a for a in companies if a.region_id == rid]
                 bank_accounts += [a for a in retailers if a.region_id == rid]
                 bank.charge_account_fees(bank_accounts)
-    
+
             # State taxes and budgets
             state.step([*companies, *retailers])
             # Spend state budgets back into the economy to keep circulation alive.
             state.spend_budgets(households, companies, retailers)
-    
+
             # Sight factor decay (excess sight balances)
             clearing.apply_sight_decay([*households, *companies, *retailers, state])
-    
+
             # Savings bank bookkeeping
             for region_id, sb in savings_by_region.items():
                 region_companies = [
-                    c for c in companies if str(getattr(c, "region_id", "region_0")) == str(region_id)
+                    c
+                    for c in companies
+                    if str(getattr(c, "region_id", "region_0")) == str(region_id)
                 ]
                 sb.step(current_step=step, companies=region_companies)
-    
+
         # 8) Periodic clearing audits / reserve adjustments
         if clock.is_period_end(int(config.clearing.audit_interval), step):
             companies_by_id = {c.unique_id: c for c in companies}
             for bank in warengeld_banks:
-                local_retailers = [r for r in retailers if r.region_id == getattr(bank, "region_id", "region_0")]
+                local_retailers = [
+                    r for r in retailers if r.region_id == getattr(bank, "region_id", "region_0")
+                ]
                 # Bank IDs are suffixed with region_id; use string match.
                 if not local_retailers:
                     # fallback: audit all
                     local_retailers = retailers
-                clearing.audit_bank(bank=bank, retailers=local_retailers, companies_by_id=companies_by_id, current_step=step)
+                clearing.audit_bank(
+                    bank=bank,
+                    retailers=local_retailers,
+                    companies_by_id=companies_by_id,
+                    current_step=step,
+                )
                 clearing.enforce_reserve_bounds(bank=bank)
-    
+
         # 9) Environment (optional) - run monthly to match the global calendar.
         if clock.is_month_end(step):
-            environmental_agency.step(current_step=step, agents=[*companies, *retailers], state=state)
-    
+            environmental_agency.step(
+                current_step=step, agents=[*companies, *retailers], state=state
+            )
+
         # Collect metrics
         collector.collect_household_metrics(households, step)
         collector.collect_company_metrics(companies, step)
@@ -989,7 +1104,7 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
         collector.collect_state_metrics("state", state, households, companies, step)
         collector.collect_market_metrics(labor_market, step)
         collector.calculate_global_metrics(step)
-    
+
         # Inject live counts + lifecycle events into macro metrics.
         if step in collector.global_metrics:
             collector.global_metrics[step].update(
@@ -1003,13 +1118,14 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
                     "company_deaths": company_deaths_this_step,
                 }
             )
-    
+
         # Minimal progress update (single line, overwritten).
         if progress_enabled:
             is_last = (step + 1) == steps
             now = time.time()
             if is_last or (
-                (step + 1) % progress_every_steps == 0 and (now - last_progress_ts) >= progress_every_seconds
+                (step + 1) % progress_every_steps == 0
+                and (now - last_progress_ts) >= progress_every_seconds
             ):
                 elapsed = now - start_ts
                 done = step + 1
@@ -1017,7 +1133,7 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
                 remaining = (steps - done) / rate if rate > 0 else float("nan")
                 pct = (done / steps * 100.0) if steps > 0 else 100.0
                 bar = _progress_bar(done, steps, width=22)
-    
+
                 m1 = _m1_proxy(households, companies, retailers, state)
                 status = (
                     f"{bar} {pct:6.2f}%  step {done}/{steps}  "
@@ -1025,27 +1141,27 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
                     f"M1 {_format_compact_number(m1):>8}  "
                     f"elapsed {_format_duration(elapsed)}  eta {_format_duration(remaining)}"
                 )
-    
+
                 color = _progress_color(pct, progress_use_ansi)
                 status = _ansi(status, color, progress_use_ansi)
-    
+
                 # Carriage return to overwrite the previous status line.
                 # Flush immediately so it stays live even when stdout is buffered.
                 sys.stdout.write("\r" + status)
                 sys.stdout.flush()
-    
+
                 # Ensure final state ends with a newline.
                 if is_last:
                     sys.stdout.write("\n")
                     sys.stdout.flush()
-    
+
                 last_progress_ts = now
-    
+
         if step % max(1, steps // 10) == 0:
             m1 = _m1_proxy(households, companies, retailers, state)
             total_cc = sum(b.total_cc_exposure for b in warengeld_banks)
             log(f"Step {step}: M1 proxy={m1:.2f}, CC exposure={total_cc:.2f}")
-    
+
     log("Simulation finished.")
     collector.export_metrics()
     # Expose for validation/analysis scripts.
@@ -1061,7 +1177,9 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
 def main() -> None:
     cfg = _resolve_config_from_args_or_env()
     # Ensure logging is configured before any agents emit logs.
-    setup_logger(level=cfg.logging_level, log_file=cfg.log_file, log_format=cfg.log_format, file_mode="w")
+    setup_logger(
+        level=cfg.logging_level, log_file=cfg.log_file, log_format=cfg.log_format, file_mode="w"
+    )
     run_simulation(cfg)
 
 

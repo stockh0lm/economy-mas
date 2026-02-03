@@ -1,15 +1,23 @@
 """Enhanced base agent class with common functionality and metrics support."""
 
 from typing import Any, ClassVar, Final
-from agents.protocols import AgentWithBalance, AgentWithImpact, HasUniqueID
+
 from agents.logging_utils import create_agent_logger
-from config import SimulationConfig, CONFIG_MODEL
+from agents.protocols import AgentWithBalance, AgentWithImpact, HasUniqueID
+from config import CONFIG_MODEL, SimulationConfig
 from logger import log
+
 
 class BaseAgent(HasUniqueID):
     """Enhanced base agent class providing common functionality for all agents."""
 
-    def __init__(self, unique_id: str, config: SimulationConfig | None = None, *, region_id: str | None = None) -> None:
+    def __init__(
+        self,
+        unique_id: str,
+        config: SimulationConfig | None = None,
+        *,
+        region_id: str | None = None,
+    ) -> None:
         """
         Initialize a base agent with common attributes.
 
@@ -74,8 +82,8 @@ class BaseAgent(HasUniqueID):
             "state": {
                 "active": self.active,
                 "created_at_step": self.created_at_step,
-                "last_updated_step": self.last_updated_step
-            }
+                "last_updated_step": self.last_updated_step,
+            },
         }
 
     def get_metric(self, name: str, category: str = "default") -> Any:
@@ -128,7 +136,7 @@ class BaseAgent(HasUniqueID):
             Configuration value or default
         """
         try:
-            keys = path.split('.')
+            keys = path.split(".")
             value = self.config
             for key in keys:
                 value = getattr(value, key, default)

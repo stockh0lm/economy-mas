@@ -47,15 +47,21 @@ class Household(BaseAgent):
         self.local_savings: float = 0.0
 
         # --- Household attributes ---
-        self.income: float = float(income if income is not None else self.config.household.base_income)
+        self.income: float = float(
+            income if income is not None else self.config.household.base_income
+        )
         self.land_area: float = float(land_area if land_area is not None else 0.0)
-        self.environmental_impact: float = float(environmental_impact if environmental_impact is not None else 0.0)
+        self.environmental_impact: float = float(
+            environmental_impact if environmental_impact is not None else 0.0
+        )
 
         # Lifecycle
         # Internal time-base: simulation steps are days.
         self.age_days: int = 0
         self.max_age_years: int = int(self.config.household.max_age)
-        self.max_age_days: int = int(self.max_age_years * getattr(self.config.time, "days_per_year", 360))
+        self.max_age_days: int = int(
+            self.max_age_years * getattr(self.config.time, "days_per_year", 360)
+        )
 
         # Backwards-compatible: expose age as whole years.
         self.age: int = 0
@@ -148,7 +154,6 @@ class Household(BaseAgent):
         We keep this property for typing/clarity in generic accounting code.
         """
         return float(self.local_savings)
-
 
     @property
     def balance(self) -> float:
@@ -246,7 +251,6 @@ class Household(BaseAgent):
         log(f"Household {self.unique_id}: Saved {deposited:.2f}.", level="INFO")
         return float(deposited)
 
-
     def _repay_savings_loans(self, savings_bank: SavingsBank | None) -> float:
         """Repay part of outstanding savings-bank loans from checking."""
         if savings_bank is None:
@@ -258,12 +262,13 @@ class Household(BaseAgent):
         if outstanding <= 0:
             return 0.0
 
-        repay_budget = max(0.0, self.sight_balance) * float(self.config.household.loan_repayment_rate)
+        repay_budget = max(0.0, self.sight_balance) * float(
+            self.config.household.loan_repayment_rate
+        )
         paid = savings_bank.receive_loan_repayment(self, repay_budget)
         if paid > 0:
             log(f"Household {self.unique_id}: Repaid {paid:.2f}.", level="INFO")
         return paid
-
 
     def _handle_childrearing_costs(self, savings_bank: SavingsBank | None) -> float:
         """Withdraw savings to cover a one-off child cost during growth.
@@ -319,7 +324,7 @@ class Household(BaseAgent):
 
         # Maintain rolling consumption history (used by Clearing for sight allowance).
         self.consumption_history.append(float(spent))
-        window = int(getattr(self.config.clearing, 'sight_allowance_window_days', 30))
+        window = int(getattr(self.config.clearing, "sight_allowance_window_days", 30))
         if window > 0 and len(self.consumption_history) > window:
             self.consumption_history = self.consumption_history[-window:]
 
@@ -347,7 +352,8 @@ class Household(BaseAgent):
         if total_savings <= 0:
             disposable = max(
                 0.0,
-                float(self.sight_balance) - float(getattr(self.config.household, "transaction_buffer", 0.0)),
+                float(self.sight_balance)
+                - float(getattr(self.config.household, "transaction_buffer", 0.0)),
             )
             if disposable <= 0:
                 return None
@@ -447,7 +453,7 @@ class Household(BaseAgent):
         income_rel = income / base_income if base_income > 0 else 1.0
         income_elasticity = float(getattr(cfg, "fertility_income_sensitivity", 0.0) or 0.0)
         # Bound to avoid extreme behavior.
-        income_factor = max(0.25, min(4.0, income_rel ** income_elasticity))
+        income_factor = max(0.25, min(4.0, income_rel**income_elasticity))
 
         # Wealth includes sight + local savings + bank deposits.
         bank_savings = float(savings_bank.savings_accounts.get(self.unique_id, 0.0))
@@ -455,7 +461,7 @@ class Household(BaseAgent):
         trigger = float(getattr(cfg, "savings_growth_trigger", 1.0) or 1.0)
         wealth_rel = wealth / max(1.0, trigger)
         wealth_elasticity = float(getattr(cfg, "fertility_wealth_sensitivity", 0.0) or 0.0)
-        wealth_factor = max(0.25, min(4.0, wealth_rel ** wealth_elasticity))
+        wealth_factor = max(0.25, min(4.0, wealth_rel**wealth_elasticity))
 
         base_annual = float(getattr(cfg, "fertility_base_annual", 0.0) or 0.0)
         annual = base_annual * age_factor * income_factor * wealth_factor
@@ -554,13 +560,18 @@ class Household(BaseAgent):
 
         # Secondary trigger: sustained disposable sight balances when saving is low.
         # This prevents a systemic "no growth" outcome when savings_rate=0.
-        disposable_sight = max(0.0, float(self.sight_balance) - float(self.config.household.transaction_buffer))
+        disposable_sight = max(
+            0.0, float(self.sight_balance) - float(self.config.household.transaction_buffer)
+        )
         wealth_trigger = float(getattr(self.config.household, "sight_growth_trigger", 0.0) or 0.0)
         if wealth_trigger <= 0:
             # Default heuristic: 5x base_income
             wealth_trigger = 5.0 * float(self.config.household.base_income)
 
-        if total_savings >= float(self.config.household.savings_growth_trigger) or disposable_sight >= wealth_trigger:
+        if (
+            total_savings >= float(self.config.household.savings_growth_trigger)
+            or disposable_sight >= wealth_trigger
+        ):
             self.growth_phase = True
             self.child_cost_covered = False
         else:

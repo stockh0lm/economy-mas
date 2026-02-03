@@ -72,14 +72,17 @@ def test_calculate_global_metrics_tracks_macro_outputs() -> None:
 
     metrics = collector.global_metrics[1]
 
-    assert math.isclose(metrics["total_money_supply"], 395.0)
+    # total_money_supply ~= m2_proxy. With state deposits included in the money
+    # aggregates, broad money includes the state's budget buckets as well.
+    assert math.isclose(metrics["total_money_supply"], 414.0)
     assert math.isclose(metrics["gdp"], 100.0)
     assert math.isclose(metrics["household_consumption"], 30.0)
     assert math.isclose(metrics["consumption_pct_gdp"], 0.3)
 
     # Preisniveau-Dynamik konvergiert gegen Gleichgewicht (siehe metrics._price_dynamics).
     # Referenz: doc/issues.md Abschnitt 4/5 → „Hyperinflation / Numerische Überläufe ...“.
-    expected_price_index = 133.75
+    # Including state deposits increases money_for_price, shifting equilibrium.
+    expected_price_index = 134.7
     assert math.isclose(metrics["price_index"], expected_price_index, rel_tol=1e-9)
     assert math.isclose(metrics["inflation_rate"], (expected_price_index - 120.0) / 120.0, rel_tol=1e-9)
 
@@ -147,7 +150,8 @@ def test_calculate_global_metrics_accumulates_multiple_states_and_bankruptcies()
     collector.calculate_global_metrics(step=3)
     metrics = collector.global_metrics[3]
 
-    assert math.isclose(metrics["total_money_supply"], 140.0)
+    # Includes both states' deposits in broad money.
+    assert math.isclose(metrics["total_money_supply"], 159.5)
     assert math.isclose(metrics["tax_revenue"], 12.0)
     assert math.isclose(metrics["government_spending"], 7.5)
     assert math.isclose(metrics["bankruptcy_rate"], 0.5)

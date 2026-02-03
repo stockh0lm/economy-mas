@@ -69,7 +69,9 @@ class InventoryLot:
     def carrying_unit_value(self, *, config: SimulationConfig) -> float:
         if self.is_unsellable(config=config):
             return 0.0
-        base = self._base_unit_value(valuation_method=str(config.retailer.inventory_valuation_method))
+        base = self._base_unit_value(
+            valuation_method=str(config.retailer.inventory_valuation_method)
+        )
         return max(0.0, base * float(self.obsolescence_factor))
 
     def carrying_value(self, *, config: SimulationConfig) -> float:
@@ -96,7 +98,9 @@ class RetailerAgent(BaseAgent):
 
         # Core accounts
         self.sight_balance: float = float(initial_sight_balance)
-        self.cc_limit: float = float(cc_limit if cc_limit is not None else self.config.retailer.initial_cc_limit)
+        self.cc_limit: float = float(
+            cc_limit if cc_limit is not None else self.config.retailer.initial_cc_limit
+        )
         # Negative = drawn Kontokorrent
         self.cc_balance: float = 0.0
 
@@ -110,7 +114,9 @@ class RetailerAgent(BaseAgent):
         # restocks or when a legacy test sets only aggregate fields.
         self.inventory_lots: list[InventoryLot] = []
         self.target_inventory_value: float = float(
-            target_inventory_value if target_inventory_value is not None else self.config.retailer.target_inventory_value
+            target_inventory_value
+            if target_inventory_value is not None
+            else self.config.retailer.target_inventory_value
         )
 
         # Reserve for write-downs (Warenwertberichtigungskonto)
@@ -122,13 +128,16 @@ class RetailerAgent(BaseAgent):
         # Audit risk score in [0,1] used by the bank as a CC-limit modifier
         self.audit_risk_score: float = 0.0
 
-
         # Land/environmental variables (used by State taxes / EnvironmentalAgency)
         self.land_area: float = float(
-            land_area if land_area is not None else getattr(self.config.retailer, 'initial_land_area', 20.0)
+            land_area
+            if land_area is not None
+            else getattr(self.config.retailer, "initial_land_area", 20.0)
         )
         self.environmental_impact: float = float(
-            environmental_impact if environmental_impact is not None else getattr(self.config.retailer, 'environmental_impact', 1.0)
+            environmental_impact
+            if environmental_impact is not None
+            else getattr(self.config.retailer, "environmental_impact", 1.0)
         )
 
         # Book-keeping
@@ -208,7 +217,9 @@ class RetailerAgent(BaseAgent):
     # --- Inventory + pricing ---
     def _sync_inventory_totals_from_lots(self) -> None:
         self.inventory_units = float(sum(float(l.units) for l in self.inventory_lots))
-        self.inventory_value = float(sum(float(l.carrying_value(config=self.config)) for l in self.inventory_lots))
+        self.inventory_value = float(
+            sum(float(l.carrying_value(config=self.config)) for l in self.inventory_lots)
+        )
 
         # Defensive clamps: small negatives can appear from float ops.
         if self.inventory_units < 0:
@@ -275,7 +286,13 @@ class RetailerAgent(BaseAgent):
 
     def _sellable_units(self) -> float:
         self._ensure_legacy_lot()
-        return float(sum(float(l.units) for l in self.inventory_lots if not l.is_unsellable(config=self.config)))
+        return float(
+            sum(
+                float(l.units)
+                for l in self.inventory_lots
+                if not l.is_unsellable(config=self.config)
+            )
+        )
 
     def _consume_units_fifo(self, quantity: float) -> float:
         """Consume inventory FIFO and return carried cost value.
@@ -324,7 +341,9 @@ class RetailerAgent(BaseAgent):
         return self.last_unit_price
 
     # --- Warengeld primitives ---
-    def restock_goods(self, companies: list[Company], bank: WarengeldBank, current_step: int) -> float:
+    def restock_goods(
+        self, companies: list[Company], bank: WarengeldBank, current_step: int
+    ) -> float:
         """Order goods from producers if inventory is below reorder point.
 
         Money creation happens inside `bank.finance_goods_purchase`.
@@ -342,6 +361,25 @@ class RetailerAgent(BaseAgent):
         if desired_value <= 0:
             return 0.0
 
+        # IMPORTANT (stability / no-deadlock):
+        # When the CC limit binds, we must *scale down* the order to the
+        # remaining headroom, instead of trying a fixed target order and
+        # getting denied.
+        #
+        # Otherwise the system can enter a hard deadlock:
+        # - inventory hits 0
+        # - retailer at/near cc_limit cannot finance the (fixed) restock order
+        # - no inventory => no sales => no repayment => no headroom => permanent stall
+        #
+        # Headroom formula for negative cc balances:
+        #   cc_balance - amount >= -cc_limit  =>  amount <= cc_limit + cc_balance
+        #
+        # (cc_balance is typically <= 0; if it's positive, headroom is large.)
+        headroom = max(0.0, float(self.cc_limit) + float(self.cc_balance))
+        order_budget = min(float(desired_value), float(headroom))
+        if order_budget <= 1e-9:
+            return 0.0
+
         producer = random.choice(companies)
 
         # Translate desired value into desired quantity at producer's unit price.
@@ -349,7 +387,7 @@ class RetailerAgent(BaseAgent):
         if unit_price <= 0:
             return 0.0
 
-        desired_qty = desired_value / unit_price
+        desired_qty = order_budget / unit_price
         sold_qty, sold_value = producer.sell_to_retailer(desired_qty)
         if sold_value <= 0 or sold_qty <= 0:
             return 0.0
@@ -362,7 +400,8 @@ class RetailerAgent(BaseAgent):
         )
 
         if financed <= 0:
-            # If financing is denied (cc limit), revert goods transfer.
+            # Financing *should* succeed because we pre-capped to headroom.
+            # Keep defensive revert for rounding / unexpected bank policy changes.
             producer.finished_goods_units += sold_qty
             return 0.0
 
@@ -542,7 +581,7 @@ class RetailerAgent(BaseAgent):
 
             new_value = lot.carrying_value(config=self.config)
             if new_value < old_value:
-                write_down_total += (old_value - new_value)
+                write_down_total += old_value - new_value
 
         if write_down_total <= 0:
             return 0.0
@@ -574,7 +613,6 @@ class RetailerAgent(BaseAgent):
 
         return destroyed
 
-
     def apply_inventory_write_downs(self, *, current_step: int, bank: "WarengeldBank") -> float:
         """Abschreibungen auf Warenlager (Geldvernichtung) + CC-Exposure-Anpassung.
 
@@ -588,8 +626,9 @@ class RetailerAgent(BaseAgent):
             bank.write_down_cc(self, destroyed, reason="inventory_write_downs")
         return float(destroyed)
 
-
-    def settle_accounts(self, bank: WarengeldBank, current_step: int | None = None) -> dict[str, float]:
+    def settle_accounts(
+        self, bank: WarengeldBank, current_step: int | None = None
+    ) -> dict[str, float]:
         """End-of-day settlements.
 
         This is where the *extinguishing* side of the Warengeld cycle primarily happens.
@@ -600,7 +639,6 @@ class RetailerAgent(BaseAgent):
         bank.enforce_inventory_backing(self)
 
         return {"repaid": float(repaid), "inventory_write_down": float(destroyed)}
-
 
     def step(
         self,

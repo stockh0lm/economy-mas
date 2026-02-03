@@ -20,10 +20,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Iterable
 
+from agents.base_agent import BaseAgent
 from config import CONFIG_MODEL, SimulationConfig
 from logger import log
-
-from agents.base_agent import BaseAgent
 
 
 @dataclass(frozen=True)
@@ -113,8 +112,9 @@ class WarengeldBank(BaseAgent):
         if hasattr(retailer, "cc_limit"):
             retailer.cc_limit = limit
 
-
-    def recompute_cc_limits(self, retailers: Iterable[Any], *, current_step: int) -> dict[str, float]:
+    def recompute_cc_limits(
+        self, retailers: Iterable[Any], *, current_step: int
+    ) -> dict[str, float]:
         """Recompute Kontokorrent limits from rolling COGS and audit risk.
 
         Referenz: doc/issues.md Abschnitt 2 → „cc_limit-Policy / partnerschaftlicher Rahmen“.
@@ -138,7 +138,9 @@ class WarengeldBank(BaseAgent):
             # Rolling monthly COGS (retailer-side helper).
             avg_monthly_cogs = 0.0
             if hasattr(r, "avg_monthly_cogs"):
-                avg_monthly_cogs = float(r.avg_monthly_cogs(window_days=window_days, days_per_month=days_per_month))
+                avg_monthly_cogs = float(
+                    r.avg_monthly_cogs(window_days=window_days, days_per_month=days_per_month)
+                )
 
             base_limit = max(0.0, multiplier * avg_monthly_cogs)
 
@@ -158,9 +160,20 @@ class WarengeldBank(BaseAgent):
             if proposed_limit < current_limit:
                 # Partnerschaftlich: der Retailer kann Decreases (starke) ablehnen.
                 if hasattr(r, "accept_cc_limit_proposal"):
-                    ok = bool(r.accept_cc_limit_proposal(proposed_limit, current_limit=current_limit, current_step=current_step, max_monthly_decrease=max_decrease))
+                    ok = bool(
+                        r.accept_cc_limit_proposal(
+                            proposed_limit,
+                            current_limit=current_limit,
+                            current_step=current_step,
+                            max_monthly_decrease=max_decrease,
+                        )
+                    )
                 else:
-                    ok = ((current_limit - proposed_limit) / current_limit) <= max_decrease if current_limit > 0 else True
+                    ok = (
+                        ((current_limit - proposed_limit) / current_limit) <= max_decrease
+                        if current_limit > 0
+                        else True
+                    )
                 if not ok:
                     accepted_limit = current_limit
 
@@ -170,8 +183,11 @@ class WarengeldBank(BaseAgent):
             updated[retailer_id] = accepted_limit
 
         return updated
+
     # --- Emission (money creation) ---
-    def finance_goods_purchase(self, *, retailer: Any, seller: Any, amount: float, current_step: int) -> float:
+    def finance_goods_purchase(
+        self, *, retailer: Any, seller: Any, amount: float, current_step: int
+    ) -> float:
         """Finance a retailer's goods purchase (THIS CREATES MONEY).
 
         Bookings:
@@ -217,7 +233,9 @@ class WarengeldBank(BaseAgent):
         retailer.cc_balance = cc_balance - amount
         self.credit_lines[retailer_id] = self.credit_lines.get(retailer_id, 0.0) + amount
 
-        self.goods_purchase_ledger.append(GoodsPurchaseRecord(current_step, retailer_id, seller_id, float(amount)))
+        self.goods_purchase_ledger.append(
+            GoodsPurchaseRecord(current_step, retailer_id, seller_id, float(amount))
+        )
 
         log(
             f"WarengeldBank: financed goods purchase {amount:.2f} for {retailer_id} -> {seller_id}.",
@@ -271,7 +289,6 @@ class WarengeldBank(BaseAgent):
         self.liquidity += repayment_amount
         return float(repayment_amount)
 
-
     # --- Warengeld feedback mechanisms (spec Section 4.x) ---
     def auto_repay_cc_from_sight(self, retailer: Any) -> float:
         """Automatically repay Kontokorrent from excess sight balances.
@@ -292,7 +309,9 @@ class WarengeldBank(BaseAgent):
             return 0.0
 
         # Determine allowance (buffer). Prefer explicit attribute, fall back to config.
-        allowance = float(getattr(retailer, "sight_allowance", float(self.config.retailer.working_capital_buffer)))
+        allowance = float(
+            getattr(retailer, "sight_allowance", float(self.config.retailer.working_capital_buffer))
+        )
 
         # Retrieve a sight-like balance.
         if hasattr(retailer, "sight_balance"):
@@ -308,7 +327,6 @@ class WarengeldBank(BaseAgent):
             return 0.0
 
         return float(self.process_repayment(retailer, repay_amount))
-
 
     def enforce_inventory_backing(self, retailer: Any, *, collateral_factor: float = 1.2) -> float:
         """Enforce an inventory-backed CC exposure limit (money destruction).
@@ -495,7 +513,9 @@ class WarengeldBank(BaseAgent):
         return float(total_collected)
 
     # --- Inventory control (modern diagnostic API) ---
-    def check_inventories(self, retailers: Iterable[Any], *, current_step: int) -> list[tuple[str, float, float]]:
+    def check_inventories(
+        self, retailers: Iterable[Any], *, current_step: int
+    ) -> list[tuple[str, float, float]]:
         """Inventory coverage diagnostics.
 
         Returns a list of issues `(retailer_id, inventory_value, cc_exposure)`.
@@ -509,7 +529,10 @@ class WarengeldBank(BaseAgent):
         if not isinstance(current_step, int):
             raise TypeError("current_step must be int")
 
-        if self.last_inventory_check_step >= 0 and (current_step - self.last_inventory_check_step) < self.inventory_check_interval:
+        if (
+            self.last_inventory_check_step >= 0
+            and (current_step - self.last_inventory_check_step) < self.inventory_check_interval
+        ):
             return []
 
         self.last_inventory_check_step = current_step

@@ -93,7 +93,19 @@ Ich beschreibe das als **deterministische Pipeline** je Simulations-Tick (mit St
 **Algorithmisch:**
 1. purchase_value = price_to_retailer * quantity
 2. Check retailer.cc_balance - purchase_value >= -retailer.cc_limit
-3. Wenn nein: Bestellung ablehnen oder Menge reduzieren (**offene Frage**: Priorität/Allokation)
+3. Wenn nein: **Menge reduzieren (Teilbestellung)** statt „alles oder nichts“.
+   * **Regel A1.1 – Teilbestellung bei Kreditrahmenbindung (Anti-Deadlock-Regel)**:
+     * Definiere den verfügbaren Kreditspielraum (Headroom) als:
+       * headroom = retailer.cc_limit + retailer.cc_balance
+       * (da `cc_balance` negativ ist, wenn der Kredit genutzt ist)
+     * Erlaube nur eine Finanzierung bis `headroom` (nie darüber).
+     * Skaliere die Bestellmenge nach unten, sodass `purchase_value <= headroom`.
+     * Wenn headroom <= 0: keine Bestellung (0).
+   * **Warum**: Ein „hard deny“ bei knappem Headroom kann einen **Deadlock** erzeugen:
+     * Retailer hat (fast) kein Lager → will nachbestellen.
+     * Standard-Bestellung ist zu groß → Finanzierung wird abgelehnt.
+     * Ohne Lager keine Verkäufe → keine Tilgung → Headroom bleibt 0.
+     * Ergebnis: Warenkreislauf stoppt dauerhaft (Geldschöpfung/Tilgung fallen auf 0).
 4. Buchung:
    * retailer.cc_balance -= purchase_value (mehr negativ)
    * producer.sight_balance += purchase_value
