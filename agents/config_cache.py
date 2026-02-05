@@ -181,12 +181,12 @@ class GlobalConfigCache:
         return cls._instance
 
     def __init__(self, config: SimulationConfig | None = None):
-        if self._initialized:
-            return
+        if not self._initialized:
+            self._cache = ConfigCache(max_size=200)
+            self._initialized = True
 
-        self._config = config
-        self._cache = ConfigCache(max_size=200)
-        self._initialized = True
+        if config is not None:
+            self.initialize(config)
 
     def initialize(self, config: SimulationConfig) -> None:
         """Initialize the global cache with a configuration."""

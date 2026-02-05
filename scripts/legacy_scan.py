@@ -69,6 +69,7 @@ def _iter_python_files(root: Path, *, include_tests: bool = False) -> list[Path]
         "results",
         ".git",
         "scripts",
+        "tools",
         "wirtschaftssimulation.egg-info",
     }
     if not include_tests:
@@ -220,13 +221,26 @@ def _scan_all_legacy_patterns(paths: list[Path]) -> list[Finding]:
                 continue
 
             if grant_credit_re.search(line):
-                findings.append(Finding(path, i, "CLEANUP: Legacy method `grant_credit` (M3)", stripped))
+                findings.append(
+                    Finding(path, i, "CLEANUP: Legacy method `grant_credit` (M3)", stripped)
+                )
             if calculate_fees_re.search(line):
-                findings.append(Finding(path, i, "CLEANUP: Legacy method `calculate_fees` (M3)", stripped))
+                findings.append(
+                    Finding(path, i, "CLEANUP: Legacy method `calculate_fees` (M3)", stripped)
+                )
             if legacy_check_inv_re.search(line):
-                findings.append(Finding(path, i, "CLEANUP: Legacy call `check_inventories(..., current_step=None)` (M3)", stripped))
+                findings.append(
+                    Finding(
+                        path,
+                        i,
+                        "CLEANUP: Legacy call `check_inventories(..., current_step=None)` (M3)",
+                        stripped,
+                    )
+                )
             if fee_rate_re.search(line):
-                findings.append(Finding(path, i, "CLEANUP: Deprecated config `fee_rate` (M4)", stripped))
+                findings.append(
+                    Finding(path, i, "CLEANUP: Deprecated config `fee_rate` (M4)", stripped)
+                )
 
     return findings
 
@@ -255,7 +269,6 @@ def main(*, cleanup_mode: bool = False, include_tests: bool = False) -> int:
         (REPO_ROOT / "household_agent.py").resolve(),
         (REPO_ROOT / "retailer_agent.py").resolve(),
         (REPO_ROOT / "economic_agent.py").resolve(),
-
         # agents/ package mirrors
         (agents_dir / "bank.py").resolve(),
         (agents_dir / "clearing_agent.py").resolve(),
@@ -315,7 +328,9 @@ def main(*, cleanup_mode: bool = False, include_tests: bool = False) -> int:
                     print(f"  {f.line_no}: {f.message}")
                     print(f"    {f.line}")
 
-            print(f"\nSummary: {len(findings)} total legacy pattern instances found across {len(findings_by_file)} files")
+            print(
+                f"\nSummary: {len(findings)} total legacy pattern instances found across {len(findings_by_file)} files"
+            )
             return 0
 
         print("CLEANUP: No legacy patterns found")
@@ -327,7 +342,15 @@ def main(*, cleanup_mode: bool = False, include_tests: bool = False) -> int:
             if p.resolve() in seen:
                 continue
             seen.add(p.resolve())
-            findings.extend(_scan_files([p], allowlists, allow_fee_rate_files, allow_legacy_bank_methods_files, cleanup_mode=False))
+            findings.extend(
+                _scan_files(
+                    [p],
+                    allowlists,
+                    allow_fee_rate_files,
+                    allow_legacy_bank_methods_files,
+                    cleanup_mode=False,
+                )
+            )
 
     if findings:
         print("legacy_scan: FAIL\n")
