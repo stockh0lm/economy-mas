@@ -96,3 +96,12 @@ def radon_cc(session: nox.Session) -> None:
         ",".join(EXCLUDES),
         *TARGETS,
     )
+
+
+@nox.session(python=PYTHON_VERSION)
+def test_plots(session: nox.Session) -> None:
+    """Run plot metrics integration tests."""
+    session.run(os.path.join(VENV_BIN_PATH, "pytest"), "tests/test_plot_metrics.py", "-xvs")
+    session.run(
+        os.path.join(VENV_BIN_PATH, "pytest"), "tests/test_plot_metrics_integration.py", "-xvs"
+    )
