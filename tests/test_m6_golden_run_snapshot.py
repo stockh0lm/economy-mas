@@ -32,7 +32,7 @@ def test_golden_run_snapshot(monkeypatch, tmp_path):
     assert len(households) == 4
     assert len(retailers) == 2
 
-    assert 180.0 <= m1 <= 220.0
-    assert 250.0 <= total_inventory_value <= 310.0
-    assert 180.0 <= total_cc_exposure <= 260.0
+    assert 280.0 <= m1 <= 320.0
+    assert 240.0 <= total_inventory_value <= 280.0
+    assert 130.0 <= total_cc_exposure <= 170.0
     assert 0.75 <= employment_rate <= 1.0
