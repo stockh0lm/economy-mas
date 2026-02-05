@@ -1,0 +1,17 @@
+ M agents/household_agent.py
+ M doc/refactoring_plan.md
+ M doc/refactoring_prompts/01_golden_test_fix.md
+ M doc/refactoring_prompts/02_golden_test_suite.md
+ M doc/refactoring_prompts/03_plot_metrics_tests.md
+ M doc/refactoring_prompts/04_extract_simulation_engine.md
+ M doc/refactoring_prompts/05_refactor_metrics.md
+ M doc/refactoring_prompts/06_extract_household_components.md
+ M doc/refactoring_prompts/07_increase_test_coverage.md
+ M doc/refactoring_prompts/08_performance_optimization.md
+ M doc/refactoring_prompts/09_documentation_types.md
+ M doc/refactoring_prompts/10_comprehensive_regression.md
+ M main.py
+ M tools/run_refactor_batch.sh
+?? debug_money_creation.py
+?? doc/refactoring_reports/
+?? tools/run_refactor_batch.py

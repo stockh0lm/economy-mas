@@ -25,6 +25,15 @@ pytest tests/test_plot_metrics.py -v
 
 ---
 
+## Controlled Diagnostics (Required)
+
+- Use only existing tests and temporary files under `tmp_path` or `output/` with clear naming
+- If a debug script is necessary, it must be named `debug_*.py` and deleted after use
+- Do not add permanent debug tests
+- Prefer integration tests that run short simulations (<= 10 steps)
+
+---
+
 ### Step 2: Create Integration Test Module
 
 Create `tests/test_plot_metrics_integration.py` that reuses the existing plotting functions and validates real output. Keep it small to avoid long test times.

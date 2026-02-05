@@ -23,6 +23,13 @@ python -m pstats /tmp/sim_profile.prof
 - Reviewer model checks `git diff --stat` and `git show` before approving
 - Roll back safely if needed: `git restore <files>` for uncommitted changes, `git revert <commit>` for committed changes (no `reset --hard`)
 
+## Controlled Diagnostics (Required)
+
+- Use only existing profiling tools and temporary files under `/tmp`
+- If a debug script is necessary, it must be named `debug_*.py` and deleted after use
+- Do not add permanent debug tests
+- Use fixed seeds for before/after comparisons
+
 ### Step 2: Identify Hotspots
 Look for:
 - Tight loops in metrics collection

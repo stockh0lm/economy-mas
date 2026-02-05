@@ -95,6 +95,8 @@ Use a wrapper script that calls your CLI (opencode or Cline) in non-interactive 
 
 For a concrete example, see: `tools/run_refactor_batch.sh`
 
+The script expects reviewer output to end with either `REVIEW_PASS` or `REVIEW_FAIL` to allow automated iteration.
+
 ```bash
 # Pseudocode template (adjust CLI flags for your tool)
 PROMPTS=(doc/refactoring_prompts/01_golden_test_fix.md \

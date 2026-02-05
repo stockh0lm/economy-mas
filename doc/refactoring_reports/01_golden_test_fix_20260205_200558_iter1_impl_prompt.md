@@ -82,16 +82,6 @@ Based on analysis results:
 
 ---
 
-## Controlled Diagnostics (Required)
-
-- Use only existing tests and temporary files under `tmp_path` or `output/` with clear naming
-- If a debug script is necessary, it must be named `debug_*.py` and deleted after use
-- Do not add permanent debug tests
-- Prefer logging or metrics exports already produced by the simulation
-- If results vary across runs, run the golden test 3 times and report the median metric values
-
----
-
 ## Verification Commands
 
 ```bash

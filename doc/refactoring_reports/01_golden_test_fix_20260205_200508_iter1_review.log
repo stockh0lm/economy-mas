@@ -1,0 +1,1 @@
+DRY_RUN: opencode run --model glm-4.7 --prompt-file /home/andreas/src/Wirtschaftssimulation/doc/refactoring_reports/01_golden_test_fix_20260205_200508_iter1_review_prompt.md --workspace /home/andreas/src/Wirtschaftssimulation --non-interactive --log-file /home/andreas/src/Wirtschaftssimulation/doc/refactoring_reports/01_golden_test_fix_20260205_200508_iter1_review.log

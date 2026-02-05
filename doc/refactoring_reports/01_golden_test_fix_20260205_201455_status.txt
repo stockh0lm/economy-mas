@@ -1,0 +1,7 @@
+ M agents/household_agent.py
+ M doc/refactoring_plan.md
+ M main.py
+ M tools/run_refactor_batch.sh
+?? doc/refactoring_reports/
+?? tests/test_golden_debug.py
+?? tools/run_refactor_batch.py

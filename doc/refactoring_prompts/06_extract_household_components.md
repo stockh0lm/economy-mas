@@ -24,6 +24,15 @@ Create `agents/household/` with:
 
 ---
 
+## Controlled Diagnostics (Required)
+
+- Use only existing tests and temporary files under `tmp_path` or `output/` with clear naming
+- If a debug script is necessary, it must be named `debug_*.py` and deleted after use
+- Do not add permanent debug tests
+- Validate behavior using fixed seeds and existing metrics CSVs
+
+---
+
 ### Step 2: Move Logic
 - **consumption.py**: consumption decision and purchase logic
 - **savings.py**: savings rate, portfolio, deposits

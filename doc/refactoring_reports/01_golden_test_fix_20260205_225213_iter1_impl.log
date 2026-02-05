@@ -1,0 +1,1116 @@
+[0m> build · devstral-2-123b-instruct-2512
+
+[0m
+I'll execute the prompt file end-to-end to analyze and fix the golden test failure. Let me start by following the steps outlined in the prompt.
+[0m$ [0mcd /home/andreas/src/Wirtschaftssimulation && python -m pytest tests/test_m6_golden_run_snapshot.py::test_golden_run_snapshot -xvs --tb=long
+
+[0m============================= test session starts ==============================
+platform linux -- Python 3.11.4, pytest-8.4.2, pluggy-1.6.0
+benchmark: 5.2.0 (defaults: timer=time.perf_counter disable_gc=False min_rounds=5 min_time=0.000005 max_time=1.0 calibration_precision=10 warmup=False warmup_iterations=100000)
+rootdir: /home/andreas/src/Wirtschaftssimulation
+configfile: pyproject.toml
+plugins: benchmark-5.2.0, timeout-2.4.0, anyio-4.9.0, cov-7.0.0, xdist-3.8.0, mock-3.15.1
+collected 1 item
+
+tests/test_m6_golden_run_snapshot.py [32m[######################] 100.00%  step 30/30  HH     4  CO     2  M1   145.16  elapsed 0s  eta 0s[0m
+F
+
+=================================== FAILURES ===================================
+___________________________ test_golden_run_snapshot ___________________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f8cea1ed0d0>
+tmp_path = PosixPath('/tmp/pytest-of-andreas/pytest-171/test_golden_run_snapshot0')
+
+    def test_golden_run_snapshot(monkeypatch, tmp_path):
+        """Referenz: doc/issues.md Abschnitt 3 → Golden-run Snapshot"""
+    
+        monkeypatch.setenv("SIM_SEED", "12345")
+    
+        cfg = SimulationConfig(simulation_steps=30)
+        cfg.log_file = str(tmp_path / "sim.log")
+        cfg.metrics_export_path = str(tmp_path / "metrics.json")
+    
+        agents = run_simulation(cfg)
+    
+        households = agents["households"]
+        companies = agents["companies"]
+        retailers = agents["retailers"]
+        state = agents["state"]
+        warengeld_banks = agents["warengeld_banks"]
+    
+        m1 = _m1_proxy(households=households, companies=companies, retailers=retailers, state=state)
+        total_inventory_value = sum(float(r.inventory_value) for r in retailers)
+        total_cc_exposure = sum(float(b.total_cc_exposure) for b in warengeld_banks)
+    
+        employed = sum(1 for h in households if getattr(h, "employer_id", None) is not None)
+        employment_rate = employed / max(1, len(households))
+    
+        # --- Expected macro bands (seeded 30-day run) ---
+        # Bands are intentionally not razor-thin; they should catch
+        # regressions while remaining robust to minor refactors.
+        assert len(households) == 4
+        assert len(retailers) == 2
+    
+>       assert 180.0 <= m1 <= 220.0
+E       assert 180.0 <= 145.1578783339502
+
+tests/test_m6_golden_run_snapshot.py:35: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_m6_golden_run_snapshot.py::test_golden_run_snapshot - asser...
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+============================== 1 failed in 0.47s ===============================
+[0m→ [0mRead Wirtschaftssimulation/tests/test_m6_golden_run_snapshot.py
+The test is failing with M1 proxy at 145.16, which is below the expected range of 180-220. Let me examine the simulation trajectory by modifying the test to print detailed metrics at each step.
+Let me create a debug version of the test to examine the simulation trajectory:
+[0m
+[0m
+Wrote file successfully.
+
+LSP errors detected in other files:
+<diagnostics file="/home/andreas/src/Wirtschaftssimulation/tests/test_m6_golden_run_snapshot.py">
+ERROR [10:11] Argument missing for parameter "result_storage"
+</diagnostics>
+[0m← [0mWrite Wirtschaftssimulation/debug_golden_run.py
+[0m$ [0mpython debug_golden_run.py
+python: can't open file '/home/andreas/src/debug_golden_run.py': [Errno 2] No such file or directory
+
+[0m[0m$ [0mcd /home/andreas/src/Wirtschaftssimulation && python debug_golden_run.py
+Traceback (most recent call last):
+  File "/home/andreas/src/Wirtschaftssimulation/debug_golden_run.py", line 48, in <module>
+    test_golden_run_debug(mp, tmp_path)
+  File "/home/andreas/src/Wirtschaftssimulation/debug_golden_run.py", line 11, in test_golden_run_debug
+    cfg.log_file = str(tmp_path / "sim.log")
+                       ~~~~~~~~~^~~~~~~~~~~
+TypeError: unsupported operand type(s) for /: 'str' and 'str'
+[0m
+Let me fix the debug script:
+[0m← [0mEdit Wirtschaftssimulation/debug_golden_run.py
+[0m
+Index: /home/andreas/src/Wirtschaftssimulation/debug_golden_run.py
+===================================================================
+--- /home/andreas/src/Wirtschaftssimulation/debug_golden_run.py
++++ /home/andreas/src/Wirtschaftssimulation/debug_golden_run.py
+@@ -7,10 +7,12 @@
+ 
+ monkeypatch.setenv("SIM_SEED", "12345")
+ 
+ cfg = SimulationConfig(simulation_steps=30)
+-cfg.log_file = str(tmp_path / "sim.log")
+-cfg.metrics_export_path = str(tmp_path / "metrics.json")
++import pathlib
++
++cfg.log_file = str(pathlib.Path(tmp_path) / "sim.log")
++cfg.metrics_export_path = str(pathlib.Path(tmp_path) / "metrics.json")
+ cfg.debug_metrics = True  # Enable debug metrics if available
+ 
+ agents = run_simulation(cfg)
+ 
+
+[0m→ [0mRead Wirtschaftssimulation/config.py
+Let me check the SimulationConfig to see what attributes are available:
+Now let me simplify the debug script and run it:
+[0m
+[0m← [0mEdit Wirtschaftssimulation/debug_golden_run.py[0mIndex: /home/andreas/src/Wirtschaftssimulation/debug_golden_run.py
+===================================================================
+--- /home/andreas/src/Wirtschaftssimulation/debug_golden_run.py
++++ /home/andreas/src/Wirtschaftssimulation/debug_golden_run.py
+@@ -1,52 +1,45 @@
+ from config import SimulationConfig
+ from main import _m1_proxy, run_simulation
++import pathlib
++import tempfile
+ 
+ 
+-def test_golden_run_debug(monkeypatch, tmp_path):
++def main():
+     """Debug version to examine simulation trajectory"""
++    import os
+ 
+-    monkeypatch.setenv("SIM_SEED", "12345")
++    os.environ["SIM_SEED"] = "12345"
+ 
+     cfg = SimulationConfig(simulation_steps=30)
+-    import pathlib
+ 
+-    cfg.log_file = str(pathlib.Path(tmp_path) / "sim.log")
+-    cfg.metrics_export_path = str(pathlib.Path(tmp_path) / "metrics.json")
+-    cfg.debug_metrics = True  # Enable debug metrics if available
++    with tempfile.TemporaryDirectory() as tmp_path:
++        cfg.log_file = str(pathlib.Path(tmp_path) / "sim.log")
++        cfg.metrics_export_path = str(pathlib.Path(tmp_path) / "metrics.json")
+ 
+-    agents = run_simulation(cfg)
++        agents = run_simulation(cfg)
+ 
+-    households = agents["households"]
+-    companies = agents["companies"]
+-    retailers = agents["retailers"]
+-    state = agents["state"]
+-    warengeld_banks = agents["warengeld_banks"]
++        households = agents["households"]
++        companies = agents["companies"]
++        retailers = agents["retailers"]
++        state = agents["state"]
++        warengeld_banks = agents["warengeld_banks"]
+ 
+-    m1 = _m1_proxy(households=households, companies=companies, retailers=retailers, state=state)
+-    total_inventory_value = sum(float(r.inventory_value) for r in retailers)
+-    total_cc_exposure = sum(float(b.total_cc_exposure) for b in warengeld_banks)
++        m1 = _m1_proxy(households=households, companies=companies, retailers=retailers, state=state)
++        total_inventory_value = sum(float(r.inventory_value) for r in retailers)
++        total_cc_exposure = sum(float(b.total_cc_exposure) for b in warengeld_banks)
+ 
+-    employed = sum(1 for h in households if getattr(h, "employer_id", None) is not None)
+-    employment_rate = employed / max(1, len(households))
++        employed = sum(1 for h in households if getattr(h, "employer_id", None) is not None)
++        employment_rate = employed / max(1, len(households))
+ 
+-    print(f"\n=== FINAL METRICS ===")
+-    print(f"M1 proxy: {m1:.2f}")
+-    print(f"Total inventory value: {total_inventory_value:.2f}")
+-    print(f"Total CC exposure: {total_cc_exposure:.2f}")
+-    print(f"Employment rate: {employment_rate:.2f}")
+-    print(f"Households: {len(households)}")
+-    print(f"Retailers: {len(retailers)}")
+-    print(f"Companies: {len(companies)}")
++        print(f"\n=== FINAL METRICS ===")
++        print(f"M1 proxy: {m1:.2f}")
++        print(f"Total inventory value: {total_inventory_value:.2f}")
++        print(f"Total CC exposure: {total_cc_exposure:.2f}")
++        print(f"Employment rate: {employment_rate:.2f}")
++        print(f"Households: {len(households)}")
++        print(f"Retailers: {len(retailers)}")
++        print(f"Companies: {len(companies)}")
+ 
+ 
+ if __name__ == "__main__":
+-    import pytest
+-    import tempfile
+-    from _pytest.monkeypatch import MonkeyPatch
+-
+-    with tempfile.TemporaryDirectory() as tmp_path:
+-        mp = MonkeyPatch()
+-        try:
+-            test_golden_run_debug(mp, tmp_path)
+-        finally:
+-            mp.undo()
++    main()
+
+
+
+[0m→ [0mRead Wirtschaftssimulation/main.py[90m [limit=50][0m
+Let me check the run_simulation function signature:
+[0m✱ [0mGrep "def run_simulation"[90m in Wirtschaftssimulation · 5 matches[0m
+[0m→ [0mRead Wirtschaftssimulation/main.py[90m [offset=535, limit=20][0m
+Good, the function only takes a config parameter. Let me run the debug script:
+[0mpython: can't open file '/home/andreas/src/debug_golden_run.py': [Errno 2] No such file or directory
+
+[0m$ [0mpython debug_golden_run.py[0m
+
+[32m[######################] 100.00%  step 30/30  HH     4  CO     2  M1   145.16  elapsed 0s  eta 0s[0m
+
+=== FINAL METRICS ===
+M1 proxy: 145.16
+Total inventory value: 249.22
+Total CC exposure: 145.93
+Employment rate: 1.00
+Households: 4
+Retailers: 2
+Companies: 2
+[0m$ [0mcd /home/andreas/src/Wirtschaftssimulation && python debug_golden_run.py[0m
+
+[0m$ [0mgit log --oneline --all -10
+fatal: not a git repository (or any of the parent directories): .git
+[0m
+Now I can see the issue. The M1 proxy is 145.16, which is below the expected range of 180-220. Let me check the git history to see what changed recently:
+[0m$ [0mcd /home/andreas/src/Wirtschaftssimulation && git log --oneline --all -10
+767ed20 before automated refactor
+e84e30a fixed the live-display
+300bc20 performance und refactoring angefangen
+1a76a1c tests for dem refactoring
+4b2b52b problem mit unverkäuflichem Lager der firmen, requirements.txt, environment-cleanup von nox
+ab74261 configs um Probleme/kriesen zu reproduzieren.
+7204b3e Remove cached files and output directory from Git
+e3c51c7 sieht nach sinnvollem verhalten in der simulation aus. muss mal gucken, was hinter den einzelnen ereignissen steckt, und ob das system funktioniert wie es soll.
+ede45f5 echtes wachstumsverhalten, aber hyperinflation
+7c9bc6d mehr zeug implementiert aus issues.md
+
+[0m[0m
+
+fatal: not a git repository (or any of the parent directories): .git
+[0m$ [0mgit log -p --all main.py agents/ metrics.py | head -200Let me check the git log for changes to main.py, agents, or metrics:
+[0m$ [0mcd /home/andreas/src/Wirtschaftssimulation && git log -p --all main.py agents/ metrics.py | head -200
+commit 300bc20e35fb6a7168e33bc472d66ceae8cf448a
+Author: andreas <aschuldei@unitransferklinik.de>
+Date:   Tue Feb 3 22:22:51 2026 +0100
+
+    performance und refactoring angefangen
+
+diff --git a/agents/household_agent.py b/agents/household_agent.py
+index 4d17176..1c0f4e7 100644
+--- a/agents/household_agent.py
++++ b/agents/household_agent.py
+@@ -13,7 +13,13 @@ used by existing scenarios/tests, but avoids endogenous money creation.
+ from __future__ import annotations
+ 
+ import random
+-from typing import TYPE_CHECKING
++from collections import deque
++import numpy as np
++
++
++_DEFAULT_NP_RNG = np.random.default_rng()
++from dataclasses import dataclass
++from typing import TYPE_CHECKING, Protocol, Sequence
+ 
+ from config import CONFIG_MODEL, SimulationConfig
+ from logger import log
+@@ -26,6 +32,38 @@ if TYPE_CHECKING:
+     from .savings_bank_agent import SavingsBank
+ 
+ 
++class _RNG(Protocol):
++    """Minimal RNG protocol used for deterministic unit tests.
++
++    We accept either `random` module or an instance of `random.Random`.
++    """
++
++    def random(self) -> float:  # pragma: no cover - protocol
++        ...
++
++    def choice(self, seq: Sequence[object]) -> object:  # pragma: no cover - protocol
++        ...
++
++
++@dataclass(frozen=True, slots=True)
++class ConsumptionPlan:
++    """Pure consumption plan (no side-effects).
++
++    This object is intentionally small and stable so it can be unit-tested
++    in isolation (Ref: doc/issues.md Abschnitt 4 – Refactoring Household.step).
++    """
++
++    budget: float
++    retailer: "RetailerAgent | None"
++
++
++@dataclass(frozen=True, slots=True)
++class HouseholdFormationEvent:
++    """Deferred demographic event describing household formation."""
++
++    kind: str  # "split" | "birth"
++
++
+ class Household(BaseAgent):
+     def __init__(
+         self,
+@@ -59,9 +97,7 @@ class Household(BaseAgent):
+         # Internal time-base: simulation steps are days.
+         self.age_days: int = 0
+         self.max_age_years: int = int(self.config.household.max_age)
+-        self.max_age_days: int = int(
+-            self.max_age_years * getattr(self.config.time, "days_per_year", 360)
+-        )
++        self.max_age_days: int = int(self.max_age_years * int(self.config.time.days_per_year))
+ 
+         # Backwards-compatible: expose age as whole years.
+         self.age: int = 0
+@@ -81,7 +117,20 @@ class Household(BaseAgent):
+         self.growth_counter: int = 0
+         self.growth_threshold: int = self.config.household.growth_threshold
+         self.consumption: float = 0.0
+-        self.consumption_history: list[float] = []  # rolling window
++        # Rolling consumption window used by `metrics.apply_sight_decay`.
++        # Performance: deque avoids per-step list slicing.
++        # Referenz: doc/issues.md Abschnitt 5 → Performance-Optimierung nach Profiling-Analyse
++        window = int(self.config.clearing.sight_allowance_window_days)
++        self.consumption_history = deque(maxlen=max(0, window))
++
++        # Fertility probability cache (daily hotpath).
++        # Keyed by (age_years, income_bin, wealth_bin) to keep cache hits high.
++        self._fertility_p_daily_cache: dict[tuple[int, int, int], float] = {}
++        self._fertility_cache_bin_size: float = max(
++            10.0,
++            0.05 * float(self.config.household.savings_growth_trigger),
++        )
++        self._fertility_cache_max_size: int = 4096
+         self.investments: float = 0.0
+         self.assets: float = 0.0
+ 
+@@ -201,7 +250,7 @@ class Household(BaseAgent):
+ 
+         The scheduler controls *when* this method is allowed to save (month-end).
+         """
+-        save_rate = float(getattr(self.config.household, "savings_rate", 0.0))
++        save_rate = float(self.config.household.savings_rate)
+         save_rate = max(0.0, min(1.0, save_rate))
+ 
+         income = float(self.income_received_this_month)
+@@ -225,7 +274,7 @@ class Household(BaseAgent):
+             return 0.0
+ 
+         # Keep a small liquid buffer.
+-        buffer = float(getattr(self.config.household, "transaction_buffer", 0.0))
++        buffer = float(self.config.household.transaction_buffer)
+         max_affordable = max(0.0, float(self.sight_balance) - buffer)
+         if max_affordable <= 0:
+             self.last_month_saved = 0.0
+@@ -303,33 +352,219 @@ class Household(BaseAgent):
+         return withdrawn
+ 
+     # --- Consumption ---
+-    def consume(self, consumption_rate: float, retailers: list[RetailerAgent]) -> float:
+-        # If no retailers are present, we simply can't consume this step.
+-        # This should not reset growth lifecycle flags.
++    def _push_consumption_history(self, spent: float) -> None:
++        """Append to the rolling consumption history.
++
++        Performance note:
++        - With a deque this is O(1) and avoids per-step list slicing.
++        """
++
++        window = int(self.config.clearing.sight_allowance_window_days)
++        if window <= 0:
++            return
++
++        ch = self.consumption_history
++        # If someone replaced the deque with a list in a test, stay compatible.
++        if isinstance(ch, deque):
++            if ch.maxlen != window:
++                ch = deque(ch, maxlen=window)
++                self.consumption_history = ch
++            ch.append(spent)
++            return
++
++        # List fallback
++        ch.append(spent)
++        if len(ch) > window:
++            del ch[:-window]
++
++    def _record_consumption(self, spent: float) -> None:
++        """Centralized bookkeeping for consumption side-effects."""
++
++        spent_f = float(spent)
++        self.consumption = spent_f
++        self.consumption_this_month += spent_f
++        self.last_consumption += spent_f
++        self._push_consumption_history(spent_f)
++
++    def build_consumption_plan(
++        self,
++        *,
++        consumption_rate: float,
++        retailers: Sequence["RetailerAgent"],
++        rng: _RNG = random,
++    ) -> ConsumptionPlan:
++        """Create a pure consumption plan.
++
++        This method is intentionally side-effect free so it can be unit-tested
++        in isolation.
++
++        Referenz: doc/issues.md Abschnitt 4 → "Gründliches Refaktorieren".
++        """
++
+         if consumption_rate <= 0 or not retailers:
+-            self.consumption = 0.0
+-            return 0.0
++            return ConsumptionPlan(budget=0.0, retailer=None)
+ 
+-        budget = self.sight_balance * consumption_rate
++        budget = float(self.sight_balance) * float(consumption_rate)
+         if budget <= 0:
+-            self.consumption = 0.0
+-            return 0.0
++            return ConsumptionPlan(budget=0.0, retailer=None)
++
++        # Keep selection deterministic for tests by allowing an injected RNG.
++        retailer = rng.choice(retailers)
++        return ConsumptionPlan(budget=float(budget), retailer=retailer)
+ 
+-        retailer = random.choice(retailers)
+-        result = retailer.sell_to_household(self, budget)
+-        spent = result.sale_value
+-        self.consumption = spent
+-        self.consumption_this_month += float(spent)
+-        self.last_consumption += float(spent)
++    def _execute_consumption_plan(self, plan: ConsumptionPlan) -> float:
++        """Execute a previously created consumption plan (with side effects)."""
+ 
+-        # Maintain rolling consumption history (used by Clearing for sight allowance).
+-        self.consumption_history.append(float(spent))
+-        window = int(getattr(self.config.clearing, "sight_allowance_window_days", 30))
+-        if window > 0 and len(self.consumption_history) > window:
+[0m
+[0m$ [0mgit log -p --all main.py agents/ metrics.py | head -400 | tail -200
+
+[0mfatal: not a git repository (or any of the parent directories): .git
+Let me continue reading the changes:
+[0m$ [0mcd /home/andreas/src/Wirtschaftssimulation && git log -p --all main.py agents/ metrics.py | head -400 | tail -200
+-            self.consumption_history = self.consumption_history[-window:]
++        if plan.budget <= 0 or plan.retailer is None:
++            self._record_consumption(0.0)
++            return 0.0
+ 
++        result = plan.retailer.sell_to_household(self, plan.budget)
++        spent = float(result.sale_value)
++        self._record_consumption(spent)
+         return spent
+ 
++    def consume(
++        self,
++        consumption_rate: float,
++        retailers: Sequence["RetailerAgent"],
++        *,
++        rng: _RNG = random,
++    ) -> float:
++        """Spend on goods from retailers.
++
++        The heavy logic is split into:
++        - `build_consumption_plan` (pure)
++        - `_execute_consumption_plan` (side effects)
++        """
++
++        # Fast-path: avoid per-step plan creation when no consumption is possible.
++        if consumption_rate <= 0 or not retailers:
++            self._record_consumption(0.0)
++            return 0.0
++
++        plan = self.build_consumption_plan(
++            consumption_rate=consumption_rate,
++            retailers=retailers,
++            rng=rng,
++        )
++        return self._execute_consumption_plan(plan)
++
++    @staticmethod
++    def batch_consume(
++        households: Sequence["Household"],
++        retailers: Sequence["RetailerAgent"],
++        *,
++        rng: "np.random.Generator | None" = None,
++    ) -> list[float]:
++        """Vectorized consumption execution for many households.
++
++        This method is intentionally pragmatic:
++        - budgets are computed via numpy arrays
++        - retailer selection is sampled via numpy RNG
++        - sales are still executed per household (side effects), but without
++          per-household ConsumptionPlan allocations.
++
++        Referenz (explizit): doc/issues.md Abschnitt 5 → Performance-Optimierung
++        nach Profiling-Analyse (Household.consume Hotspot).
++        """
++
++        n = len(households)
++        if n == 0:
++            return []
++
++        if not retailers:
++            for h in households:
++                h._record_consumption(0.0)
++            return [0.0] * n
++
++        gen = rng or _DEFAULT_NP_RNG
++
++        # Build arrays (n is typically small, but this avoids Python math per agent)
++        balances = np.fromiter((float(h.sight_balance) for h in households), dtype=np.float64, count=n)
++        growth_mask = np.fromiter((bool(h.growth_phase) for h in households), dtype=np.bool_, count=n)
++
++        cfg = households[0].config.household
++        rate_normal = float(cfg.consumption_rate_normal)
++        rate_growth = float(cfg.consumption_rate_growth)
++        rates = np.where(growth_mask, rate_growth, rate_normal)
++        budgets = balances * rates
++
++        idxs = gen.integers(0, len(retailers), size=n, dtype=np.int32)
++
++        spent_out: list[float] = [0.0] * n
++        for i, h in enumerate(households):
++            budget = float(budgets[i])
++            if budget <= 0.0:
++                h._record_consumption(0.0)
++                continue
++            retailer = retailers[int(idxs[i])]
++            sale = retailer.sell_to_household(h, budget)
++            spent = float(sale.sale_value)
++            h._record_consumption(spent)
++            spent_out[i] = spent
++
++        return spent_out
++
++    @staticmethod
++    def batch_step(
++        households: Sequence["Household"],
++        current_step: int,
++        *,
++        clock: "SimulationClock",
++        savings_bank: "SavingsBank",
++        retailers: Sequence["RetailerAgent"],
++        rng: "np.random.Generator | None" = None,
++        py_rng: _RNG = random,
++    ) -> list["Household"]:
++        """Run one full step for a *group* of households sharing the same market.
++
++        Keeps semantics aligned with `Household.step`, but uses `batch_consume`
++        to remove the biggest per-agent overhead in the daily hot loop.
++
++        Referenz (explizit): doc/issues.md Abschnitt 5 → Performance-Optimierung
++        nach Profiling-Analyse.
++        """
++
++        if not households:
++            return []
++
++        # Precompute per-day constants once.
++        is_month_end = clock.is_month_end(current_step)
++
++        events: list[HouseholdFormationEvent | None] = [None] * len(households)
++        for i, h in enumerate(households):
++            h._savings_bank_ref = savings_bank
++            events[i] = h.handle_demographics(
++                current_step,
++                clock=clock,
++                savings_bank=savings_bank,
++                rng=py_rng,
++            )
++            h.handle_finances(
++                current_step,
++                clock=clock,
++                savings_bank=savings_bank,
++                stage="pre",
++            )
++
++        Household.batch_consume(households, retailers, rng=rng)
++
++        # Month-end saving happens after consumption (same as `step`).
++        if is_month_end:
++            for h in households:
++                h.save(savings_bank)
++
++        newborns: list[Household] = []
++        for h, ev in zip(households, events):
++            if ev is None:
++                continue
++            nb = h._apply_household_formation_event(ev, savings_bank=savings_bank)
++            if nb is not None:
++                newborns.append(nb)
++
++        return newborns
++
+     # --- Household splitting ---
+     def split_household(self, *, savings_bank: "SavingsBank") -> "Household | None":
+         """Create a new household (child) funded from this household's savings.
+@@ -353,7 +588,7 @@ class Household(BaseAgent):
+             disposable = max(
+                 0.0,
+                 float(self.sight_balance)
+-                - float(getattr(self.config.household, "transaction_buffer", 0.0)),
++                - float(self.config.household.transaction_buffer),
+             )
+             if disposable <= 0:
+                 return None
+@@ -370,7 +605,7 @@ class Household(BaseAgent):
+                 environmental_impact=self.environmental_impact,
+                 config=self.config,
+             )
+-            child.region_id = getattr(self, "region_id", "region_0")
++            child.region_id = self.region_id
+             child.generation = int(self.generation + 1)
+             child.sight_balance = float(transfer)
+ 
+@@ -399,7 +634,7 @@ class Household(BaseAgent):
+             environmental_impact=self.environmental_impact,
+             config=self.config,
+         )
+-        child.region_id = getattr(self, "region_id", "region_0")
++        child.region_id = self.region_id
+         child.generation = int(self.generation + 1)
+         child.sight_balance = float(from_bank + from_local)
+ 
+@@ -414,8 +649,9 @@ class Household(BaseAgent):
+     def _fertility_probability_daily(self, *, savings_bank: "SavingsBank") -> float:
+         """Compute daily probability of a birth/household-formation event.
+ 
+-        Expliziter Bezug: doc/issues.md Abschnitt 4) → "Einfaches Wachstums- und
+-        Sterbe-Verhalten" (Geburten abhängig von Alter, Einkommen und Sparverhalten).
++        Expliziter Bezug:
++        - doc/issues.md Abschnitt 4) → "Einfaches Wachstums- und Sterbe-Verhalten" (Demografie)
++        - doc/issues.md Abschnitt 5) → Performance-Optimierung: Cache im daily-Hotpath
+ 
+         The model is intentionally simple and bounded:
+         - Eligible age window: [fertility_age_min, fertility_age_max]
+@@ -425,48 +661,77 @@ class Household(BaseAgent):
+         """
+ 
+         cfg = self.config.household
+-        days_per_year = int(getattr(self.config.time, "days_per_year", 360) or 360)
+-
+-        age = int(getattr(self, "age", 0))[0m
+
+[0m→ [0mRead Wirtschaftssimulation/agents/household_agent.py[90m [limit=100][0m
+Now let me check what the current state of the household_agent.py file is to understand the changes better:
+[0m
+[0m$ [0mcd /home/andreas/src/Wirtschaftssimulation && git log -p --all agents/retailer_agent.py | head -100
+[0m
+
+commit 4b2b52ba77fde6bf5f2ae1af8c54a70f5fb7c9f2
+Author: andreas <aschuldei@unitransferklinik.de>
+Date:   Tue Feb 3 14:05:33 2026 +0100
+
+    problem mit unverkäuflichem Lager der firmen, requirements.txt, environment-cleanup von nox
+
+diff --git a/agents/retailer_agent.py b/agents/retailer_agent.py
+index 685343a..68c9b17 100644
+--- a/agents/retailer_agent.py
++++ b/agents/retailer_agent.py
+@@ -69,7 +69,9 @@ class InventoryLot:
+     def carrying_unit_value(self, *, config: SimulationConfig) -> float:
+         if self.is_unsellable(config=config):
+             return 0.0
+-        base = self._base_unit_value(valuation_method=str(config.retailer.inventory_valuation_method))
++        base = self._base_unit_value(
++            valuation_method=str(config.retailer.inventory_valuation_method)
++        )
+         return max(0.0, base * float(self.obsolescence_factor))
+ 
+     def carrying_value(self, *, config: SimulationConfig) -> float:
+@@ -96,7 +98,9 @@ class RetailerAgent(BaseAgent):
+ 
+         # Core accounts
+         self.sight_balance: float = float(initial_sight_balance)
+-        self.cc_limit: float = float(cc_limit if cc_limit is not None else self.config.retailer.initial_cc_limit)
++        self.cc_limit: float = float(
++            cc_limit if cc_limit is not None else self.config.retailer.initial_cc_limit
++        )
+         # Negative = drawn Kontokorrent
+         self.cc_balance: float = 0.0
+ 
+@@ -110,7 +114,9 @@ class RetailerAgent(BaseAgent):
+         # restocks or when a legacy test sets only aggregate fields.
+         self.inventory_lots: list[InventoryLot] = []
+         self.target_inventory_value: float = float(
+-            target_inventory_value if target_inventory_value is not None else self.config.retailer.target_inventory_value
++            target_inventory_value
++            if target_inventory_value is not None
++            else self.config.retailer.target_inventory_value
+         )
+ 
+         # Reserve for write-downs (Warenwertberichtigungskonto)
+@@ -122,13 +128,16 @@ class RetailerAgent(BaseAgent):
+         # Audit risk score in [0,1] used by the bank as a CC-limit modifier
+         self.audit_risk_score: float = 0.0
+ 
+-
+         # Land/environmental variables (used by State taxes / EnvironmentalAgency)
+         self.land_area: float = float(
+-            land_area if land_area is not None else getattr(self.config.retailer, 'initial_land_area', 20.0)
++            land_area
++            if land_area is not None
++            else getattr(self.config.retailer, "initial_land_area", 20.0)
+         )
+         self.environmental_impact: float = float(
+-            environmental_impact if environmental_impact is not None else getattr(self.config.retailer, 'environmental_impact', 1.0)
++            environmental_impact
++            if environmental_impact is not None
++            else getattr(self.config.retailer, "environmental_impact", 1.0)
+         )
+ 
+         # Book-keeping
+@@ -208,7 +217,9 @@ class RetailerAgent(BaseAgent):
+     # --- Inventory + pricing ---
+     def _sync_inventory_totals_from_lots(self) -> None:
+         self.inventory_units = float(sum(float(l.units) for l in self.inventory_lots))
+-        self.inventory_value = float(sum(float(l.carrying_value(config=self.config)) for l in self.inventory_lots))
++        self.inventory_value = float(
++            sum(float(l.carrying_value(config=self.config)) for l in self.inventory_lots)
++        )
+ 
+         # Defensive clamps: small negatives can appear from float ops.
+         if self.inventory_units < 0:
+@@ -275,7 +286,13 @@ class RetailerAgent(BaseAgent):
+ 
+     def _sellable_units(self) -> float:
+         self._ensure_legacy_lot()
+-        return float(sum(float(l.units) for l in self.inventory_lots if not l.is_unsellable(config=self.config)))
++        return float(
++            sum(
++                float(l.units)
++                for l in self.inventory_lots
++                if not l.is_unsellable(config=self.config)
++            )
++        )
+ 
+     def _consume_units_fifo(self, quantity: float) -> float:
+         """Consume inventory FIFO and return carried cost value.
+@@ -324,7 +341,9 @@ class RetailerAgent(BaseAgent):
+         return self.last_unit_price
+ 
+     # --- Warengeld primitives ---
+-    def restock_goods(self, companies: list[Company], bank: WarengeldBank, current_step: int) -> float:
++    def restock_goods(
++        self, companies: list[Company], bank: WarengeldBank, current_step: int
++    ) -> float:
+         """Order goods from producers if inventory is below reorder point.
+ 
+         Money creation happens inside `bank.finance_goods_purchase`.Let me check if there are any recent changes to the retailer agent that might affect money creation:
+[0m✱ [0mGrep "def finance_goods_purchase"[90m in Wirtschaftssimulation · 3 matches[0m
+Let me check the bank's finance_goods_purchase method since that's where money creation happens:
+[0m→ [0mRead Wirtschaftssimulation/agents/bank.py[90m [offset=187, limit=50][0m
+[0m→ [0mRead Wirtschaftssimulation/agents/retailer_agent.py[90m [offset=350, limit=50][0m
+Now let me check if there have been any changes to the retailer's restock logic or the bank's CC limit management. Let me look at the retailer's restock method:
+[0m✱ [0mGrep "cc_limit"[90m in Wirtschaftssimulation/agents/retailer_agent.py · 7 matches[0m
+Let me check if there have been changes to the retailer's CC limit management or repayment logic:
+[0m✱ [0mGrep "cc_limit"[90m in Wirtschaftssimulation/agents/bank.py · 24 matches[0m
+Let me check the bank's CC limit management:
+Now let me check if there have been any recent changes to the bank's CC limit recomputation logic:
+[0m
+[0m$ [0mcd /home/andreas/src/Wirtschaftssimulation && git log -p --all agents/bank.py | grep -A 20 -B 5 "recompute_cc_limits"
+@@ -113,8 +112,9 @@ class WarengeldBank(BaseAgent):
+         if hasattr(retailer, "cc_limit"):
+             retailer.cc_limit = limit
+ 
+-
+-    def recompute_cc_limits(self, retailers: Iterable[Any], *, current_step: int) -> dict[str, float]:
++    def recompute_cc_limits(
++        self, retailers: Iterable[Any], *, current_step: int
++    ) -> dict[str, float]:
+         """Recompute Kontokorrent limits from rolling COGS and audit risk.
+ 
+         Referenz: doc/issues.md Abschnitt 2 → „cc_limit-Policy / partnerschaftlicher Rahmen“.
+@@ -138,7 +138,9 @@ class WarengeldBank(BaseAgent):
+             # Rolling monthly COGS (retailer-side helper).
+             avg_monthly_cogs = 0.0
+             if hasattr(r, "avg_monthly_cogs"):
+-                avg_monthly_cogs = float(r.avg_monthly_cogs(window_days=window_days, days_per_month=days_per_month))
++                avg_monthly_cogs = float(
++                    r.avg_monthly_cogs(window_days=window_days, days_per_month=days_per_month)
++                )
+ 
+             base_limit = max(0.0, multiplier * avg_monthly_cogs)
+ 
+@@ -158,9 +160,20 @@ class WarengeldBank(BaseAgent):
+             if proposed_limit < current_limit:
+                 # Partnerschaftlich: der Retailer kann Decreases (starke) ablehnen.
+                 if hasattr(r, "accept_cc_limit_proposal"):
+--
+         # Keep retailer attribute in sync if present.
+         if hasattr(retailer, "cc_limit"):
+             retailer.cc_limit = limit
+ 
++
++    def recompute_cc_limits(self, retailers: Iterable[Any], *, current_step: int) -> dict[str, float]:
++        """Recompute Kontokorrent limits from rolling COGS and audit risk.
++
++        Referenz: doc/issues.md Abschnitt 2 → „cc_limit-Policy / partnerschaftlicher Rahmen“.
++        """
++        if not isinstance(current_step, int):
++            raise TypeError("current_step must be int")
++
++        multiplier = float(self.config.bank.cc_limit_multiplier)
++        window_days = int(self.config.bank.cc_limit_rolling_window_days)
++        days_per_month = int(self.config.time.days_per_month)
++        audit_penalty = float(self.config.bank.cc_limit_audit_risk_penalty)
++        max_decrease = float(self.config.bank.cc_limit_max_monthly_decrease)
++        floor = float(self.config.retailer.initial_cc_limit)
++
++        updated: dict[str, float] = {}
++        for r in retailers:
++            retailer_id = str(getattr(r, "unique_id", ""))
++            if not retailer_id:
++                continue
++[0m
+
+[0m✱ [0mGrep "def avg_monthly_cogs"[90m in Wirtschaftssimulation · 1 match[0m
+Let me check if there have been changes to the retailer's avg_monthly_cogs method:
+[0m→ [0mRead Wirtschaftssimulation/agents/retailer_agent.py[90m [offset=185, limit=20][0m
+[0m✱ [0mGrep "cogs_history"[90m in Wirtschaftssimulation/agents/retailer_agent.py · 7 matches[0m
+Now let me check if there have been any changes to the retailer's COGS tracking. Let me look at the retailer's step method to see how COGS is recorded:
+[0m→ [0mRead Wirtschaftssimulation/agents/retailer_agent.py[90m [offset=176, limit=15][0m
+[0m✱ [0mGrep "push_cogs_history"[90m in Wirtschaftssimulation · 4 matches[0m
+Now let me check where push_cogs_history is called to understand the COGS tracking:
+[0m→ [0mRead Wirtschaftssimulation/main.py[90m [offset=1070, limit=15][0m
+Let me check the main simulation loop to see when COGS history is pushed:
+[0m✱ [0mGrep "def sell_to_household"[90m in Wirtschaftssimulation · 4 matches[0m
+Now I need to understand what might be causing the lower M1. Let me check if there have been changes to how COGS is calculated or tracked. Let me look at the retailer's sell_to_household method:
+[0m→ [0mRead Wirtschaftssimulation/agents/retailer_agent.py[90m [offset=425, limit=30][0m
+[0m→ [0mRead Wirtschaftssimulation/agents/retailer_agent.py[90m [offset=455, limit=20][0m
+[0m✱ [0mGrep "repay_cc"[90m in Wirtschaftssimulation · 3 matches[0m
+Now I can see that COGS is being tracked correctly in line 459. Let me check if there have been any changes to the retailer's repayment logic, which is where money is destroyed:
+[0m→ [0mRead Wirtschaftssimulation/agents/bank.py[90m [offset=292, limit=30][0m
+[0m→ [0mRead Wirtschaftssimulation/agents/bank.py[90m [offset=322, limit=20][0m
+[0m[0m$ [0mcd /home/andreas/src/Wirtschaftssimulation && git log -p --all agents/bank.py | grep -A 10 -B 5 "auto_repay_cc_from_sight"
+
+[0m
+
+self.liquidity += repayment_amount
+         return float(repayment_amount)
+ 
+-
+     # --- Warengeld feedback mechanisms (spec Section 4.x) ---
+     def auto_repay_cc_from_sight(self, retailer: Any) -> float:
+         """Automatically repay Kontokorrent from excess sight balances.
+@@ -292,7 +309,9 @@ class WarengeldBank(BaseAgent):
+             return 0.0
+ 
+         # Determine allowance (buffer). Prefer explicit attribute, fall back to config.
+-        allowance = float(getattr(retailer, "sight_allowance", float(self.config.retailer.working_capital_buffer)))
++        allowance = float(
++            getattr(retailer, "sight_allowance", float(self.config.retailer.working_capital_buffer))
++        )
+ 
+--
+         self.liquidity += repayment_amount
+         return float(repayment_amount)
+ 
++
++    # --- Warengeld feedback mechanisms (spec Section 4.x) ---
++    def auto_repay_cc_from_sight(self, retailer: Any) -> float:
++        """Automatically repay Kontokorrent from excess sight balances.
++
++        Spezifikation: doc/specs.md Section 4.2.
++        Expliziter Bezug: doc/issues.md Abschnitt 4/5 → "Hyperinflation / Numerische Überläufe ...".
++
++        Policy:
++        - Keep an allowance (working capital buffer) untouched.
++        - Repay only excess above that allowance.
++
++        Returns the repaid amount (money is extinguished via sight debit).Now let me check if there have been any recent changes to the retailer's auto-repayment logic or the bank's repayment processing:
+[0m→ [0mRead Wirtschaftssimulation/agents/retailer_agent.py[90m [offset=540, limit=20][0m
+Now let me check if there have been changes to the retailer's step method where auto-repayment is called:
+Now I need to understand what might be causing the lower M1. Let me create a more detailed debug script to examine the simulation trajectory step by step:
+[0m
+[0m
+[0m← [0mWrite Wirtschaftssimulation/debug_detailed.pyWrote file successfully.
+
+LSP errors detected in other files:
+<diagnostics file="/home/andreas/src/Wirtschaftssimulation/tests/test_m6_golden_run_snapshot.py">
+ERROR [10:11] Argument missing for parameter "result_storage"
+</diagnostics>
+
+LSP errors detected in other files:
+<diagnostics file="/home/andreas/src/Wirtschaftssimulation/debug_golden_run.py">
+ERROR [13:11] Argument missing for parameter "result_storage"
+</diagnostics>
+
+LSP errors detected in other files:
+<diagnostics file="/home/andreas/src/Wirtschaftssimulation/config.py">
+ERROR [55:66] Argument of type "type[InitialHousehold]" cannot be assigned to parameter "default_factory" of type "(() -> _T@Field) | ((dict[str, Any]) -> _T@Field)" in function "Field"
+  Type "type[InitialHousehold]" is not assignable to type "(() -> _T@Field) | ((dict[str, Any]) -> _T@Field)"
+    Type "type[InitialHousehold]" is not assignable to type "(dict[str, Any]) -> _T@Field"
+      Function accepts too many positional parameters; expected 0 but received 1
+        Extra parameter "income"
+        Extra parameter "land_area"
+        Extra parameter "environmental_impact"
+    Type "type[InitialHousehold]" is not assignable to type "() -> _T@Field"
+      Extra parameter "income"
+  ...
+ERROR [56:62] Argument of type "type[InitialCompany]" cannot be assigned to parameter "default_factory" of type "(() -> _T@Field) | ((dict[str, Any]) -> _T@Field)" in function "Field"
+  Type "type[InitialCompany]" is not assignable to type "(() -> _T@Field) | ((dict[str, Any]) -> _T@Field)"
+    Type "type[InitialCompany]" is not assignable to type "(dict[str, Any]) -> _T@Field"
+      Function accepts too many positional parameters; expected 0 but received 1
+        Extra parameter "production_capacity"
+        Extra parameter "land_area"
+        Extra parameter "environmental_impact"
+    Type "type[InitialCompany]" is not assignable to type "() -> _T@Field"
+      Extra parameter "production_capacity"
+  ...
+ERROR [58:64] Argument of type "type[InitialRetailer]" cannot be assigned to parameter "default_factory" of type "(() -> _T@Field) | ((dict[str, Any]) -> _T@Field)" in function "Field"
+  Type "type[InitialRetailer]" is not assignable to type "(() -> _T@Field) | ((dict[str, Any]) -> _T@Field)"
+    Type "type[InitialRetailer]" is not assignable to type "(dict[str, Any]) -> _T@Field"
+      Function accepts too many positional parameters; expected 0 but received 1
+        Extra parameter "initial_cc_limit"
+        Extra parameter "target_inventory_value"
+        Extra parameter "land_area"
+        Extra parameter "environmental_impact"
+    Type "type[InitialRetailer]" is not assignable to type "() -> _T@Field"
+  ...
+ERROR [493:49] Argument of type "type[TaxRates]" cannot be assigned to parameter "default_factory" of type "(() -> _T@Field) | ((dict[str, Any]) -> _T@Field)" in function "Field"
+  Type "type[TaxRates]" is not assignable to type "(() -> _T@Field) | ((dict[str, Any]) -> _T@Field)"
+    Type "type[TaxRates]" is not assignable to type "(dict[str, Any]) -> _T@Field"
+      Function accepts too many positional parameters; expected 0 but received 1
+        Extra parameter "bodensteuer"
+        Extra parameter "umweltsteuer"
+    Type "type[TaxRates]" is not assignable to type "() -> _T@Field"
+      Extra parameter "bodensteuer"
+      Extra parameter "umweltsteuer"
+ERROR [494:56] Argument of type "type[HouseholdConfig]" cannot be assigned to parameter "default_factory" of type "(() -> _T@Field) | ((dict[str, Any]) -> _T@Field)" in function "Field"
+  Type "type[HouseholdConfig]" is not assignable to type "(() -> _T@Field) | ((dict[str, Any]) -> _T@Field)"
+    Type "type[HouseholdConfig]" is not assignable to type "(dict[str, Any]) -> _T@Field"
+      Function accepts too many positional parameters; expected 0 but received 1
+        Extra parameter "base_income"
+        Extra parameter "consumption_rate_normal"
+        Extra parameter "consumption_rate_growth"
+        Extra parameter "savings_growth_trigger"
+        Extra parameter "sight_growth_trigger"
+  ...
+ERROR [495:52] Argument of type "type[CompanyConfig]" cannot be assigned to parameter "default_factory" of type "(() -> _T@Field) | ((dict[str, Any]) -> _T@Field)" in function "Field"
+  Type "type[CompanyConfig]" is not assignable to type "(() -> _T@Field) | ((dict[str, Any]) -> _T@Field)"
+    Type "type[CompanyConfig]" is not assignable to type "(dict[str, Any]) -> _T@Field"
+      Function accepts too many positional parameters; expected 0 but received 1
+        Extra parameter "base_wage"
+        Extra parameter "employee_capacity_ratio"
+        Extra parameter "investment_threshold"
+        Extra parameter "growth_investment_factor"
+        Extra parameter "split_ratio"
+  ...
+ERROR [496:54] Argument of type "type[RetailerConfig]" cannot be assigned to parameter "default_factory" of type "(() -> _T@Field) | ((dict[str, Any]) -> _T@Field)" in function "Field"
+  Type "type[RetailerConfig]" is not assignable to type "(() -> _T@Field) | ((dict[str, Any]) -> _T@Field)"
+    Type "type[RetailerConfig]" is not assignable to type "(dict[str, Any]) -> _T@Field"
+      Function accepts too many positional parameters; expected 0 but received 1
+        Extra parameter "initial_cc_limit"
+        Extra parameter "target_inventory_value"
+        Extra parameter "reorder_point_ratio"
+        Extra parameter "working_capital_buffer"
+        Extra parameter "price_markup"
+  ...
+ERROR [497:46] Argument of type "type[BankConfig]" cannot be assigned to parameter "default_factory" of type "(() -> _T@Field) | ((dict[str, Any]) -> _T@Field)" in function "Field"
+  Type "type[BankConfig]" is not assignable to type "(() -> _T@Field) | ((dict[str, Any]) -> _T@Field)"
+    Type "type[BankConfig]" is not assignable to type "(dict[str, Any]) -> _T@Field"
+      Function accepts too many positional parameters; expected 0 but received 1
+        Extra parameter "base_account_fee"
+        Extra parameter "positive_balance_fee_rate"
+        Extra parameter "negative_balance_fee_rate"
+        Extra parameter "risk_pool_rate"
+        Extra parameter "cc_limit_multiplier"
+  ...
+ERROR [498:61] Argument of type "type[SavingsBankConfig]" cannot be assigned to parameter "default_factory" of type "(() -> _T@Field) | ((dict[str, Any]) -> _T@Field)" in function "Field"
+  Type "type[SavingsBankConfig]" is not assignable to type "(() -> _T@Field) | ((dict[str, Any]) -> _T@Field)"
+    Type "type[SavingsBankConfig]" is not assignable to type "(dict[str, Any]) -> _T@Field"
+      Function accepts too many positional parameters; expected 0 but received 1
+        Extra parameter "max_savings_per_account"
+        Extra parameter "max_savings_household"
+        Extra parameter "max_savings_company"
+        Extra parameter "savings_cap_min_scale"
+        Extra parameter "savings_cap_max_scale"
+  ...
+ERROR [499:61] Argument of type "type[LaborMarketConfig]" cannot be assigned to parameter "default_factory" of type "(() -> _T@Field) | ((dict[str, Any]) -> _T@Field)" in function "Field"
+  Type "type[LaborMarketConfig]" is not assignable to type "(() -> _T@Field) | ((dict[str, Any]) -> _T@Field)"
+    Type "type[LaborMarketConfig]" is not assignable to type "(dict[str, Any]) -> _T@Field"
+      Function accepts too many positional parameters; expected 0 but received 1
+        Extra parameter "starting_wage"
+        Extra parameter "minimum_wage_floor"
+        Extra parameter "wage_unemployment_sensitivity"
+        Extra parameter "wage_price_index_sensitivity"
+        Extra parameter "target_unemployment_rate"
+  ...
+ERROR [500:50] Argument of type "type[MarketConfig]" cannot be assigned to parameter "default_factory" of type "(() -> _T@Field) | ((dict[str, Any]) -> _T@Field)" in function "Field"
+  Type "type[MarketConfig]" is not assignable to type "(() -> _T@Field) | ((dict[str, Any]) -> _T@Field)"
+    Type "type[MarketConfig]" is not assignable to type "(dict[str, Any]) -> _T@Field"
+      Function accepts too many positional parameters; expected 0 but received 1
+        Extra parameter "demand_default"
+        Extra parameter "speculation_limit"
+        Extra parameter "price_index_base"
+        Extra parameter "price_index_max"
+        Extra parameter "price_index_pressure_target"
+  ...
+ERROR [501:64] Argument of type "type[EnvironmentalConfig]" cannot be assigned to parameter "default_factory" of type "(() -> _T@Field) | ((dict[str, Any]) -> _T@Field)" in function "Field"
+  Type "type[EnvironmentalConfig]" is not assignable to type "(() -> _T@Field) | ((dict[str, Any]) -> _T@Field)"
+    Type "type[EnvironmentalConfig]" is not assignable to type "(dict[str, Any]) -> _T@Field"
+      Function accepts too many positional parameters; expected 0 but received 1
+        Extra parameter "environmental_tax_state_share"
+        Extra parameter "penalty_factor_env_audit"
+        Extra parameter "recycling_efficiency"
+        Extra parameter "waste_output_per_env_impact"
+        Extra parameter "recycling_cost_per_unit"
+  ...
+ERROR [502:54] Argument of type "type[ClearingConfig]" cannot be assigned to parameter "default_factory" of type "(() -> _T@Field) | ((dict[str, Any]) -> _T@Field)" in function "Field"
+  Type "type[ClearingConfig]" is not assignable to type "(() -> _T@Field) | ((dict[str, Any]) -> _T@Field)"
+    Type "type[ClearingConfig]" is not assignable to type "(dict[str, Any]) -> _T@Field"
+      Function accepts too many positional parameters; expected 0 but received 1
+        Extra parameter "hyperwealth_threshold"
+        Extra parameter "required_reserve_ratio"
+        Extra parameter "reserve_ratio_step"
+        Extra parameter "reserve_bounds_min"
+        Extra parameter "reserve_bounds_max"
+  ...
+ERROR [506:52] Argument of type "type[SpatialConfig]" cannot be assigned to parameter "default_factory" of type "(() -> _T@Field) | ((dict[str, Any]) -> _T@Field)" in function "Field"
+  Type "type[SpatialConfig]" is not assignable to type "(() -> _T@Field) | ((dict[str, Any]) -> _T@Field)"
+    Type "type[SpatialConfig]" is not assignable to type "(dict[str, Any]) -> _T@Field"
+      Function accepts too many positional parameters; expected 0 but received 1
+        Extra parameter "local_trade_bias"
+    Type "type[SpatialConfig]" is not assignable to type "() -> _T@Field"
+      Extra parameter "local_trade_bias"
+ERROR [661:35] Argument of type "ConfigValue" cannot be assigned to parameter "simulation_steps" of type "PositiveInt" in function "__init__"
+  Type "ConfigValue" is not assignable to type "PositiveInt"
+    "float" is not assignable to "int"
+ERROR [661:35] Argument of type "ConfigValue" cannot be assigned to parameter "result_storage" of type "str" in function "__init__"
+  Type "ConfigValue" is not assignable to type "str"
+    "float" is not assignable to "str"
+ERROR [661:35] Argument of type "ConfigValue" cannot be assigned to parameter "tax_rates" of type "TaxRates" in function "__init__"
+  Type "ConfigValue" is not assignable to type "TaxRates"
+    "float" is not assignable to "TaxRates"
+ERROR [661:35] Argument of type "ConfigValue" cannot be assigned to parameter "household" of type "HouseholdConfig" in function "__init__"
+  Type "ConfigValue" is not assignable to type "HouseholdConfig"
+    "float" is not assignable to "HouseholdConfig"
+ERROR [661:35] Argument of type "ConfigValue" cannot be assigned to parameter "company" of type "CompanyConfig" in function "__init__"
+  Type "ConfigValue" is not assignable to type "CompanyConfig"
+    "float" is not assignable to "CompanyConfig"
+ERROR [661:35] Argument of type "ConfigValue" cannot be assigned to parameter "retailer" of type "RetailerConfig" in function "__init__"
+  Type "ConfigValue" is not assignable to type "RetailerConfig"
+    "float" is not assignable to "RetailerConfig"
+... and 35 more
+</diagnostics>
+
+LSP errors detected in other files:
+<diagnostics file="/home/andreas/src/Wirtschaftssimulation/main.py">
+ERROR [132:12] Argument missing for parameter "result_storage"
+ERROR [1091:33] Argument of type "list[Household]" cannot be assigned to parameter "households" of type "Sequence[TaxableAgent]" in function "spend_budgets"
+  "list[Household]" is not assignable to "Sequence[TaxableAgent]"
+    Type parameter "_T_co@Sequence" is covariant, but "Household" is not a subtype of "TaxableAgent"
+      "Household" is incompatible with protocol "TaxableAgent"
+        "environment_impact" is not present
+          "balance" is invariant because it is mutable
+          "balance" is an incompatible type
+ERROR [1091:45] Argument of type "list[Company]" cannot be assigned to parameter "companies" of type "Sequence[TaxableAgent]" in function "spend_budgets"
+  "list[Company]" is not assignable to "Sequence[TaxableAgent]"
+    Type parameter "_T_co@Sequence" is covariant, but "Company" is not a subtype of "TaxableAgent"
+      "Company" is incompatible with protocol "TaxableAgent"
+        "environment_impact" is not present
+          "balance" is invariant because it is mutable
+          "balance" is an incompatible type
+ERROR [1091:56] Argument of type "list[RetailerAgent]" cannot be assigned to parameter "retailers" of type "Sequence[TaxableAgent]" in function "spend_budgets"
+  "list[RetailerAgent]" is not assignable to "Sequence[TaxableAgent]"
+    Type parameter "_T_co@Sequence" is covariant, but "RetailerAgent" is not a subtype of "TaxableAgent"
+      "RetailerAgent" is incompatible with protocol "TaxableAgent"
+        "environment_impact" is not present
+          "balance" is invariant because it is mutable
+          "balance" is an incompatible type
+</diagnostics>
+
+LSP errors detected in other files:
+<diagnostics file="/home/andreas/src/Wirtschaftssimulation/agents/household_agent.py">
+ERROR [428:63] Argument of type "object" cannot be assigned to parameter "retailer" of type "RetailerAgent | None" in function "__init__"
+  Type "object" is not assignable to type "RetailerAgent | None"
+    "object" is not assignable to "RetailerAgent"
+    "object" is not assignable to "None"
+ERROR [976:9] Method "step" overrides class "BaseAgent" in an incompatible manner
+  Parameter "clock" is missing in base
+  Parameter "savings_bank" is missing in base
+  Return type mismatch: base method returns type "None", override returns type "Household | None"
+    Type "Household | None" is not assignable to type "None"
+      "Household" is not assignable to "None"
+</diagnostics>
+
+Let me run the detailed debug script:
+[0m$ [0mcd /home/andreas/src/Wirtschaftssimulation && python debug_detailed.py
+[32m[######################] 100.00%  step 30/30  HH     4  CO     2  M1   145.16  elapsed 0s  eta 0s[0m
+Could not load metrics: [Errno 21] Is a directory: '/tmp/tmpnggb6kfh/metrics.json'
+
+=== FINAL METRICS ===
+M1 proxy: 145.16
+Total inventory value: 249.22
+Total CC exposure: 145.93
+Employment rate: 1.00
+Households: 4
+Retailers: 2
+Companies: 2
+
+=== RETAILER DETAILS ===
+Retailer 0: CC_balance=-66.97, CC_limit=830.80, sight_balance=26.41
+  Inventory: value=120.69, units=12.16
+  Sales: total=11.75, COGS: total=1.45
+Retailer 1: CC_balance=-78.96, CC_limit=788.71, sight_balance=26.42
+  Inventory: value=128.53, units=12.98
+  Sales: total=11.75, COGS: total=1.45
+
+[0m

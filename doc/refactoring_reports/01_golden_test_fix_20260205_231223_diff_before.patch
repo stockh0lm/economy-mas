@@ -1,0 +1,553 @@
+diff --git a/agents/household_agent.py b/agents/household_agent.py
+index 1c0f4e7..25e0627 100644
+--- a/agents/household_agent.py
++++ b/agents/household_agent.py
+@@ -15,9 +15,24 @@ from __future__ import annotations
+ import random
+ from collections import deque
+ import numpy as np
++import os
++
++
++_DEFAULT_NP_RNG = None
++
++
++def _get_default_np_rng():
++    global _DEFAULT_NP_RNG
++    if _DEFAULT_NP_RNG is None:
++        # Try to get seed from environment for reproducibility
++        env_seed = os.getenv("SIM_SEED")
++        if env_seed is not None and env_seed != "":
++            _DEFAULT_NP_RNG = np.random.default_rng(int(env_seed))
++        else:
++            _DEFAULT_NP_RNG = np.random.default_rng()
++    return _DEFAULT_NP_RNG
+ 
+ 
+-_DEFAULT_NP_RNG = np.random.default_rng()
+ from dataclasses import dataclass
+ from typing import TYPE_CHECKING, Protocol, Sequence
+ 
+@@ -478,11 +493,15 @@ class Household(BaseAgent):
+                 h._record_consumption(0.0)
+             return [0.0] * n
+ 
+-        gen = rng or _DEFAULT_NP_RNG
++        gen = rng or _get_default_np_rng()
+ 
+         # Build arrays (n is typically small, but this avoids Python math per agent)
+-        balances = np.fromiter((float(h.sight_balance) for h in households), dtype=np.float64, count=n)
+-        growth_mask = np.fromiter((bool(h.growth_phase) for h in households), dtype=np.bool_, count=n)
++        balances = np.fromiter(
++            (float(h.sight_balance) for h in households), dtype=np.float64, count=n
++        )
++        growth_mask = np.fromiter(
++            (bool(h.growth_phase) for h in households), dtype=np.bool_, count=n
++        )
+ 
+         cfg = households[0].config.household
+         rate_normal = float(cfg.consumption_rate_normal)
+@@ -587,8 +606,7 @@ class Household(BaseAgent):
+         if total_savings <= 0:
+             disposable = max(
+                 0.0,
+-                float(self.sight_balance)
+-                - float(self.config.household.transaction_buffer),
++                float(self.sight_balance) - float(self.config.household.transaction_buffer),
+             )
+             if disposable <= 0:
+                 return None
+@@ -710,7 +728,9 @@ class Household(BaseAgent):
+         elif income_factor > 4.0:
+             income_factor = 4.0
+ 
+-        trigger = float(cfg.savings_growth_trigger) if float(cfg.savings_growth_trigger) > 0 else 1.0
++        trigger = (
++            float(cfg.savings_growth_trigger) if float(cfg.savings_growth_trigger) > 0 else 1.0
++        )
+         wealth_rel = wealth / trigger
+         wealth_elasticity = float(cfg.fertility_wealth_sensitivity)
+         wealth_factor = wealth_rel**wealth_elasticity if wealth_elasticity != 0.0 else 1.0
+@@ -929,7 +949,9 @@ class Household(BaseAgent):
+             return
+ 
+         if stage == "post":
+-            month_end = is_month_end if is_month_end is not None else clock.is_month_end(current_step)
++            month_end = (
++                is_month_end if is_month_end is not None else clock.is_month_end(current_step)
++            )
+             if month_end:
+                 self.save(savings_bank)
+             return
+diff --git a/doc/refactoring_plan.md b/doc/refactoring_plan.md
+index aa07981..212c711 100644
+--- a/doc/refactoring_plan.md
++++ b/doc/refactoring_plan.md
+@@ -95,6 +95,8 @@ Use a wrapper script that calls your CLI (opencode or Cline) in non-interactive
+ 
+ For a concrete example, see: `tools/run_refactor_batch.sh`
+ 
++The script expects reviewer output to end with either `REVIEW_PASS` or `REVIEW_FAIL` to allow automated iteration.
++
+ ```bash
+ # Pseudocode template (adjust CLI flags for your tool)
+ PROMPTS=(doc/refactoring_prompts/01_golden_test_fix.md \
+diff --git a/doc/refactoring_prompts/01_golden_test_fix.md b/doc/refactoring_prompts/01_golden_test_fix.md
+index 6c0f8c4..d61cfeb 100644
+--- a/doc/refactoring_prompts/01_golden_test_fix.md
++++ b/doc/refactoring_prompts/01_golden_test_fix.md
+@@ -82,6 +82,16 @@ Based on analysis results:
+ 
+ ---
+ 
++## Controlled Diagnostics (Required)
++
++- Use only existing tests and temporary files under `tmp_path` or `output/` with clear naming
++- If a debug script is necessary, it must be named `debug_*.py` and deleted after use
++- Do not add permanent debug tests
++- Prefer logging or metrics exports already produced by the simulation
++- If results vary across runs, run the golden test 3 times and report the median metric values
++
++---
++
+ ## Verification Commands
+ 
+ ```bash
+diff --git a/doc/refactoring_prompts/02_golden_test_suite.md b/doc/refactoring_prompts/02_golden_test_suite.md
+index 05f9f2f..c3d768b 100644
+--- a/doc/refactoring_prompts/02_golden_test_suite.md
++++ b/doc/refactoring_prompts/02_golden_test_suite.md
+@@ -108,6 +108,15 @@ class TestGoldenRunComprehensive:
+ 
+ ---
+ 
++## Controlled Diagnostics (Required)
++
++- Use only existing tests and temporary files under `tmp_path` or `output/` with clear naming
++- If a debug script is necessary, it must be named `debug_*.py` and deleted after use
++- Do not add permanent debug tests
++- Prefer metrics CSV exports to validate scenarios
++
++---
++
+ ### Step 2: Optional Validation Script
+ 
+ If you want CSV baseline comparison, create `scripts/validate_golden_run.py` and wire it to real CSV exports. This is optional and must not be a dependency for the tests above. Use the same CSV structure exported by `metrics.py` (global_metrics_*.csv).
+diff --git a/doc/refactoring_prompts/03_plot_metrics_tests.md b/doc/refactoring_prompts/03_plot_metrics_tests.md
+index f72fbb9..1fbf6e7 100644
+--- a/doc/refactoring_prompts/03_plot_metrics_tests.md
++++ b/doc/refactoring_prompts/03_plot_metrics_tests.md
+@@ -25,6 +25,15 @@ pytest tests/test_plot_metrics.py -v
+ 
+ ---
+ 
++## Controlled Diagnostics (Required)
++
++- Use only existing tests and temporary files under `tmp_path` or `output/` with clear naming
++- If a debug script is necessary, it must be named `debug_*.py` and deleted after use
++- Do not add permanent debug tests
++- Prefer integration tests that run short simulations (<= 10 steps)
++
++---
++
+ ### Step 2: Create Integration Test Module
+ 
+ Create `tests/test_plot_metrics_integration.py` that reuses the existing plotting functions and validates real output. Keep it small to avoid long test times.
+diff --git a/doc/refactoring_prompts/04_extract_simulation_engine.md b/doc/refactoring_prompts/04_extract_simulation_engine.md
+index 0205721..08e9ddd 100644
+--- a/doc/refactoring_prompts/04_extract_simulation_engine.md
++++ b/doc/refactoring_prompts/04_extract_simulation_engine.md
+@@ -28,6 +28,15 @@ Define a `SimulationEngine` class with:
+ 
+ ---
+ 
++## Controlled Diagnostics (Required)
++
++- Use only existing tests and temporary files under `tmp_path` or `output/` with clear naming
++- If a debug script is necessary, it must be named `debug_*.py` and deleted after use
++- Do not add permanent debug tests
++- Compare fixed-seed outputs using existing metrics exports
++
++---
++
+ ### Step 2: Move Simulation Loop
+ Extract the loop from `main.py` into `SimulationEngine.run()` and `SimulationEngine.step()`.
+ Preserve:
+diff --git a/doc/refactoring_prompts/05_refactor_metrics.md b/doc/refactoring_prompts/05_refactor_metrics.md
+index 8d72fa4..1bd2c2b 100644
+--- a/doc/refactoring_prompts/05_refactor_metrics.md
++++ b/doc/refactoring_prompts/05_refactor_metrics.md
+@@ -25,6 +25,15 @@ Create `metrics/` package with:
+ 
+ ---
+ 
++## Controlled Diagnostics (Required)
++
++- Use only existing tests and temporary files under `tmp_path` or `output/` with clear naming
++- If a debug script is necessary, it must be named `debug_*.py` and deleted after use
++- Do not add permanent debug tests
++- Validate outputs via existing metrics CSV exports and fixed seeds
++
++---
++
+ ### Step 2: Move Responsibilities
+ - **collector.py**: MetricsCollector class, data gathering logic
+ - **calculator.py**: metric calculations (global money, price indexes)
+diff --git a/doc/refactoring_prompts/06_extract_household_components.md b/doc/refactoring_prompts/06_extract_household_components.md
+index 7a198d6..b32e052 100644
+--- a/doc/refactoring_prompts/06_extract_household_components.md
++++ b/doc/refactoring_prompts/06_extract_household_components.md
+@@ -24,6 +24,15 @@ Create `agents/household/` with:
+ 
+ ---
+ 
++## Controlled Diagnostics (Required)
++
++- Use only existing tests and temporary files under `tmp_path` or `output/` with clear naming
++- If a debug script is necessary, it must be named `debug_*.py` and deleted after use
++- Do not add permanent debug tests
++- Validate behavior using fixed seeds and existing metrics CSVs
++
++---
++
+ ### Step 2: Move Logic
+ - **consumption.py**: consumption decision and purchase logic
+ - **savings.py**: savings rate, portfolio, deposits
+diff --git a/doc/refactoring_prompts/07_increase_test_coverage.md b/doc/refactoring_prompts/07_increase_test_coverage.md
+index 0cbc068..dbc6253 100644
+--- a/doc/refactoring_prompts/07_increase_test_coverage.md
++++ b/doc/refactoring_prompts/07_increase_test_coverage.md
+@@ -20,6 +20,13 @@ Use coverage report to find low-coverage modules, especially:
+ - Reviewer model checks `git diff --stat` and `git show` before approving
+ - Roll back safely if needed: `git restore <files>` for uncommitted changes, `git revert <commit>` for committed changes (no `reset --hard`)
+ 
++## Controlled Diagnostics (Required)
++
++- Use only existing tests and temporary files under `tmp_path` or `output/` with clear naming
++- If a debug script is necessary, it must be named `debug_*.py` and deleted after use
++- Do not add permanent debug tests
++- Keep new tests deterministic via fixed seeds where applicable
++
+ ### Step 2: Add Tests
+ Create targeted tests for:
+ - Loan cap enforcement
+diff --git a/doc/refactoring_prompts/08_performance_optimization.md b/doc/refactoring_prompts/08_performance_optimization.md
+index 1bf7a66..9b42030 100644
+--- a/doc/refactoring_prompts/08_performance_optimization.md
++++ b/doc/refactoring_prompts/08_performance_optimization.md
+@@ -23,6 +23,13 @@ python -m pstats /tmp/sim_profile.prof
+ - Reviewer model checks `git diff --stat` and `git show` before approving
+ - Roll back safely if needed: `git restore <files>` for uncommitted changes, `git revert <commit>` for committed changes (no `reset --hard`)
+ 
++## Controlled Diagnostics (Required)
++
++- Use only existing profiling tools and temporary files under `/tmp`
++- If a debug script is necessary, it must be named `debug_*.py` and deleted after use
++- Do not add permanent debug tests
++- Use fixed seeds for before/after comparisons
++
+ ### Step 2: Identify Hotspots
+ Look for:
+ - Tight loops in metrics collection
+diff --git a/doc/refactoring_prompts/09_documentation_types.md b/doc/refactoring_prompts/09_documentation_types.md
+index 4cd3357..d71101f 100644
+--- a/doc/refactoring_prompts/09_documentation_types.md
++++ b/doc/refactoring_prompts/09_documentation_types.md
+@@ -21,6 +21,12 @@ Add docstrings to all public classes and methods, focusing on:
+ - Reviewer model checks `git diff --stat` and `git show` before approving
+ - Roll back safely if needed: `git restore <files>` for uncommitted changes, `git revert <commit>` for committed changes (no `reset --hard`)
+ 
++## Controlled Diagnostics (Required)
++
++- Use only existing tests and temporary files under `tmp_path` or `output/` with clear naming
++- If a debug script is necessary, it must be named `debug_*.py` and deleted after use
++- Do not add permanent debug tests
++
+ ### Step 2: Add Type Hints
+ Introduce type hints for public functions and class methods.
+ Use standard typing: `Optional`, `Mapping`, `Sequence`, `list`, `dict`.
+diff --git a/doc/refactoring_prompts/10_comprehensive_regression.md b/doc/refactoring_prompts/10_comprehensive_regression.md
+index 8225953..69a5496 100644
+--- a/doc/refactoring_prompts/10_comprehensive_regression.md
++++ b/doc/refactoring_prompts/10_comprehensive_regression.md
+@@ -18,6 +18,13 @@ Run all tests with verbosity and capture logs.
+ - Reviewer model checks `git diff --stat` and `git show` before approving
+ - Roll back safely if needed: `git restore <files>` for uncommitted changes, `git revert <commit>` for committed changes (no `reset --hard`)
+ 
++## Controlled Diagnostics (Required)
++
++- Use only existing tests and temporary files under `tmp_path` or `output/` with clear naming
++- If a debug script is necessary, it must be named `debug_*.py` and deleted after use
++- Do not add permanent debug tests
++- If any test shows instability, rerun 3 times and compare median values
++
+ ### Step 2: Golden Suite
+ Run the golden test suite and compare against baselines.
+ 
+diff --git a/main.py b/main.py
+index 76fa389..8d98119 100644
+--- a/main.py
++++ b/main.py
+@@ -25,6 +25,8 @@ from dataclasses import dataclass
+ from pathlib import Path
+ from typing import Any
+ 
++import numpy as np
++
+ import yaml
+ 
+ from agents.bank import WarengeldBank
+@@ -354,7 +356,15 @@ def _m1_proxy(
+     retailers: list[RetailerAgent],
+     state: State,
+ ) -> float:
+-    """M1 proxy = sum of sight balances."""
++    """M1 proxy = sum of sight balances + outstanding Kontokorrent credit.
++
++    In the Warengeld system, money is created when retailers draw on their
++    Kontokorrent lines to purchase goods. This money exists in the system
++    until it's extinguished when retailers repay from sales revenue.
++    Therefore, the M1 proxy must include both:
++    1. Sight balances (cash holdings)
++    2. Outstanding Kontokorrent credit (negative CC balances)
++    """
+ 
+     total = 0.0
+     for h in households:
+@@ -363,6 +373,10 @@ def _m1_proxy(
+         total += max(0.0, getattr(c, "sight_balance", getattr(c, "balance", 0.0)))
+     for r in retailers:
+         total += max(0.0, getattr(r, "sight_balance", 0.0))
++        # Add outstanding Kontokorrent credit (money created but not yet extinguished)
++        cc_balance = getattr(r, "cc_balance", 0.0)
++        if cc_balance < 0:
++            total += abs(cc_balance)
+     total += max(0.0, getattr(state, "sight_balance", 0.0))
+     return total
+ 
+@@ -563,13 +577,17 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
+     # - If SIM_SEED_FROM_CONFIG=1, also seed from config.population.seed when present.
+     env_seed = os.getenv("SIM_SEED")
+     if env_seed is not None and env_seed != "":
+-        random.seed(int(env_seed))
++        seed_val = int(env_seed)
++        random.seed(seed_val)
++        np.random.seed(seed_val)
+     elif os.getenv("SIM_SEED_FROM_CONFIG") == "1":
+         seed = getattr(getattr(config, "time", None), "seed", None)
+         if seed is None:
+             seed = getattr(getattr(config, "population", None), "seed", None)
+         if seed is not None:
+-            random.seed(int(seed))
++            seed_val = int(seed)
++            random.seed(seed_val)
++            np.random.seed(seed_val)
+ 
+     # Metrics
+     from metrics import MetricsCollector
+diff --git a/tools/run_refactor_batch.sh b/tools/run_refactor_batch.sh
+old mode 100644
+new mode 100755
+index 75aff68..1fe1728
+--- a/tools/run_refactor_batch.sh
++++ b/tools/run_refactor_batch.sh
+@@ -2,21 +2,31 @@
+ set -euo pipefail
+ 
+ # Batch runner for refactoring prompts with dual-model review.
+-# Supports opencode or CLI Cline via configurable commands.
++# Supports opencode via configurable commands.
+ #
+ # Usage:
+-#   REFAC_CLI=opencode \
+ #   MODEL_IMPL=devstral \
+ #   MODEL_REVIEW=glm-4.7 \
++#   MAX_ITERS=3 \
++#   RETRY_MAX=2 \
++#   PROMPT_INDEX=1 \
++#   DRY_RUN=0 \
+ #   ./tools/run_refactor_batch.sh
+ 
+ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ PROMPT_DIR="$REPO_ROOT/doc/refactoring_prompts"
+ REPORT_DIR="$REPO_ROOT/doc/refactoring_reports"
+ 
+-REFAC_CLI="${REFAC_CLI:-opencode}"
+ MODEL_IMPL="${MODEL_IMPL:-devstral}"
+ MODEL_REVIEW="${MODEL_REVIEW:-glm-4.7}"
++MAX_ITERS="${MAX_ITERS:-3}"
++REVIEW_PASS_TOKEN="${REVIEW_PASS_TOKEN:-REVIEW_PASS}"
++REVIEW_FAIL_TOKEN="${REVIEW_FAIL_TOKEN:-REVIEW_FAIL}"
++TESTS_PASS_TOKEN="${TESTS_PASS_TOKEN:-TESTS_PASS}"
++TESTS_FAIL_TOKEN="${TESTS_FAIL_TOKEN:-TESTS_FAIL}"
++RETRY_MAX="${RETRY_MAX:-2}"
++RETRY_SLEEP_SEC="${RETRY_SLEEP_SEC:-5}"
++DRY_RUN="${DRY_RUN:-0}"
+ 
+ PROMPTS=(
+   "$PROMPT_DIR/01_golden_test_fix.md"
+@@ -31,6 +41,8 @@ PROMPTS=(
+   "$PROMPT_DIR/10_comprehensive_regression.md"
+ )
+ 
++PROMPT_INDEX="${PROMPT_INDEX:-}"
++
+ mkdir -p "$REPORT_DIR"
+ 
+ timestamp() {
+@@ -41,34 +53,64 @@ run_cli() {
+   local model="$1"
+   local prompt_file="$2"
+   local log_file="$3"
++  local attempt=1
++
++  if [[ "$DRY_RUN" == "1" ]]; then
++    echo "DRY_RUN: (cd $REPO_ROOT && opencode run --model $model --file $prompt_file 'Execute the attached prompt file end-to-end. If reviewer, conclude with REVIEW_PASS or REVIEW_FAIL. If implementer, conclude with TESTS_PASS or TESTS_FAIL.')" >> "$log_file"
++    return 0
++  fi
++
++  while [[ $attempt -le $RETRY_MAX ]]; do
++    if (cd "$REPO_ROOT" && opencode run \
++      --model "$model" \
++      --file "$prompt_file" \
++      "Execute the attached prompt file end-to-end. If reviewer, conclude with REVIEW_PASS or REVIEW_FAIL. If implementer, conclude with TESTS_PASS or TESTS_FAIL.") >"$log_file" 2>&1; then
++      return 0
++    fi
++    echo "opencode run failed (attempt $attempt/$RETRY_MAX)" >> "$log_file"
++    attempt=$((attempt + 1))
++    sleep "$RETRY_SLEEP_SEC"
++  done
++  return 1
++}
++
++review_prompt_header() {
++  cat <<'EOF'
++
++---
++
++Reviewer instructions:
++- Review the diff and changes against the prompt requirements.
++- If all requirements are met and tests pass, end your response with: REVIEW_PASS
++- If issues remain, end your response with: REVIEW_FAIL
++- When failing, provide concrete fixes or a patch description for the implementer.
+ 
+-  case "$REFAC_CLI" in
+-    opencode)
+-      # Example: opencode run --model <model> --prompt-file <file> --workspace <dir>
+-      opencode run \
+-        --model "$model" \
+-        --prompt-file "$prompt_file" \
+-        --workspace "$REPO_ROOT" \
+-        --non-interactive \
+-        --log-file "$log_file"
+-      ;;
+-    cline)
+-      # Example: cline run --model <model> --prompt-file <file> --workspace <dir>
+-      cline run \
+-        --model "$model" \
+-        --prompt-file "$prompt_file" \
+-        --workspace "$REPO_ROOT" \
+-        --non-interactive \
+-        --log-file "$log_file"
+-      ;;
+-    *)
+-      echo "Unsupported REFAC_CLI: $REFAC_CLI" >&2
+-      exit 2
+-      ;;
+-  esac
++Reviewer must check implementer test status token. If implementer reported TESTS_FAIL or did not report TESTS_PASS, reviewer must end with REVIEW_FAIL.
++
++EOF
++}
++
++impl_prompt_header() {
++  cat <<'EOF'
++
++---
++
++Implementer instructions:
++- Apply reviewer feedback from the last iteration.
++- Re-run required verification commands.
++- Summarize changes and remaining risks.
++- End your response with TESTS_PASS if all required verification commands succeeded.
++- End your response with TESTS_FAIL if any required verification command failed.
++
++EOF
+ }
+ 
++idx=0
+ for prompt in "${PROMPTS[@]}"; do
++  idx=$((idx + 1))
++  if [[ -n "$PROMPT_INDEX" && "$idx" != "$PROMPT_INDEX" ]]; then
++    continue
++  fi
+   if [[ ! -f "$prompt" ]]; then
+     echo "Missing prompt file: $prompt" >&2
+     exit 1
+@@ -83,11 +125,61 @@ for prompt in "${PROMPTS[@]}"; do
+   git -C "$REPO_ROOT" status --porcelain=v1 > "$REPORT_DIR/${base_name}_${run_stamp}_status.txt"
+   git -C "$REPO_ROOT" diff > "$REPORT_DIR/${base_name}_${run_stamp}_diff_before.patch"
+ 
+-  # Implementer pass
+-  run_cli "$MODEL_IMPL" "$prompt" "$REPORT_DIR/${base_name}_${run_stamp}_impl.log"
+-
+-  # Reviewer pass
+-  run_cli "$MODEL_REVIEW" "$prompt" "$REPORT_DIR/${base_name}_${run_stamp}_review.log"
++  iter=1
++  while [[ $iter -le $MAX_ITERS ]]; do
++    iter_stamp="${run_stamp}_iter${iter}"
++    impl_prompt="$REPORT_DIR/${base_name}_${iter_stamp}_impl_prompt.md"
++    review_prompt="$REPORT_DIR/${base_name}_${iter_stamp}_review_prompt.md"
++
++    cp "$prompt" "$impl_prompt"
++
++    if [[ $iter -gt 1 ]]; then
++      prev_iter=$((iter - 1))
++      prev_stamp="${run_stamp}_iter${prev_iter}"
++      if [[ -f "$REPORT_DIR/${base_name}_${prev_stamp}_review.log" ]]; then
++        impl_prompt_header >> "$impl_prompt"
++        tail -n 200 "$REPORT_DIR/${base_name}_${prev_stamp}_review.log" >> "$impl_prompt"
++      fi
++    fi
++
++    # Implementer pass
++    run_cli "$MODEL_IMPL" "$impl_prompt" "$REPORT_DIR/${base_name}_${iter_stamp}_impl.log"
++
++    if [[ "$DRY_RUN" != "1" ]] && ! grep -q "$TESTS_PASS_TOKEN" "$REPORT_DIR/${base_name}_${iter_stamp}_impl.log"; then
++      if grep -q "$TESTS_FAIL_TOKEN" "$REPORT_DIR/${base_name}_${iter_stamp}_impl.log"; then
++        echo "==> Implementer reported test failure for $base_name (iter $iter)" >&2
++      else
++        echo "==> Implementer did not report TESTS_PASS for $base_name (iter $iter)" >&2
++      fi
++      exit 1
++    fi
++
++    # Reviewer pass
++    cp "$prompt" "$review_prompt"
++    review_prompt_header >> "$review_prompt"
++    if [[ -f "$REPORT_DIR/${base_name}_${iter_stamp}_impl.log" ]]; then
++      printf "\nReview this implementer log (tail):\n" >> "$review_prompt"
++      tail -n 200 "$REPORT_DIR/${base_name}_${iter_stamp}_impl.log" >> "$review_prompt"
++    fi
++    run_cli "$MODEL_REVIEW" "$review_prompt" "$REPORT_DIR/${base_name}_${iter_stamp}_review.log"
++
++    if grep -q "$REVIEW_PASS_TOKEN" "$REPORT_DIR/${base_name}_${iter_stamp}_review.log"; then
++      echo "==> Reviewer pass for $base_name (iter $iter)"
++      break
++    fi
++
++    if grep -q "$REVIEW_FAIL_TOKEN" "$REPORT_DIR/${base_name}_${iter_stamp}_review.log"; then
++      echo "==> Reviewer fail for $base_name (iter $iter)"
++    else
++      echo "==> Reviewer did not emit pass/fail token for $base_name (iter $iter)"
++    fi
++
++    iter=$((iter + 1))
++    if [[ $iter -gt $MAX_ITERS ]]; then
++      echo "==> Max iterations reached for $base_name" >&2
++      exit 1
++    fi
++  done
+ 
+   # Capture diff after
+   git -C "$REPO_ROOT" diff > "$REPORT_DIR/${base_name}_${run_stamp}_diff_after.patch"

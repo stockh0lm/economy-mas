@@ -20,6 +20,13 @@ Use coverage report to find low-coverage modules, especially:
 - Reviewer model checks `git diff --stat` and `git show` before approving
 - Roll back safely if needed: `git restore <files>` for uncommitted changes, `git revert <commit>` for committed changes (no `reset --hard`)
 
+## Controlled Diagnostics (Required)
+
+- Use only existing tests and temporary files under `tmp_path` or `output/` with clear naming
+- If a debug script is necessary, it must be named `debug_*.py` and deleted after use
+- Do not add permanent debug tests
+- Keep new tests deterministic via fixed seeds where applicable
+
 ### Step 2: Add Tests
 Create targeted tests for:
 - Loan cap enforcement

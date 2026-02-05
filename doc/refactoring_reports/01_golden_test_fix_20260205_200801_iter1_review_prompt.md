@@ -82,16 +82,6 @@ Based on analysis results:
 
 ---
 
-## Controlled Diagnostics (Required)
-
-- Use only existing tests and temporary files under `tmp_path` or `output/` with clear naming
-- If a debug script is necessary, it must be named `debug_*.py` and deleted after use
-- Do not add permanent debug tests
-- Prefer logging or metrics exports already produced by the simulation
-- If results vary across runs, run the golden test 3 times and report the median metric values
-
----
-
 ## Verification Commands
 
 ```bash
@@ -122,3 +112,17 @@ python -m pytest --tb=line -q
 ## Expected Timeline
 
 1-2 hours for thorough analysis and fix
+
+
+---
+
+Reviewer instructions:
+- Review the diff and changes against the prompt requirements.
+- If all requirements are met and tests pass, end your response with: REVIEW_PASS
+- If issues remain, end your response with: REVIEW_FAIL
+- When failing, provide concrete fixes or a patch description for the implementer.
+- If implementer reported TESTS_FAIL or did not report TESTS_PASS, you must end with REVIEW_FAIL.
+
+Implementer log (tail):
+DRY_RUN: implementer skipped
+

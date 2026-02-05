@@ -12,20 +12,34 @@ used by existing scenarios/tests, but avoids endogenous money creation.
 
 from __future__ import annotations
 
+import os
 import random
 from collections import deque
-import numpy as np
-
-
-_DEFAULT_NP_RNG = np.random.default_rng()
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol, Sequence
+from typing import TYPE_CHECKING, Protocol
+
+import numpy as np
 
 from config import CONFIG_MODEL, SimulationConfig
 from logger import log
 from sim_clock import SimulationClock
 
 from .base_agent import BaseAgent
+
+_DEFAULT_NP_RNG = None
+
+
+def _get_default_np_rng():
+    global _DEFAULT_NP_RNG
+    if _DEFAULT_NP_RNG is None:
+        env_seed = os.getenv("SIM_SEED")
+        if env_seed is not None and env_seed != "":
+            _DEFAULT_NP_RNG = np.random.default_rng(int(env_seed))
+        else:
+            _DEFAULT_NP_RNG = np.random.default_rng()
+    return _DEFAULT_NP_RNG
+
 
 if TYPE_CHECKING:
     from .retailer_agent import RetailerAgent
@@ -54,7 +68,7 @@ class ConsumptionPlan:
     """
 
     budget: float
-    retailer: "RetailerAgent | None"
+    retailer: RetailerAgent | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -390,7 +404,7 @@ class Household(BaseAgent):
         self,
         *,
         consumption_rate: float,
-        retailers: Sequence["RetailerAgent"],
+        retailers: Sequence[RetailerAgent],
         rng: _RNG = random,
     ) -> ConsumptionPlan:
         """Create a pure consumption plan.
@@ -427,7 +441,7 @@ class Household(BaseAgent):
     def consume(
         self,
         consumption_rate: float,
-        retailers: Sequence["RetailerAgent"],
+        retailers: Sequence[RetailerAgent],
         *,
         rng: _RNG = random,
     ) -> float:
@@ -452,10 +466,10 @@ class Household(BaseAgent):
 
     @staticmethod
     def batch_consume(
-        households: Sequence["Household"],
-        retailers: Sequence["RetailerAgent"],
+        households: Sequence[Household],
+        retailers: Sequence[RetailerAgent],
         *,
-        rng: "np.random.Generator | None" = None,
+        rng: np.random.Generator | None = None,
     ) -> list[float]:
         """Vectorized consumption execution for many households.
 
@@ -478,11 +492,15 @@ class Household(BaseAgent):
                 h._record_consumption(0.0)
             return [0.0] * n
 
-        gen = rng or _DEFAULT_NP_RNG
+        gen = rng or _get_default_np_rng()
 
         # Build arrays (n is typically small, but this avoids Python math per agent)
-        balances = np.fromiter((float(h.sight_balance) for h in households), dtype=np.float64, count=n)
-        growth_mask = np.fromiter((bool(h.growth_phase) for h in households), dtype=np.bool_, count=n)
+        balances = np.fromiter(
+            (float(h.sight_balance) for h in households), dtype=np.float64, count=n
+        )
+        growth_mask = np.fromiter(
+            (bool(h.growth_phase) for h in households), dtype=np.bool_, count=n
+        )
 
         cfg = households[0].config.household
         rate_normal = float(cfg.consumption_rate_normal)
@@ -508,15 +526,15 @@ class Household(BaseAgent):
 
     @staticmethod
     def batch_step(
-        households: Sequence["Household"],
+        households: Sequence[Household],
         current_step: int,
         *,
-        clock: "SimulationClock",
-        savings_bank: "SavingsBank",
-        retailers: Sequence["RetailerAgent"],
-        rng: "np.random.Generator | None" = None,
+        clock: SimulationClock,
+        savings_bank: SavingsBank,
+        retailers: Sequence[RetailerAgent],
+        rng: np.random.Generator | None = None,
         py_rng: _RNG = random,
-    ) -> list["Household"]:
+    ) -> list[Household]:
         """Run one full step for a *group* of households sharing the same market.
 
         Keeps semantics aligned with `Household.step`, but uses `batch_consume`
@@ -556,7 +574,7 @@ class Household(BaseAgent):
                 h.save(savings_bank)
 
         newborns: list[Household] = []
-        for h, ev in zip(households, events):
+        for h, ev in zip(households, events, strict=False):
             if ev is None:
                 continue
             nb = h._apply_household_formation_event(ev, savings_bank=savings_bank)
@@ -566,7 +584,7 @@ class Household(BaseAgent):
         return newborns
 
     # --- Household splitting ---
-    def split_household(self, *, savings_bank: "SavingsBank") -> "Household | None":
+    def split_household(self, *, savings_bank: SavingsBank) -> Household | None:
         """Create a new household (child) funded from this household's savings.
 
         This is the canonical replacement for the legacy top-level `household_agent.py`
@@ -587,8 +605,7 @@ class Household(BaseAgent):
         if total_savings <= 0:
             disposable = max(
                 0.0,
-                float(self.sight_balance)
-                - float(self.config.household.transaction_buffer),
+                float(self.sight_balance) - float(self.config.household.transaction_buffer),
             )
             if disposable <= 0:
                 return None
@@ -646,7 +663,7 @@ class Household(BaseAgent):
         return child
 
     # --- Fertility / household formation ---
-    def _fertility_probability_daily(self, *, savings_bank: "SavingsBank") -> float:
+    def _fertility_probability_daily(self, *, savings_bank: SavingsBank) -> float:
         """Compute daily probability of a birth/household-formation event.
 
         Expliziter Bezug:
@@ -710,7 +727,9 @@ class Household(BaseAgent):
         elif income_factor > 4.0:
             income_factor = 4.0
 
-        trigger = float(cfg.savings_growth_trigger) if float(cfg.savings_growth_trigger) > 0 else 1.0
+        trigger = (
+            float(cfg.savings_growth_trigger) if float(cfg.savings_growth_trigger) > 0 else 1.0
+        )
         wealth_rel = wealth / trigger
         wealth_elasticity = float(cfg.fertility_wealth_sensitivity)
         wealth_factor = wealth_rel**wealth_elasticity if wealth_elasticity != 0.0 else 1.0
@@ -733,7 +752,7 @@ class Household(BaseAgent):
         cache[key] = daily
         return daily
 
-    def _birth_new_household(self, *, savings_bank: "SavingsBank") -> "Household | None":
+    def _birth_new_household(self, *, savings_bank: SavingsBank) -> Household | None:
         """Create a newborn household funded by a transfer from the parent.
 
         The transfer follows a strict *no money creation* rule:
@@ -804,7 +823,7 @@ class Household(BaseAgent):
         days_per_year = int(self.config.time.days_per_year)
         self.age = self.age_days // max(1, days_per_year)
 
-    def _update_growth_state(self, *, savings_bank: "SavingsBank") -> None:
+    def _update_growth_state(self, *, savings_bank: SavingsBank) -> None:
         # Primary trigger: total savings (local + SavingsBank account).
         bank_savings = float(savings_bank.savings_accounts.get(self.unique_id, 0.0))
         total_savings = float(self.local_savings) + bank_savings
@@ -826,7 +845,7 @@ class Household(BaseAgent):
         if self.growth_phase:
             self.child_cost_covered = False
 
-    def _update_growth_counter_and_buffer_child_cost(self, *, savings_bank: "SavingsBank") -> None:
+    def _update_growth_counter_and_buffer_child_cost(self, *, savings_bank: SavingsBank) -> None:
         if not self.growth_phase:
             self.growth_counter = 0
             return
@@ -842,7 +861,7 @@ class Household(BaseAgent):
     def _decide_household_formation_event(
         self,
         *,
-        savings_bank: "SavingsBank",
+        savings_bank: SavingsBank,
         rng: _RNG = random,
     ) -> HouseholdFormationEvent | None:
         if self.growth_phase and self.growth_counter >= self.growth_threshold:
@@ -864,8 +883,8 @@ class Household(BaseAgent):
         self,
         event: HouseholdFormationEvent | None,
         *,
-        savings_bank: "SavingsBank",
-    ) -> "Household | None":
+        savings_bank: SavingsBank,
+    ) -> Household | None:
         if event is None:
             return None
         if event.kind == "split":
@@ -879,7 +898,7 @@ class Household(BaseAgent):
         current_step: int,
         *,
         clock: SimulationClock,
-        savings_bank: "SavingsBank",
+        savings_bank: SavingsBank,
         rng: _RNG = random,
     ) -> HouseholdFormationEvent | None:
         """Demographics pipeline: aging + lifecycle state + birth decisions.
@@ -911,7 +930,7 @@ class Household(BaseAgent):
         current_step: int,
         *,
         clock: SimulationClock,
-        savings_bank: "SavingsBank",
+        savings_bank: SavingsBank,
         stage: str,
         is_month_end: bool | None = None,
     ) -> None:
@@ -929,7 +948,9 @@ class Household(BaseAgent):
             return
 
         if stage == "post":
-            month_end = is_month_end if is_month_end is not None else clock.is_month_end(current_step)
+            month_end = (
+                is_month_end if is_month_end is not None else clock.is_month_end(current_step)
+            )
             if month_end:
                 self.save(savings_bank)
             return
@@ -939,7 +960,7 @@ class Household(BaseAgent):
     def handle_consumption(
         self,
         *,
-        retailers: Sequence["RetailerAgent"],
+        retailers: Sequence[RetailerAgent],
         rng: _RNG = random,
     ) -> float:
         """Consumption decision pipeline."""
@@ -956,11 +977,11 @@ class Household(BaseAgent):
         current_step: int,
         *,
         clock: SimulationClock,
-        savings_bank: "SavingsBank",
-        retailers: list["RetailerAgent"] | None = None,
+        savings_bank: SavingsBank,
+        retailers: list[RetailerAgent] | None = None,
         is_month_end: bool | None = None,
         rng: _RNG = random,
-    ) -> "Household | None":
+    ) -> Household | None:
         """Run one household step.
 
         Returns:

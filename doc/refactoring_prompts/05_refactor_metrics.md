@@ -25,6 +25,15 @@ Create `metrics/` package with:
 
 ---
 
+## Controlled Diagnostics (Required)
+
+- Use only existing tests and temporary files under `tmp_path` or `output/` with clear naming
+- If a debug script is necessary, it must be named `debug_*.py` and deleted after use
+- Do not add permanent debug tests
+- Validate outputs via existing metrics CSV exports and fixed seeds
+
+---
+
 ### Step 2: Move Responsibilities
 - **collector.py**: MetricsCollector class, data gathering logic
 - **calculator.py**: metric calculations (global money, price indexes)

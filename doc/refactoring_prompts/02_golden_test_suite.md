@@ -108,6 +108,15 @@ class TestGoldenRunComprehensive:
 
 ---
 
+## Controlled Diagnostics (Required)
+
+- Use only existing tests and temporary files under `tmp_path` or `output/` with clear naming
+- If a debug script is necessary, it must be named `debug_*.py` and deleted after use
+- Do not add permanent debug tests
+- Prefer metrics CSV exports to validate scenarios
+
+---
+
 ### Step 2: Optional Validation Script
 
 If you want CSV baseline comparison, create `scripts/validate_golden_run.py` and wire it to real CSV exports. This is optional and must not be a dependency for the tests above. Use the same CSV structure exported by `metrics.py` (global_metrics_*.csv).

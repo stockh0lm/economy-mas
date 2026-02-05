@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import yaml
 
 from agents.bank import WarengeldBank
@@ -290,9 +291,9 @@ def initialize_agents(config: SimulationConfig) -> dict[str, Any]:
     savings_banks = [
         SavingsBank(unique_id=f"savings_bank_{rid}", config=config) for rid in region_ids
     ]
-    for rid, bank in zip(region_ids, warengeld_banks):
+    for rid, bank in zip(region_ids, warengeld_banks, strict=False):
         bank.region_id = rid
-    for rid, sb in zip(region_ids, savings_banks):
+    for rid, sb in zip(region_ids, savings_banks, strict=False):
         sb.region_id = rid
     clearing = ClearingAgent(unique_id=str(config.CLEARING_AGENT_ID), config=config)
     labor_market = LaborMarket(unique_id=str(config.LABOR_MARKET_ID), config=config)
@@ -314,8 +315,8 @@ def initialize_agents(config: SimulationConfig) -> dict[str, Any]:
     state.labor_market = labor_market
 
     # Register retailer Kontokorrent lines at their regional banks
-    banks_by_region = {rid: bank for rid, bank in zip(region_ids, warengeld_banks)}
-    savings_by_region = {rid: bank for rid, bank in zip(region_ids, savings_banks)}
+    banks_by_region = {rid: bank for rid, bank in zip(region_ids, warengeld_banks, strict=False)}
+    savings_by_region = {rid: bank for rid, bank in zip(region_ids, savings_banks, strict=False)}
     for r in retailers:
         bank = banks_by_region.get(r.region_id, warengeld_banks[0])
         bank.register_retailer(r, cc_limit=r.cc_limit)
@@ -354,7 +355,15 @@ def _m1_proxy(
     retailers: list[RetailerAgent],
     state: State,
 ) -> float:
-    """M1 proxy = sum of sight balances."""
+    """M1 proxy = sum of sight balances + outstanding Kontokorrent credit.
+
+    In the Warengeld system, money is created when retailers draw on their
+    Kontokorrent lines to purchase goods. This money exists in the system
+    until it's extinguished when retailers repay from sales revenue.
+    Therefore, the M1 proxy must include both:
+    1. Sight balances (cash holdings)
+    2. Outstanding Kontokorrent credit (negative CC balances)
+    """
 
     total = 0.0
     for h in households:
@@ -363,6 +372,10 @@ def _m1_proxy(
         total += max(0.0, getattr(c, "sight_balance", getattr(c, "balance", 0.0)))
     for r in retailers:
         total += max(0.0, getattr(r, "sight_balance", 0.0))
+        # Add outstanding Kontokorrent credit (money created but not yet extinguished)
+        cc_balance = getattr(r, "cc_balance", 0.0)
+        if cc_balance < 0:
+            total += abs(cc_balance)
     total += max(0.0, getattr(state, "sight_balance", 0.0))
     return total
 
@@ -563,13 +576,17 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
     # - If SIM_SEED_FROM_CONFIG=1, also seed from config.population.seed when present.
     env_seed = os.getenv("SIM_SEED")
     if env_seed is not None and env_seed != "":
-        random.seed(int(env_seed))
+        seed_val = int(env_seed)
+        random.seed(seed_val)
+        np.random.seed(seed_val)
     elif os.getenv("SIM_SEED_FROM_CONFIG") == "1":
         seed = getattr(getattr(config, "time", None), "seed", None)
         if seed is None:
             seed = getattr(getattr(config, "population", None), "seed", None)
         if seed is not None:
-            random.seed(int(seed))
+            seed_val = int(seed)
+            random.seed(seed_val)
+            np.random.seed(seed_val)
 
     # Metrics
     from metrics import MetricsCollector

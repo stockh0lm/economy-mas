@@ -1,0 +1,218 @@
+diff --git a/doc/refactoring_plan.md b/doc/refactoring_plan.md
+index aa07981..212c711 100644
+--- a/doc/refactoring_plan.md
++++ b/doc/refactoring_plan.md
+@@ -95,6 +95,8 @@ Use a wrapper script that calls your CLI (opencode or Cline) in non-interactive
+ 
+ For a concrete example, see: `tools/run_refactor_batch.sh`
+ 
++The script expects reviewer output to end with either `REVIEW_PASS` or `REVIEW_FAIL` to allow automated iteration.
++
+ ```bash
+ # Pseudocode template (adjust CLI flags for your tool)
+ PROMPTS=(doc/refactoring_prompts/01_golden_test_fix.md \
+diff --git a/tools/run_refactor_batch.sh b/tools/run_refactor_batch.sh
+old mode 100644
+new mode 100755
+index 75aff68..5e80faf
+--- a/tools/run_refactor_batch.sh
++++ b/tools/run_refactor_batch.sh
+@@ -2,21 +2,31 @@
+ set -euo pipefail
+ 
+ # Batch runner for refactoring prompts with dual-model review.
+-# Supports opencode or CLI Cline via configurable commands.
++# Supports opencode via configurable commands.
+ #
+ # Usage:
+-#   REFAC_CLI=opencode \
+ #   MODEL_IMPL=devstral \
+ #   MODEL_REVIEW=glm-4.7 \
++#   MAX_ITERS=3 \
++#   RETRY_MAX=2 \
++#   PROMPT_INDEX=1 \
++#   DRY_RUN=0 \
+ #   ./tools/run_refactor_batch.sh
+ 
+ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ PROMPT_DIR="$REPO_ROOT/doc/refactoring_prompts"
+ REPORT_DIR="$REPO_ROOT/doc/refactoring_reports"
+ 
+-REFAC_CLI="${REFAC_CLI:-opencode}"
+ MODEL_IMPL="${MODEL_IMPL:-devstral}"
+ MODEL_REVIEW="${MODEL_REVIEW:-glm-4.7}"
++MAX_ITERS="${MAX_ITERS:-3}"
++REVIEW_PASS_TOKEN="${REVIEW_PASS_TOKEN:-REVIEW_PASS}"
++REVIEW_FAIL_TOKEN="${REVIEW_FAIL_TOKEN:-REVIEW_FAIL}"
++TESTS_PASS_TOKEN="${TESTS_PASS_TOKEN:-TESTS_PASS}"
++TESTS_FAIL_TOKEN="${TESTS_FAIL_TOKEN:-TESTS_FAIL}"
++RETRY_MAX="${RETRY_MAX:-2}"
++RETRY_SLEEP_SEC="${RETRY_SLEEP_SEC:-5}"
++DRY_RUN="${DRY_RUN:-0}"
+ 
+ PROMPTS=(
+   "$PROMPT_DIR/01_golden_test_fix.md"
+@@ -31,6 +41,8 @@ PROMPTS=(
+   "$PROMPT_DIR/10_comprehensive_regression.md"
+ )
+ 
++PROMPT_INDEX="${PROMPT_INDEX:-}"
++
+ mkdir -p "$REPORT_DIR"
+ 
+ timestamp() {
+@@ -41,34 +53,63 @@ run_cli() {
+   local model="$1"
+   local prompt_file="$2"
+   local log_file="$3"
++  local attempt=1
++
++  if [[ "$DRY_RUN" == "1" ]]; then
++    echo "DRY_RUN: (cd $REPO_ROOT && opencode run --model $model --file $prompt_file)" >> "$log_file"
++    return 0
++  fi
++
++  while [[ $attempt -le $RETRY_MAX ]]; do
++    if (cd "$REPO_ROOT" && opencode run \
++      --model "$model" \
++      --file "$prompt_file") >"$log_file" 2>&1; then
++      return 0
++    fi
++    echo "opencode run failed (attempt $attempt/$RETRY_MAX)" >> "$log_file"
++    attempt=$((attempt + 1))
++    sleep "$RETRY_SLEEP_SEC"
++  done
++  return 1
++}
++
++review_prompt_header() {
++  cat <<'EOF'
++
++---
++
++Reviewer instructions:
++- Review the diff and changes against the prompt requirements.
++- If all requirements are met and tests pass, end your response with: REVIEW_PASS
++- If issues remain, end your response with: REVIEW_FAIL
++- When failing, provide concrete fixes or a patch description for the implementer.
+ 
+-  case "$REFAC_CLI" in
+-    opencode)
+-      # Example: opencode run --model <model> --prompt-file <file> --workspace <dir>
+-      opencode run \
+-        --model "$model" \
+-        --prompt-file "$prompt_file" \
+-        --workspace "$REPO_ROOT" \
+-        --non-interactive \
+-        --log-file "$log_file"
+-      ;;
+-    cline)
+-      # Example: cline run --model <model> --prompt-file <file> --workspace <dir>
+-      cline run \
+-        --model "$model" \
+-        --prompt-file "$prompt_file" \
+-        --workspace "$REPO_ROOT" \
+-        --non-interactive \
+-        --log-file "$log_file"
+-      ;;
+-    *)
+-      echo "Unsupported REFAC_CLI: $REFAC_CLI" >&2
+-      exit 2
+-      ;;
+-  esac
++Reviewer must check implementer test status token. If implementer reported TESTS_FAIL or did not report TESTS_PASS, reviewer must end with REVIEW_FAIL.
++
++EOF
++}
++
++impl_prompt_header() {
++  cat <<'EOF'
++
++---
++
++Implementer instructions:
++- Apply reviewer feedback from the last iteration.
++- Re-run required verification commands.
++- Summarize changes and remaining risks.
++- End your response with TESTS_PASS if all required verification commands succeeded.
++- End your response with TESTS_FAIL if any required verification command failed.
++
++EOF
+ }
+ 
++idx=0
+ for prompt in "${PROMPTS[@]}"; do
++  idx=$((idx + 1))
++  if [[ -n "$PROMPT_INDEX" && "$idx" != "$PROMPT_INDEX" ]]; then
++    continue
++  fi
+   if [[ ! -f "$prompt" ]]; then
+     echo "Missing prompt file: $prompt" >&2
+     exit 1
+@@ -83,11 +124,61 @@ for prompt in "${PROMPTS[@]}"; do
+   git -C "$REPO_ROOT" status --porcelain=v1 > "$REPORT_DIR/${base_name}_${run_stamp}_status.txt"
+   git -C "$REPO_ROOT" diff > "$REPORT_DIR/${base_name}_${run_stamp}_diff_before.patch"
+ 
+-  # Implementer pass
+-  run_cli "$MODEL_IMPL" "$prompt" "$REPORT_DIR/${base_name}_${run_stamp}_impl.log"
+-
+-  # Reviewer pass
+-  run_cli "$MODEL_REVIEW" "$prompt" "$REPORT_DIR/${base_name}_${run_stamp}_review.log"
++  iter=1
++  while [[ $iter -le $MAX_ITERS ]]; do
++    iter_stamp="${run_stamp}_iter${iter}"
++    impl_prompt="$REPORT_DIR/${base_name}_${iter_stamp}_impl_prompt.md"
++    review_prompt="$REPORT_DIR/${base_name}_${iter_stamp}_review_prompt.md"
++
++    cp "$prompt" "$impl_prompt"
++
++    if [[ $iter -gt 1 ]]; then
++      prev_iter=$((iter - 1))
++      prev_stamp="${run_stamp}_iter${prev_iter}"
++      if [[ -f "$REPORT_DIR/${base_name}_${prev_stamp}_review.log" ]]; then
++        impl_prompt_header >> "$impl_prompt"
++        tail -n 200 "$REPORT_DIR/${base_name}_${prev_stamp}_review.log" >> "$impl_prompt"
++      fi
++    fi
++
++    # Implementer pass
++    run_cli "$MODEL_IMPL" "$impl_prompt" "$REPORT_DIR/${base_name}_${iter_stamp}_impl.log"
++
++    if [[ "$DRY_RUN" != "1" ]] && ! grep -q "$TESTS_PASS_TOKEN" "$REPORT_DIR/${base_name}_${iter_stamp}_impl.log"; then
++      if grep -q "$TESTS_FAIL_TOKEN" "$REPORT_DIR/${base_name}_${iter_stamp}_impl.log"; then
++        echo "==> Implementer reported test failure for $base_name (iter $iter)" >&2
++      else
++        echo "==> Implementer did not report TESTS_PASS for $base_name (iter $iter)" >&2
++      fi
++      exit 1
++    fi
++
++    # Reviewer pass
++    cp "$prompt" "$review_prompt"
++    review_prompt_header >> "$review_prompt"
++    if [[ -f "$REPORT_DIR/${base_name}_${iter_stamp}_impl.log" ]]; then
++      printf "\nReview this implementer log (tail):\n" >> "$review_prompt"
++      tail -n 200 "$REPORT_DIR/${base_name}_${iter_stamp}_impl.log" >> "$review_prompt"
++    fi
++    run_cli "$MODEL_REVIEW" "$review_prompt" "$REPORT_DIR/${base_name}_${iter_stamp}_review.log"
++
++    if grep -q "$REVIEW_PASS_TOKEN" "$REPORT_DIR/${base_name}_${iter_stamp}_review.log"; then
++      echo "==> Reviewer pass for $base_name (iter $iter)"
++      break
++    fi
++
++    if grep -q "$REVIEW_FAIL_TOKEN" "$REPORT_DIR/${base_name}_${iter_stamp}_review.log"; then
++      echo "==> Reviewer fail for $base_name (iter $iter)"
++    else
++      echo "==> Reviewer did not emit pass/fail token for $base_name (iter $iter)"
++    fi
++
++    iter=$((iter + 1))
++    if [[ $iter -gt $MAX_ITERS ]]; then
++      echo "==> Max iterations reached for $base_name" >&2
++      exit 1
++    fi
++  done
+ 
+   # Capture diff after
+   git -C "$REPO_ROOT" diff > "$REPORT_DIR/${base_name}_${run_stamp}_diff_after.patch"

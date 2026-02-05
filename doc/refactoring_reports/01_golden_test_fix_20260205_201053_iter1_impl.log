@@ -1,0 +1,1148 @@
+[0m
+
+
+[0m> build · devstral-2-123b-instruct-2512I'll execute the prompt file end-to-end. Let me start by running the golden test to see the current failure.
+[0m$ [0mcd /home/andreas/src/Wirtschaftssimulation && python -m pytest tests/test_m6_golden_run_snapshot.py::test_golden_run_snapshot -xvs --tb=long
+[0m
+============================= test session starts ==============================
+platform linux -- Python 3.11.4, pytest-8.4.2, pluggy-1.6.0
+benchmark: 5.2.0 (defaults: timer=time.perf_counter disable_gc=False min_rounds=5 min_time=0.000005 max_time=1.0 calibration_precision=10 warmup=False warmup_iterations=100000)
+rootdir: /home/andreas/src/Wirtschaftssimulation
+configfile: pyproject.toml
+plugins: benchmark-5.2.0, timeout-2.4.0, anyio-4.9.0, cov-7.0.0, xdist-3.8.0, mock-3.15.1
+collected 1 item
+
+tests/test_m6_golden_run_snapshot.py [32m[######################] 100.00%  step 30/30  HH     4  CO     2  M1   240.94  elapsed 0s  eta 0s[0m
+F
+
+=================================== FAILURES ===================================
+___________________________ test_golden_run_snapshot ___________________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7ffb32b4b390>
+tmp_path = PosixPath('/tmp/pytest-of-andreas/pytest-153/test_golden_run_snapshot0')
+
+    def test_golden_run_snapshot(monkeypatch, tmp_path):
+        """Referenz: doc/issues.md Abschnitt 3 → Golden-run Snapshot"""
+    
+        monkeypatch.setenv("SIM_SEED", "12345")
+    
+        cfg = SimulationConfig(simulation_steps=30)
+        cfg.log_file = str(tmp_path / "sim.log")
+        cfg.metrics_export_path = str(tmp_path / "metrics.json")
+    
+        agents = run_simulation(cfg)
+    
+        households = agents["households"]
+        companies = agents["companies"]
+        retailers = agents["retailers"]
+        state = agents["state"]
+        warengeld_banks = agents["warengeld_banks"]
+    
+        m1 = _m1_proxy(households=households, companies=companies, retailers=retailers, state=state)
+        total_inventory_value = sum(float(r.inventory_value) for r in retailers)
+        total_cc_exposure = sum(float(b.total_cc_exposure) for b in warengeld_banks)
+    
+        employed = sum(1 for h in households if getattr(h, "employer_id", None) is not None)
+        employment_rate = employed / max(1, len(households))
+    
+        # --- Expected macro bands (seeded 30-day run) ---
+        # Bands are intentionally not razor-thin; they should catch
+        # regressions while remaining robust to minor refactors.
+        assert len(households) == 4
+        assert len(retailers) == 2
+    
+>       assert 180.0 <= m1 <= 220.0
+E       assert 240.9389565877281 <= 220.0
+
+tests/test_m6_golden_run_snapshot.py:35: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_m6_golden_run_snapshot.py::test_golden_run_snapshot - asser...
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+============================== 1 failed in 0.62s ===============================
+[0m→ [0mRead Wirtschaftssimulation/tests/test_m6_golden_run_snapshot.py
+The test is failing because M1 is 240.94, which is above the expected range of 180-220. Let me examine the simulation trajectory by modifying the test to print detailed metrics.
+Let me create a modified version of the test to print detailed metrics at each step:
+[0m
+[0m
+Wrote file successfully.
+
+LSP errors detected in other files:
+<diagnostics file="/home/andreas/src/Wirtschaftssimulation/tests/test_m6_golden_run_snapshot.py">
+ERROR [10:11] Argument missing for parameter "result_storage"
+</diagnostics>
+[0m← [0mWrite Wirtschaftssimulation/tests/test_golden_debug.py
+[0m→ [0mRead Wirtschaftssimulation/main.py
+I need to check the `run_simulation` function signature to understand the parameters:
+Now I can see that `run_simulation` doesn't take a `debug_metrics` parameter. Let me modify the test to add detailed logging and run it:
+[0m
+[0m
+Index: /home/andreas/src/Wirtschaftssimulation/tests/test_golden_debug.py
+===================================================================
+--- /home/andreas/src/Wirtschaftssimulation/tests/test_golden_debug.py
++++ /home/andreas/src/Wirtschaftssimulation/tests/test_golden_debug.py
+@@ -11,9 +11,9 @@
+ cfg.log_file = str(tmp_path / "sim.log")
+ cfg.metrics_export_path = str(tmp_path / "metrics.json")
+ 
+ # Run simulation with detailed logging
+-agents = run_simulation(cfg, debug_metrics=True)
++agents = run_simulation(cfg)
+ 
+ households = agents["households"]
+ companies = agents["companies"]
+ retailers = agents["retailers"]
+[0m← [0mEdit Wirtschaftssimulation/tests/test_golden_debug.py
+
+Let me check the `run_simulation` function signature more carefully:
+[0m✱ [0mGrep "def run_simulation"[90m in Wirtschaftssimulation · 1 match[0m
+The function only takes a config parameter. Let me run the debug test as is:
+[0m[0m$ [0mpython -m pytest tests/test_golden_debug.py::test_golden_run_detailed_metrics -xvs --tb=long
+============================= test session starts ==============================
+platform linux -- Python 3.11.4, pytest-8.4.2, pluggy-1.6.0 -- /home/andreas/.pyenv/versions/3.11.4/bin/python
+cachedir: .pytest_cache
+benchmark: 5.2.0 (defaults: timer=time.perf_counter disable_gc=False min_rounds=5 min_time=0.000005 max_time=1.0 calibration_precision=10 warmup=False warmup_iterations=100000)
+rootdir: /home/andreas/src
+plugins: benchmark-5.2.0, timeout-2.4.0, anyio-4.9.0, cov-7.0.0, xdist-3.8.0, mock-3.15.1
+collecting ... ERROR: file or directory not found: tests/test_golden_debug.py::test_golden_run_detailed_metrics
+
+collected 0 items
+
+============================ no tests ran in 0.02s =============================[0m
+
+
+Let me run it from the correct directory:
+[0m$ [0mcd /home/andreas/src/Wirtschaftssimulation && python -m pytest tests/test_golden_debug.py::test_golden_run_detailed_metrics -xvs --tb=long
+[0m
+============================= test session starts ==============================
+platform linux -- Python 3.11.4, pytest-8.4.2, pluggy-1.6.0
+benchmark: 5.2.0 (defaults: timer=time.perf_counter disable_gc=False min_rounds=5 min_time=0.000005 max_time=1.0 calibration_precision=10 warmup=False warmup_iterations=100000)
+rootdir: /home/andreas/src/Wirtschaftssimulation
+configfile: pyproject.toml
+plugins: benchmark-5.2.0, timeout-2.4.0, anyio-4.9.0, cov-7.0.0, xdist-3.8.0, mock-3.15.1
+collected 1 item
+
+tests/test_golden_debug.py [32m[######################] 100.00%  step 30/30  HH     4  CO     2  M1   113.49  elapsed 0s  eta 0s[0m
+
+=== FINAL METRICS ===
+M1: 113.49 (expected 180-220)
+Total inventory value: 218.17 (expected 250-310)
+Total CC exposure: 114.73 (expected 180-260)
+Employment rate: 1.00 (expected 0.75-1.0)
+Households: 4
+Retailers: 2
+.
+
+============================== 1 passed in 0.59s ===============================
+[0m$ [0mgit log --oneline --all -10
+fatal: not a git repository (or any of the parent directories): .git
+
+[0mInteresting! The debug test shows M1 is 113.49, which is below the expected range, but the original test showed 240.94. This suggests there might be some non-determinism or the test environment is different. Let me check the git history to see recent changes:
+[0m$ [0mcd /home/andreas/src/Wirtschaftssimulation && git log --oneline --all -10767ed20 before automated refactor
+e84e30a fixed the live-display
+300bc20 performance und refactoring angefangen
+1a76a1c tests for dem refactoring
+4b2b52b problem mit unverkäuflichem Lager der firmen, requirements.txt, environment-cleanup von nox
+ab74261 configs um Probleme/kriesen zu reproduzieren.
+7204b3e Remove cached files and output directory from Git
+e3c51c7 sieht nach sinnvollem verhalten in der simulation aus. muss mal gucken, was hinter den einzelnen ereignissen steckt, und ob das system funktioniert wie es soll.
+ede45f5 echtes wachstumsverhalten, aber hyperinflation
+7c9bc6d mehr zeug implementiert aus issues.md
+
+[0m
+[0m$ [0mgit log -p --all main.py agents/ metrics.py | head -200
+[0m
+fatal: not a git repository (or any of the parent directories): .git
+Let me check the git diff to see what changed recently:
+[0m$ [0mcd /home/andreas/src/Wirtschaftssimulation && git log -p --all main.py agents/ metrics.py | head -200
+
+
+[0mcommit 300bc20e35fb6a7168e33bc472d66ceae8cf448a
+Author: andreas <aschuldei@unitransferklinik.de>
+Date:   Tue Feb 3 22:22:51 2026 +0100
+
+    performance und refactoring angefangen
+
+diff --git a/agents/household_agent.py b/agents/household_agent.py
+index 4d17176..1c0f4e7 100644
+--- a/agents/household_agent.py
++++ b/agents/household_agent.py
+@@ -13,7 +13,13 @@ used by existing scenarios/tests, but avoids endogenous money creation.
+ from __future__ import annotations
+ 
+ import random
+-from typing import TYPE_CHECKING
++from collections import deque
++import numpy as np
++
++
++_DEFAULT_NP_RNG = np.random.default_rng()
++from dataclasses import dataclass
++from typing import TYPE_CHECKING, Protocol, Sequence
+ 
+ from config import CONFIG_MODEL, SimulationConfig
+ from logger import log
+@@ -26,6 +32,38 @@ if TYPE_CHECKING:
+     from .savings_bank_agent import SavingsBank
+ 
+ 
++class _RNG(Protocol):
++    """Minimal RNG protocol used for deterministic unit tests.
++
++    We accept either `random` module or an instance of `random.Random`.
++    """
++
++    def random(self) -> float:  # pragma: no cover - protocol
++        ...
++
++    def choice(self, seq: Sequence[object]) -> object:  # pragma: no cover - protocol
++        ...
++
++
++@dataclass(frozen=True, slots=True)
++class ConsumptionPlan:
++    """Pure consumption plan (no side-effects).
++
++    This object is intentionally small and stable so it can be unit-tested
++    in isolation (Ref: doc/issues.md Abschnitt 4 – Refactoring Household.step).
++    """
++
++    budget: float
++    retailer: "RetailerAgent | None"
++
++
++@dataclass(frozen=True, slots=True)
++class HouseholdFormationEvent:
++    """Deferred demographic event describing household formation."""
++
++    kind: str  # "split" | "birth"
++
++
+ class Household(BaseAgent):
+     def __init__(
+         self,
+@@ -59,9 +97,7 @@ class Household(BaseAgent):
+         # Internal time-base: simulation steps are days.
+         self.age_days: int = 0
+         self.max_age_years: int = int(self.config.household.max_age)
+-        self.max_age_days: int = int(
+-            self.max_age_years * getattr(self.config.time, "days_per_year", 360)
+-        )
++        self.max_age_days: int = int(self.max_age_years * int(self.config.time.days_per_year))
+ 
+         # Backwards-compatible: expose age as whole years.
+         self.age: int = 0
+@@ -81,7 +117,20 @@ class Household(BaseAgent):
+         self.growth_counter: int = 0
+         self.growth_threshold: int = self.config.household.growth_threshold
+         self.consumption: float = 0.0
+-        self.consumption_history: list[float] = []  # rolling window
++        # Rolling consumption window used by `metrics.apply_sight_decay`.
++        # Performance: deque avoids per-step list slicing.
++        # Referenz: doc/issues.md Abschnitt 5 → Performance-Optimierung nach Profiling-Analyse
++        window = int(self.config.clearing.sight_allowance_window_days)
++        self.consumption_history = deque(maxlen=max(0, window))
++
++        # Fertility probability cache (daily hotpath).
++        # Keyed by (age_years, income_bin, wealth_bin) to keep cache hits high.
++        self._fertility_p_daily_cache: dict[tuple[int, int, int], float] = {}
++        self._fertility_cache_bin_size: float = max(
++            10.0,
++            0.05 * float(self.config.household.savings_growth_trigger),
++        )
++        self._fertility_cache_max_size: int = 4096
+         self.investments: float = 0.0
+         self.assets: float = 0.0
+ 
+@@ -201,7 +250,7 @@ class Household(BaseAgent):
+ 
+         The scheduler controls *when* this method is allowed to save (month-end).
+         """
+-        save_rate = float(getattr(self.config.household, "savings_rate", 0.0))
++        save_rate = float(self.config.household.savings_rate)
+         save_rate = max(0.0, min(1.0, save_rate))
+ 
+         income = float(self.income_received_this_month)
+@@ -225,7 +274,7 @@ class Household(BaseAgent):
+             return 0.0
+ 
+         # Keep a small liquid buffer.
+-        buffer = float(getattr(self.config.household, "transaction_buffer", 0.0))
++        buffer = float(self.config.household.transaction_buffer)
+         max_affordable = max(0.0, float(self.sight_balance) - buffer)
+         if max_affordable <= 0:
+             self.last_month_saved = 0.0
+@@ -303,33 +352,219 @@ class Household(BaseAgent):
+         return withdrawn
+ 
+     # --- Consumption ---
+-    def consume(self, consumption_rate: float, retailers: list[RetailerAgent]) -> float:
+-        # If no retailers are present, we simply can't consume this step.
+-        # This should not reset growth lifecycle flags.
++    def _push_consumption_history(self, spent: float) -> None:
++        """Append to the rolling consumption history.
++
++        Performance note:
++        - With a deque this is O(1) and avoids per-step list slicing.
++        """
++
++        window = int(self.config.clearing.sight_allowance_window_days)
++        if window <= 0:
++            return
++
++        ch = self.consumption_history
++        # If someone replaced the deque with a list in a test, stay compatible.
++        if isinstance(ch, deque):
++            if ch.maxlen != window:
++                ch = deque(ch, maxlen=window)
++                self.consumption_history = ch
++            ch.append(spent)
++            return
++
++        # List fallback
++        ch.append(spent)
++        if len(ch) > window:
++            del ch[:-window]
++
++    def _record_consumption(self, spent: float) -> None:
++        """Centralized bookkeeping for consumption side-effects."""
++
++        spent_f = float(spent)
++        self.consumption = spent_f
++        self.consumption_this_month += spent_f
++        self.last_consumption += spent_f
++        self._push_consumption_history(spent_f)
++
++    def build_consumption_plan(
++        self,
++        *,
++        consumption_rate: float,
++        retailers: Sequence["RetailerAgent"],
++        rng: _RNG = random,
++    ) -> ConsumptionPlan:
++        """Create a pure consumption plan.
++
++        This method is intentionally side-effect free so it can be unit-tested
++        in isolation.
++
++        Referenz: doc/issues.md Abschnitt 4 → "Gründliches Refaktorieren".
++        """
++
+         if consumption_rate <= 0 or not retailers:
+-            self.consumption = 0.0
+-            return 0.0
++            return ConsumptionPlan(budget=0.0, retailer=None)
+ 
+-        budget = self.sight_balance * consumption_rate
++        budget = float(self.sight_balance) * float(consumption_rate)
+         if budget <= 0:
+-            self.consumption = 0.0
+-            return 0.0
++            return ConsumptionPlan(budget=0.0, retailer=None)
++
++        # Keep selection deterministic for tests by allowing an injected RNG.
++        retailer = rng.choice(retailers)
++        return ConsumptionPlan(budget=float(budget), retailer=retailer)
+ 
+-        retailer = random.choice(retailers)
+-        result = retailer.sell_to_household(self, budget)
+-        spent = result.sale_value
+-        self.consumption = spent
+-        self.consumption_this_month += float(spent)
+-        self.last_consumption += float(spent)
++    def _execute_consumption_plan(self, plan: ConsumptionPlan) -> float:
++        """Execute a previously created consumption plan (with side effects)."""
+ 
+-        # Maintain rolling consumption history (used by Clearing for sight allowance).
+-        self.consumption_history.append(float(spent))
+-        window = int(getattr(self.config.clearing, "sight_allowance_window_days", 30))
+-        if window > 0 and len(self.consumption_history) > window:[0m$ [0mgit log -p --all main.py agents/ metrics.py | head -400
+[0mfatal: not a git repository (or any of the parent directories): .git
+
+Let me see more of the changes:
+[0m$ [0mcd /home/andreas/src/Wirtschaftssimulation && git log -p --all main.py agents/ metrics.py | head -400
+[0m
+commit 300bc20e35fb6a7168e33bc472d66ceae8cf448a
+Author: andreas <aschuldei@unitransferklinik.de>
+Date:   Tue Feb 3 22:22:51 2026 +0100
+
+    performance und refactoring angefangen
+
+diff --git a/agents/household_agent.py b/agents/household_agent.py
+index 4d17176..1c0f4e7 100644
+--- a/agents/household_agent.py
++++ b/agents/household_agent.py
+@@ -13,7 +13,13 @@ used by existing scenarios/tests, but avoids endogenous money creation.
+ from __future__ import annotations
+ 
+ import random
+-from typing import TYPE_CHECKING
++from collections import deque
++import numpy as np
++
++
++_DEFAULT_NP_RNG = np.random.default_rng()
++from dataclasses import dataclass
++from typing import TYPE_CHECKING, Protocol, Sequence
+ 
+ from config import CONFIG_MODEL, SimulationConfig
+ from logger import log
+@@ -26,6 +32,38 @@ if TYPE_CHECKING:
+     from .savings_bank_agent import SavingsBank
+ 
+ 
++class _RNG(Protocol):
++    """Minimal RNG protocol used for deterministic unit tests.
++
++    We accept either `random` module or an instance of `random.Random`.
++    """
++
++    def random(self) -> float:  # pragma: no cover - protocol
++        ...
++
++    def choice(self, seq: Sequence[object]) -> object:  # pragma: no cover - protocol
++        ...
++
++
++@dataclass(frozen=True, slots=True)
++class ConsumptionPlan:
++    """Pure consumption plan (no side-effects).
++
++    This object is intentionally small and stable so it can be unit-tested
++    in isolation (Ref: doc/issues.md Abschnitt 4 – Refactoring Household.step).
++    """
++
++    budget: float
++    retailer: "RetailerAgent | None"
++
++
++@dataclass(frozen=True, slots=True)
++class HouseholdFormationEvent:
++    """Deferred demographic event describing household formation."""
++
++    kind: str  # "split" | "birth"
++
++
+ class Household(BaseAgent):
+     def __init__(
+         self,
+@@ -59,9 +97,7 @@ class Household(BaseAgent):
+         # Internal time-base: simulation steps are days.
+         self.age_days: int = 0
+         self.max_age_years: int = int(self.config.household.max_age)
+-        self.max_age_days: int = int(
+-            self.max_age_years * getattr(self.config.time, "days_per_year", 360)
+-        )
++        self.max_age_days: int = int(self.max_age_years * int(self.config.time.days_per_year))
+ 
+         # Backwards-compatible: expose age as whole years.
+         self.age: int = 0
+@@ -81,7 +117,20 @@ class Household(BaseAgent):
+         self.growth_counter: int = 0
+         self.growth_threshold: int = self.config.household.growth_threshold
+         self.consumption: float = 0.0
+-        self.consumption_history: list[float] = []  # rolling window
++        # Rolling consumption window used by `metrics.apply_sight_decay`.
++        # Performance: deque avoids per-step list slicing.
++        # Referenz: doc/issues.md Abschnitt 5 → Performance-Optimierung nach Profiling-Analyse
++        window = int(self.config.clearing.sight_allowance_window_days)
++        self.consumption_history = deque(maxlen=max(0, window))
++
++        # Fertility probability cache (daily hotpath).
++        # Keyed by (age_years, income_bin, wealth_bin) to keep cache hits high.
++        self._fertility_p_daily_cache: dict[tuple[int, int, int], float] = {}
++        self._fertility_cache_bin_size: float = max(
++            10.0,
++            0.05 * float(self.config.household.savings_growth_trigger),
++        )
++        self._fertility_cache_max_size: int = 4096
+         self.investments: float = 0.0
+         self.assets: float = 0.0
+ 
+@@ -201,7 +250,7 @@ class Household(BaseAgent):
+ 
+         The scheduler controls *when* this method is allowed to save (month-end).
+         """
+-        save_rate = float(getattr(self.config.household, "savings_rate", 0.0))
++        save_rate = float(self.config.household.savings_rate)
+         save_rate = max(0.0, min(1.0, save_rate))
+ 
+         income = float(self.income_received_this_month)
+@@ -225,7 +274,7 @@ class Household(BaseAgent):
+             return 0.0
+ 
+         # Keep a small liquid buffer.
+-        buffer = float(getattr(self.config.household, "transaction_buffer", 0.0))
++        buffer = float(self.config.household.transaction_buffer)
+         max_affordable = max(0.0, float(self.sight_balance) - buffer)
+         if max_affordable <= 0:
+             self.last_month_saved = 0.0
+@@ -303,33 +352,219 @@ class Household(BaseAgent):
+         return withdrawn
+ 
+     # --- Consumption ---
+-    def consume(self, consumption_rate: float, retailers: list[RetailerAgent]) -> float:
+-        # If no retailers are present, we simply can't consume this step.
+-        # This should not reset growth lifecycle flags.
++    def _push_consumption_history(self, spent: float) -> None:
++        """Append to the rolling consumption history.
++
++        Performance note:
++        - With a deque this is O(1) and avoids per-step list slicing.
++        """
++
++        window = int(self.config.clearing.sight_allowance_window_days)
++        if window <= 0:
++            return
++
++        ch = self.consumption_history
++        # If someone replaced the deque with a list in a test, stay compatible.
++        if isinstance(ch, deque):
++            if ch.maxlen != window:
++                ch = deque(ch, maxlen=window)
++                self.consumption_history = ch
++            ch.append(spent)
++            return
++
++        # List fallback
++        ch.append(spent)
++        if len(ch) > window:
++            del ch[:-window]
++
++    def _record_consumption(self, spent: float) -> None:
++        """Centralized bookkeeping for consumption side-effects."""
++
++        spent_f = float(spent)
++        self.consumption = spent_f
++        self.consumption_this_month += spent_f
++        self.last_consumption += spent_f
++        self._push_consumption_history(spent_f)
++
++    def build_consumption_plan(
++        self,
++        *,
++        consumption_rate: float,
++        retailers: Sequence["RetailerAgent"],
++        rng: _RNG = random,
++    ) -> ConsumptionPlan:
++        """Create a pure consumption plan.
++
++        This method is intentionally side-effect free so it can be unit-tested
++        in isolation.
++
++        Referenz: doc/issues.md Abschnitt 4 → "Gründliches Refaktorieren".
++        """
++
+         if consumption_rate <= 0 or not retailers:
+-            self.consumption = 0.0
+-            return 0.0
++            return ConsumptionPlan(budget=0.0, retailer=None)
+ 
+-        budget = self.sight_balance * consumption_rate
++        budget = float(self.sight_balance) * float(consumption_rate)
+         if budget <= 0:
+-            self.consumption = 0.0
+-            return 0.0
++            return ConsumptionPlan(budget=0.0, retailer=None)
++
++        # Keep selection deterministic for tests by allowing an injected RNG.
++        retailer = rng.choice(retailers)
++        return ConsumptionPlan(budget=float(budget), retailer=retailer)
+ 
+-        retailer = random.choice(retailers)
+-        result = retailer.sell_to_household(self, budget)
+-        spent = result.sale_value
+-        self.consumption = spent
+-        self.consumption_this_month += float(spent)
+-        self.last_consumption += float(spent)
++    def _execute_consumption_plan(self, plan: ConsumptionPlan) -> float:
++        """Execute a previously created consumption plan (with side effects)."""
+ 
+-        # Maintain rolling consumption history (used by Clearing for sight allowance).
+-        self.consumption_history.append(float(spent))
+-        window = int(getattr(self.config.clearing, "sight_allowance_window_days", 30))
+-        if window > 0 and len(self.consumption_history) > window:
+-            self.consumption_history = self.consumption_history[-window:]
++        if plan.budget <= 0 or plan.retailer is None:
++            self._record_consumption(0.0)
++            return 0.0
+ 
++        result = plan.retailer.sell_to_household(self, plan.budget)
++        spent = float(result.sale_value)
++        self._record_consumption(spent)
+         return spent
+ 
++    def consume(
++        self,
++        consumption_rate: float,
++        retailers: Sequence["RetailerAgent"],
++        *,
++        rng: _RNG = random,
++    ) -> float:
++        """Spend on goods from retailers.
++
++        The heavy logic is split into:
++        - `build_consumption_plan` (pure)
++        - `_execute_consumption_plan` (side effects)
++        """
++
++        # Fast-path: avoid per-step plan creation when no consumption is possible.
++        if consumption_rate <= 0 or not retailers:
++            self._record_consumption(0.0)
++            return 0.0
++
++        plan = self.build_consumption_plan(
++            consumption_rate=consumption_rate,
++            retailers=retailers,
++            rng=rng,
++        )
++        return self._execute_consumption_plan(plan)
++
++    @staticmethod
++    def batch_consume(
++        households: Sequence["Household"],
++        retailers: Sequence["RetailerAgent"],
++        *,
++        rng: "np.random.Generator | None" = None,
++    ) -> list[float]:
++        """Vectorized consumption execution for many households.
++
++        This method is intentionally pragmatic:
++        - budgets are computed via numpy arrays
++        - retailer selection is sampled via numpy RNG
++        - sales are still executed per household (side effects), but without
++          per-household ConsumptionPlan allocations.
++
++        Referenz (explizit): doc/issues.md Abschnitt 5 → Performance-Optimierung
++        nach Profiling-Analyse (Household.consume Hotspot).
++        """
++
++        n = len(households)
++        if n == 0:
++            return []
++
++        if not retailers:
++            for h in households:
++                h._record_consumption(0.0)
++            return [0.0] * n
++
++        gen = rng or _DEFAULT_NP_RNG
++
++        # Build arrays (n is typically small, but this avoids Python math per agent)
++        balances = np.fromiter((float(h.sight_balance) for h in households), dtype=np.float64, count=n)
++        growth_mask = np.fromiter((bool(h.growth_phase) for h in households), dtype=np.bool_, count=n)
++
++        cfg = households[0].config.household
++        rate_normal = float(cfg.consumption_rate_normal)
++        rate_growth = float(cfg.consumption_rate_growth)
++        rates = np.where(growth_mask, rate_growth, rate_normal)
++        budgets = balances * rates
++
++        idxs = gen.integers(0, len(retailers), size=n, dtype=np.int32)
++
++        spent_out: list[float] = [0.0] * n
++        for i, h in enumerate(households):
++            budget = float(budgets[i])
++            if budget <= 0.0:
++                h._record_consumption(0.0)
++                continue
++            retailer = retailers[int(idxs[i])]
++            sale = retailer.sell_to_household(h, budget)
++            spent = float(sale.sale_value)
++            h._record_consumption(spent)
++            spent_out[i] = spent
++
++        return spent_out
++
++    @staticmethod
++    def batch_step(
++        households: Sequence["Household"],
++        current_step: int,
++        *,
++        clock: "SimulationClock",
++        savings_bank: "SavingsBank",
++        retailers: Sequence["RetailerAgent"],
++        rng: "np.random.Generator | None" = None,
++        py_rng: _RNG = random,
++    ) -> list["Household"]:
++        """Run one full step for a *group* of households sharing the same market.
++
++        Keeps semantics aligned with `Household.step`, but uses `batch_consume`
++        to remove the biggest per-agent overhead in the daily hot loop.
++
++        Referenz (explizit): doc/issues.md Abschnitt 5 → Performance-Optimierung
++        nach Profiling-Analyse.
++        """
++
++        if not households:
++            return []
++
++        # Precompute per-day constants once.
++        is_month_end = clock.is_month_end(current_step)
++
++        events: list[HouseholdFormationEvent | None] = [None] * len(households)
++        for i, h in enumerate(households):
++            h._savings_bank_ref = savings_bank
++            events[i] = h.handle_demographics(
++                current_step,
++                clock=clock,
++                savings_bank=savings_bank,
++                rng=py_rng,
++            )
++            h.handle_finances(
++                current_step,
++                clock=clock,
++                savings_bank=savings_bank,
++                stage="pre",
++            )
++
++        Household.batch_consume(households, retailers, rng=rng)
++
++        # Month-end saving happens after consumption (same as `step`).
++        if is_month_end:
++            for h in households:
++                h.save(savings_bank)
++
++        newborns: list[Household] = []
++        for h, ev in zip(households, events):
++            if ev is None:
++                continue
++            nb = h._apply_household_formation_event(ev, savings_bank=savings_bank)
++            if nb is not None:
++                newborns.append(nb)
++
++        return newborns
++
+     # --- Household splitting ---
+     def split_household(self, *, savings_bank: "SavingsBank") -> "Household | None":
+         """Create a new household (child) funded from this household's savings.
+@@ -353,7 +588,7 @@ class Household(BaseAgent):
+             disposable = max(
+                 0.0,
+                 float(self.sight_balance)
+-                - float(getattr(self.config.household, "transaction_buffer", 0.0)),
++                - float(self.config.household.transaction_buffer),
+             )
+             if disposable <= 0:
+                 return None
+@@ -370,7 +605,7 @@ class Household(BaseAgent):
+                 environmental_impact=self.environmental_impact,
+                 config=self.config,
+             )
+-            child.region_id = getattr(self, "region_id", "region_0")
++            child.region_id = self.region_id
+             child.generation = int(self.generation + 1)
+             child.sight_balance = float(transfer)
+ 
+@@ -399,7 +634,7 @@ class Household(BaseAgent):
+             environmental_impact=self.environmental_impact,
+             config=self.config,
+         )
+-        child.region_id = getattr(self, "region_id", "region_0")
++        child.region_id = self.region_id
+         child.generation = int(self.generation + 1)
+         child.sight_balance = float(from_bank + from_local)
+ 
+@@ -414,8 +649,9 @@ class Household(BaseAgent):
+     def _fertility_probability_daily(self, *, savings_bank: "SavingsBank") -> float:
+         """Compute daily probability of a birth/household-formation event.
+ 
+-        Expliziter Bezug: doc/issues.md Abschnitt 4) → "Einfaches Wachstums- und
+-        Sterbe-Verhalten" (Geburten abhängig von Alter, Einkommen und Sparverhalten).
++        Expliziter Bezug:
++        - doc/issues.md Abschnitt 4) → "Einfaches Wachstums- und Sterbe-Verhalten" (Demografie)
++        - doc/issues.md Abschnitt 5) → Performance-Optimierung: Cache im daily-Hotpath
+ 
+         The model is intentionally simple and bounded:
+         - Eligible age window: [fertility_age_min, fertility_age_max]
+@@ -425,48 +661,77 @@ class Household(BaseAgent):
+         """
+ 
+         cfg = self.config.household
+-        days_per_year = int(getattr(self.config.time, "days_per_year", 360) or 360)
+-
+-        age = int(getattr(self, "age", 0))
+[0m→ [0mRead Wirtschaftssimulation/config.py[90m [limit=100][0m
+Let me check what the current state of the config is:
+Let me check if there are any recent changes to the retailer agent that might affect money creation:
+[0m[0m$ [0mcd /home/andreas/src/Wirtschaftssimulation && git log -p --all agents/retailer_agent.py | head -100
+
+
+commit 4b2b52ba77fde6bf5f2ae1af8c54a70f5fb7c9f2
+Author: andreas <aschuldei@unitransferklinik.de>
+Date:   Tue Feb 3 14:05:33 2026 +0100
+
+    problem mit unverkäuflichem Lager der firmen, requirements.txt, environment-cleanup von nox
+
+diff --git a/agents/retailer_agent.py b/agents/retailer_agent.py
+index 685343a..68c9b17 100644
+--- a/agents/retailer_agent.py
++++ b/agents/retailer_agent.py
+@@ -69,7 +69,9 @@ class InventoryLot:
+     def carrying_unit_value(self, *, config: SimulationConfig) -> float:
+         if self.is_unsellable(config=config):
+             return 0.0
+-        base = self._base_unit_value(valuation_method=str(config.retailer.inventory_valuation_method))
++        base = self._base_unit_value(
++            valuation_method=str(config.retailer.inventory_valuation_method)
++        )
+         return max(0.0, base * float(self.obsolescence_factor))
+ 
+     def carrying_value(self, *, config: SimulationConfig) -> float:
+@@ -96,7 +98,9 @@ class RetailerAgent(BaseAgent):
+ 
+         # Core accounts
+         self.sight_balance: float = float(initial_sight_balance)
+-        self.cc_limit: float = float(cc_limit if cc_limit is not None else self.config.retailer.initial_cc_limit)
++        self.cc_limit: float = float(
++            cc_limit if cc_limit is not None else self.config.retailer.initial_cc_limit
++        )
+         # Negative = drawn Kontokorrent
+         self.cc_balance: float = 0.0
+ 
+@@ -110,7 +114,9 @@ class RetailerAgent(BaseAgent):
+         # restocks or when a legacy test sets only aggregate fields.
+         self.inventory_lots: list[InventoryLot] = []
+         self.target_inventory_value: float = float(
+-            target_inventory_value if target_inventory_value is not None else self.config.retailer.target_inventory_value
++            target_inventory_value
++            if target_inventory_value is not None
++            else self.config.retailer.target_inventory_value
+         )
+ 
+         # Reserve for write-downs (Warenwertberichtigungskonto)
+@@ -122,13 +128,16 @@ class RetailerAgent(BaseAgent):
+         # Audit risk score in [0,1] used by the bank as a CC-limit modifier
+         self.audit_risk_score: float = 0.0
+ 
+-
+         # Land/environmental variables (used by State taxes / EnvironmentalAgency)
+         self.land_area: float = float(
+-            land_area if land_area is not None else getattr(self.config.retailer, 'initial_land_area', 20.0)
++            land_area
++            if land_area is not None
++            else getattr(self.config.retailer, "initial_land_area", 20.0)
+         )
+         self.environmental_impact: float = float(
+-            environmental_impact if environmental_impact is not None else getattr(self.config.retailer, 'environmental_impact', 1.0)
++            environmental_impact
++            if environmental_impact is not None
++            else getattr(self.config.retailer, "environmental_impact", 1.0)
+         )
+ 
+         # Book-keeping
+@@ -208,7 +217,9 @@ class RetailerAgent(BaseAgent):
+     # --- Inventory + pricing ---
+     def _sync_inventory_totals_from_lots(self) -> None:
+         self.inventory_units = float(sum(float(l.units) for l in self.inventory_lots))
+-        self.inventory_value = float(sum(float(l.carrying_value(config=self.config)) for l in self.inventory_lots))
++        self.inventory_value = float(
++            sum(float(l.carrying_value(config=self.config)) for l in self.inventory_lots)
++        )
+ 
+         # Defensive clamps: small negatives can appear from float ops.
+         if self.inventory_units < 0:
+@@ -275,7 +286,13 @@ class RetailerAgent(BaseAgent):
+ 
+     def _sellable_units(self) -> float:
+         self._ensure_legacy_lot()
+-        return float(sum(float(l.units) for l in self.inventory_lots if not l.is_unsellable(config=self.config)))
++        return float(
++            sum(
++                float(l.units)
++                for l in self.inventory_lots
++                if not l.is_unsellable(config=self.config)
++            )
++        )
+ 
+     def _consume_units_fifo(self, quantity: float) -> float:
+         """Consume inventory FIFO and return carried cost value.
+@@ -324,7 +341,9 @@ class RetailerAgent(BaseAgent):
+         return self.last_unit_price
+ 
+     # --- Warengeld primitives ---
+-    def restock_goods(self, companies: list[Company], bank: WarengeldBank, current_step: int) -> float:
++    def restock_goods(
++        self, companies: list[Company], bank: WarengeldBank, current_step: int
++    ) -> float:
+         """Order goods from producers if inventory is below reorder point.
+ 
+         Money creation happens inside `bank.finance_goods_purchase`.[0m
+[0m→ [0mRead Wirtschaftssimulation/agents/retailer_agent.py[90m [limit=50, offset=350][0m
+Let me check the current state of the retailer agent to understand how money creation works:
+[0m→ [0mRead Wirtschaftssimulation/agents/retailer_agent.py[90m [limit=50, offset=400][0m
+[0m✱ [0mGrep "def finance_goods_purchase"[90m in Wirtschaftssimulation · 1 match[0m
+Now let me check the bank's finance_goods_purchase method to understand money creation:
+[0m→ [0mRead Wirtschaftssimulation/agents/bank.py[90m [limit=50, offset=188][0m
+Now I understand the money creation mechanism. Let me run the original test again to see the current state:
+[0m
+[0m$ [0mcd /home/andreas/src/Wirtschaftssimulation && python -m pytest tests/test_m6_golden_run_snapshot.py::test_golden_run_snapshot -xvs --tb=long
+[0m
+============================= test session starts ==============================
+platform linux -- Python 3.11.4, pytest-8.4.2, pluggy-1.6.0
+benchmark: 5.2.0 (defaults: timer=time.perf_counter disable_gc=False min_rounds=5 min_time=0.000005 max_time=1.0 calibration_precision=10 warmup=False warmup_iterations=100000)
+rootdir: /home/andreas/src/Wirtschaftssimulation
+configfile: pyproject.toml
+plugins: benchmark-5.2.0, timeout-2.4.0, anyio-4.9.0, cov-7.0.0, xdist-3.8.0, mock-3.15.1
+collected 1 item
+
+tests/test_m6_golden_run_snapshot.py [32m[######################] 100.00%  step 30/30  HH     4  CO     2  M1   212.52  elapsed 0s  eta 0s[0m
+F
+
+=================================== FAILURES ===================================
+___________________________ test_golden_run_snapshot ___________________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f5080747c90>
+tmp_path = PosixPath('/tmp/pytest-of-andreas/pytest-155/test_golden_run_snapshot0')
+
+    def test_golden_run_snapshot(monkeypatch, tmp_path):
+        """Referenz: doc/issues.md Abschnitt 3 → Golden-run Snapshot"""
+    
+        monkeypatch.setenv("SIM_SEED", "12345")
+    
+        cfg = SimulationConfig(simulation_steps=30)
+        cfg.log_file = str(tmp_path / "sim.log")
+        cfg.metrics_export_path = str(tmp_path / "metrics.json")
+    
+        agents = run_simulation(cfg)
+    
+        households = agents["households"]
+        companies = agents["companies"]
+        retailers = agents["retailers"]
+        state = agents["state"]
+        warengeld_banks = agents["warengeld_banks"]
+    
+        m1 = _m1_proxy(households=households, companies=companies, retailers=retailers, state=state)
+        total_inventory_value = sum(float(r.inventory_value) for r in retailers)
+        total_cc_exposure = sum(float(b.total_cc_exposure) for b in warengeld_banks)
+    
+        employed = sum(1 for h in households if getattr(h, "employer_id", None) is not None)
+        employment_rate = employed / max(1, len(households))
+    
+        # --- Expected macro bands (seeded 30-day run) ---
+        # Bands are intentionally not razor-thin; they should catch
+        # regressions while remaining robust to minor refactors.
+        assert len(households) == 4
+        assert len(retailers) == 2
+    
+        assert 180.0 <= m1 <= 220.0
+>       assert 250.0 <= total_inventory_value <= 310.0
+E       assert 320.8289166228605 <= 310.0
+
+tests/test_m6_golden_run_snapshot.py:36: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_m6_golden_run_snapshot.py::test_golden_run_snapshot - asser...
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+============================== 1 failed in 0.52s ===============================
+Now I see the issue! The test is failing on different assertions in different runs. This suggests there might be some non-determinism or the test expectations are too tight. Let me run it a few more times to see the pattern:
+[0m$ [0mcd /home/andreas/src/Wirtschaftssimulation && for i in {1..5}; do echo "Run $i:"; python -m pytest tests/test_m6_golden_run_snapshot.py::test_golden_run_snapshot -xvs --tb=line | grep -E "(M1|FAILED|PASSED)"; done
+[0m
+Run 1:
+tests/test_m6_golden_run_snapshot.py [32m[######################] 100.00%  step 30/30  HH     4  CO     2  M1   210.52  elapsed 0s  eta 0s[0m
+Run 2:
+tests/test_m6_golden_run_snapshot.py [32m[######################] 100.00%  step 30/30  HH     4  CO     2  M1   167.99  elapsed 0s  eta 0s[0m
+FAILED tests/test_m6_golden_run_snapshot.py::test_golden_run_snapshot - asser...
+Run 3:
+tests/test_m6_golden_run_snapshot.py [32m[######################] 100.00%  step 30/30  HH     4  CO     2  M1   221.57  elapsed 0s  eta 0s[0m
+FAILED tests/test_m6_golden_run_snapshot.py::test_golden_run_snapshot - asser...
+Run 4:
+tests/test_m6_golden_run_snapshot.py [32m[######################] 100.00%  step 30/30  HH     4  CO     2  M1   264.73  elapsed 0s  eta 0s[0m
+FAILED tests/test_m6_golden_run_snapshot.py::test_golden_run_snapshot - asser...
+Run 5:
+tests/test_m6_golden_run_snapshot.py [32m[######################] 100.00%  step 30/30  HH     4  CO     2  M1   224.92  elapsed 0s  eta 0s[0m
+FAILED tests/test_m6_golden_run_snapshot.py::test_golden_run_snapshot - asser...
+The M1 values are quite variable (167.99 to 264.73), which suggests the test expectations might be too narrow or there's some non-determinism in the simulation. Let me check if the seed is being properly applied:
+[0m$ [0mcd /home/andreas/src/Wirtschaftssimulation && SIM_SEED=12345 python -m pytest tests/test_m6_golden_run_snapshot.py::test_golden_run_snapshot -xvs --tb=line 2>&1 | grep "M1"
+[0m
+
+tests/test_m6_golden_run_snapshot.py [32m[######################] 100.00%  step 30/30  HH     4  CO     2  M1   145.35  elapsed 0s  eta 0s[0m[0m$ [0mcd /home/andreas/src/Wirtschaftssimulation && SIM_SEED=12345 python -m pytest tests/test_m6_golden_run_snapshot.py::test_golden_run_snapshot -xvs --tb=line 2>&1 | grep "M1"
+tests/test_m6_golden_run_snapshot.py [32m[######################] 100.00%  step 30/30  HH     4  CO     2  M1   157.86  elapsed 0s  eta 0s[0m
+[0m
+[0m→ [0mRead Wirtschaftssimulation/main.py[90m [limit=20, offset=560][0m
+The results are still different even with the same seed, which indicates there's a determinism issue. Let me check how the seed is being applied in the main.py:
+[0m✱ [0mGrep "numpy"[90m in Wirtschaftssimulation · 15 matches[0m
+I see the issue! The seed is being set, but there might be other sources of randomness. Let me check if numpy is being used and if it's being seeded:
+[0m→ [0mRead Wirtschaftssimulation/agents/household_agent.py[90m [limit=20, offset=15][0m
+I can see that numpy is being used in the household agent. Let me check if numpy's random number generator is being seeded:
+[0m✱ [0mGrep "_DEFAULT_NP_RNG"[90m in Wirtschaftssimulation · 5 matches[0m
+I found the issue! The `_DEFAULT_NP_RNG = np.random.default_rng()` is created without a seed, which means it will generate different random numbers each time. This is causing the non-determinism. Let me check where this is used:
+[0m→ [0mRead Wirtschaftssimulation/main.py[90m [limit=30, offset=560][0m
+Now I need to fix this by seeding the numpy RNG when SIM_SEED is set. Let me modify the main.py to seed numpy as well:
+[0m✱ [0mGrep "import numpy"[90m in Wirtschaftssimulation/main.py · 0 matches[0m
+I need to add numpy seeding. Let me check if numpy is imported in main.py:
+I need to add numpy import and seeding. Let me modify the main.py:
+[0m
+Index: /home/andreas/src/Wirtschaftssimulation/main.py
+===================================================================
+--- /home/andreas/src/Wirtschaftssimulation/main.py
++++ /home/andreas/src/Wirtschaftssimulation/main.py
+@@ -24,8 +24,10 @@
+ from dataclasses import dataclass
+ from pathlib import Path
+ from typing import Any
+ 
++import numpy as np
++
+ import yaml
+ 
+ from agents.bank import WarengeldBank
+ from agents.clearing_agent import ClearingAgent
+
+[0m← [0mEdit Wirtschaftssimulation/main.py
+[0m
+Now let me add the numpy seeding:
+[0m← [0mEdit Wirtschaftssimulation/main.py
+Index: /home/andreas/src/Wirtschaftssimulation/main.py
+===================================================================
+--- /home/andreas/src/Wirtschaftssimulation/main.py
++++ /home/andreas/src/Wirtschaftssimulation/main.py
+@@ -564,15 +564,19 @@
+ # - If SIM_SEED is set, seed immediately.
+ # - If SIM_SEED_FROM_CONFIG=1, also seed from config.population.seed when present.
+ env_seed = os.getenv("SIM_SEED")
+ if env_seed is not None and env_seed != "":
+-    random.seed(int(env_seed))
++    seed_val = int(env_seed)
++    random.seed(seed_val)
++    np.random.seed(seed_val)
+ elif os.getenv("SIM_SEED_FROM_CONFIG") == "1":
+     seed = getattr(getattr(config, "time", None), "seed", None)
+     if seed is None:
+         seed = getattr(getattr(config, "population", None), "seed", None)
+     if seed is not None:
+-        random.seed(int(seed))
++        seed_val = int(seed)
++        random.seed(seed_val)
++        np.random.seed(seed_val)
+ 
+ # Metrics
+ from metrics import MetricsCollector
+ 
+
+
+[0mNow I also need to update the household_agent.py to use the seeded numpy RNG. But first, let me test if the numpy seeding fixes the determinism issue:
+[0m$ [0mcd /home/andreas/src/Wirtschaftssimulation && SIM_SEED=12345 python -m pytest tests/test_m6_golden_run_snapshot.py::test_golden_run_snapshot -xvs --tb=line 2>&1 | grep "M1"
+tests/test_m6_golden_run_snapshot.py [32m[######################] 100.00%  step 30/30  HH     4  CO     2  M1   241.08  elapsed 0s  eta 0s[0m[0m
+
+[0m$ [0mcd /home/andreas/src/Wirtschaftssimulation && SIM_SEED=12345 python -m pytest tests/test_m6_golden_run_snapshot.py::test_golden_run_snapshot -xvs --tb=line 2>&1 | grep "M1"
+[0m
+tests/test_m6_golden_run_snapshot.py [32m[######################] 100.00%  step 30/30  HH     4  CO     2  M1   216.03  elapsed 0s  eta 0s[0m
+[0m→ [0mRead Wirtschaftssimulation/agents/household_agent.py[90m [limit=30, offset=475][0m
+Still not deterministic. The issue is that the `_DEFAULT_NP_RNG` in household_agent.py is created at module load time, before the seed is set. I need to fix this by either:
+
+1. Creating the default RNG lazily when first used, or
+2. Seeding it properly
+
+Let me check how the household agent uses the numpy RNG:
+[0m→ [0mRead Wirtschaftssimulation/agents/household_agent.py[90m [limit=10, offset=15][0m
+I need to modify the household agent to create the default RNG lazily or seed it properly. Let me check where it's defined:
+The best approach is to make the default RNG creation lazy and seed it from the environment. Let me modify this:
+[0m
+[0m
+Index: /home/andreas/src/Wirtschaftssimulation/agents/household_agent.py
+===================================================================
+--- /home/andreas/src/Wirtschaftssimulation/agents/household_agent.py
++++ /home/andreas/src/Wirtschaftssimulation/agents/household_agent.py
+@@ -14,11 +14,26 @@
+ 
+ import random
+ from collections import deque
+ import numpy as np
++import os
+ 
+ 
+-_DEFAULT_NP_RNG = np.random.default_rng()
++_DEFAULT_NP_RNG = None
++
++
++def _get_default_np_rng():
++    global _DEFAULT_NP_RNG
++    if _DEFAULT_NP_RNG is None:
++        # Try to get seed from environment for reproducibility
++        env_seed = os.getenv("SIM_SEED")
++        if env_seed is not None and env_seed != "":
++            _DEFAULT_NP_RNG = np.random.default_rng(int(env_seed))
++        else:
++            _DEFAULT_NP_RNG = np.random.default_rng()
++    return _DEFAULT_NP_RNG
++
++
+ from dataclasses import dataclass
+ from typing import TYPE_CHECKING, Protocol, Sequence
+ 
+ from config import CONFIG_MODEL, SimulationConfig
+@@ -480,10 +495,14 @@
+ 
+         gen = rng or _DEFAULT_NP_RNG
+ 
+         # Build arrays (n is typically small, but this avoids Python math per agent)
+-        balances = np.fromiter((float(h.sight_balance) for h in households), dtype=np.float64, count=n)
+-        growth_mask = np.fromiter((bool(h.growth_phase) for h in households), dtype=np.bool_, count=n)
++        balances = np.fromiter(
++            (float(h.sight_balance) for h in households), dtype=np.float64, count=n
++        )
++        growth_mask = np.fromiter(
++            (bool(h.growth_phase) for h in households), dtype=np.bool_, count=n
++        )
+ 
+         cfg = households[0].config.household
+         rate_normal = float(cfg.consumption_rate_normal)
+         rate_growth = float(cfg.consumption_rate_growth)
+@@ -586,10 +605,9 @@
+         # disposable sight balance to the child (this is a pure transfer).
+         if total_savings <= 0:
+             disposable = max(
+                 0.0,
+-                float(self.sight_balance)
+-                - float(self.config.household.transaction_buffer),
++                float(self.sight_balance) - float(self.config.household.transaction_buffer),
+             )
+             if disposable <= 0:
+                 return None
+             transfer = 0.5 * disposable
+@@ -709,9 +727,11 @@
+             income_factor = 0.25
+         elif income_factor > 4.0:
+             income_factor = 4.0
+ 
+-        trigger = float(cfg.savings_growth_trigger) if float(cfg.savings_growth_trigger) > 0 else 1.0
++        trigger = (
++            float(cfg.savings_growth_trigger) if float(cfg.savings_growth_trigger) > 0 else 1.0
++        )
+         wealth_rel = wealth / trigger
+         wealth_elasticity = float(cfg.fertility_wealth_sensitivity)
+         wealth_factor = wealth_rel**wealth_elasticity if wealth_elasticity != 0.0 else 1.0
+         if wealth_factor < 0.25:
+@@ -928,9 +948,11 @@
+             self._repay_savings_loans(savings_bank)
+             return
+ 
+         if stage == "post":
+-            month_end = is_month_end if is_month_end is not None else clock.is_month_end(current_step)
++            month_end = (
++                is_month_end if is_month_end is not None else clock.is_month_end(current_step)
++            )
+             if month_end:
+                 self.save(savings_bank)
+             return
+ 
+
+[0m← [0mEdit Wirtschaftssimulation/agents/household_agent.py
+Now I need to update the usage of `_DEFAULT_NP_RNG` to use the function:
+[0m← [0mEdit Wirtschaftssimulation/agents/household_agent.py
+[0m
+Index: /home/andreas/src/Wirtschaftssimulation/agents/household_agent.py
+===================================================================
+--- /home/andreas/src/Wirtschaftssimulation/agents/household_agent.py
++++ /home/andreas/src/Wirtschaftssimulation/agents/household_agent.py
+@@ -492,9 +492,9 @@
+     for h in households:
+         h._record_consumption(0.0)
+     return [0.0] * n
+ 
+-gen = rng or _DEFAULT_NP_RNG
++gen = rng or _get_default_np_rng()
+ 
+ # Build arrays (n is typically small, but this avoids Python math per agent)
+ balances = np.fromiter(
+     (float(h.sight_balance) for h in households), dtype=np.float64, count=n
+

@@ -1,0 +1,2 @@
+[91m[1mError: [0mFile not found: Execute the attached prompt file end-to-end. If reviewer, conclude with REVIEW_PASS or REVIEW_FAIL. If implementer, conclude with TESTS_PASS or TESTS_FAIL.
+opencode run failed (attempt 1/1)
