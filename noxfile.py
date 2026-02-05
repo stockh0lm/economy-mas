@@ -57,6 +57,14 @@ def tests(session: nox.Session) -> None:
 
 
 @nox.session(python=PYTHON_VERSION)
+def test_golden(session: nox.Session) -> None:
+    """Run comprehensive golden test suite."""
+    session.run(
+        os.path.join(VENV_BIN_PATH, "pytest"), "tests/test_golden_run_comprehensive.py", "-xvs"
+    )
+
+
+@nox.session(python=PYTHON_VERSION)
 def format(session: nox.Session) -> None:
     """Only format code with Black and isort."""
     # Use full paths to tools in project's virtual environment
