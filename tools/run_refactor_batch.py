@@ -56,6 +56,94 @@ def run_command(
     return False
 
 
+def run_command_monitored(
+    cmd: list[str],
+    log_file: Path,
+    retry_max: int,
+    retry_sleep: int,
+    timeout: int = 3600,
+    monitor_interval: int = 3600,
+    stuck_timeout: int = 7200,
+    heartbeat_file: Path | None = None,
+) -> bool:
+    attempt = 1
+    while attempt <= retry_max:
+        start_time = time.time()
+        last_heartbeat = 0.0
+        last_log_change = start_time
+        last_log_mtime = 0.0
+        if log_file.exists():
+            try:
+                last_log_mtime = log_file.stat().st_mtime
+            except OSError:
+                last_log_mtime = 0.0
+
+        with log_file.open("w", encoding="utf-8") as handle:
+            proc = subprocess.Popen(cmd, stdout=handle, stderr=subprocess.STDOUT)
+            while True:
+                now = time.time()
+                if log_file.exists():
+                    try:
+                        mtime = log_file.stat().st_mtime
+                    except OSError:
+                        mtime = last_log_mtime
+                    if mtime > last_log_mtime:
+                        last_log_mtime = mtime
+                        last_log_change = now
+
+                if monitor_interval and now - last_heartbeat >= monitor_interval:
+                    last_heartbeat = now
+                    message = (
+                        f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] heartbeat: "
+                        f"pid={proc.pid} elapsed={int(now - start_time)}s "
+                        f"log={log_file.name}\n"
+                    )
+                    if heartbeat_file is not None:
+                        heartbeat_file.parent.mkdir(parents=True, exist_ok=True)
+                        with heartbeat_file.open("a", encoding="utf-8") as heartbeat:
+                            heartbeat.write(message)
+                    else:
+                        print(message, end="", flush=True)
+
+                if timeout and now - start_time >= timeout:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                    with log_file.open("a", encoding="utf-8") as handle_append:
+                        handle_append.write(
+                            f"\nrun timed out after {timeout}s (attempt {attempt}/{retry_max})\n"
+                        )
+                    break
+
+                if stuck_timeout and now - last_log_change >= stuck_timeout:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                    with log_file.open("a", encoding="utf-8") as handle_append:
+                        handle_append.write(
+                            f"\nrun stalled for {stuck_timeout}s (attempt {attempt}/{retry_max})\n"
+                        )
+                    break
+
+                return_code = proc.poll()
+                if return_code is not None:
+                    if return_code == 0:
+                        return True
+                    break
+
+                time.sleep(5)
+
+        with log_file.open("a", encoding="utf-8") as handle_append:
+            handle_append.write(f"\nrun failed (attempt {attempt}/{retry_max})\n")
+        attempt += 1
+        time.sleep(retry_sleep)
+    return False
+
+
 def git_capture(repo_root: Path, args: list[str], out_path: Path) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     result = subprocess.run(["git", "-C", str(repo_root), *args], capture_output=True, text=True)
@@ -204,6 +292,19 @@ def build_prompt(base_prompt: Path, extra: str | None) -> str:
     return f"{base_text}\n\n---\n\n{extra}\n"
 
 
+def resolve_model(model_name: str) -> str:
+    model_map = {
+        "devstral": "litellm-local/devstral-2-123b-instruct-2512",
+        "glm-4.7": "litellm-local/glm-4.7-awq",
+    }
+    allowed = set(model_map.values()) | set(model_map.keys())
+    if model_name not in allowed:
+        raise SystemExit(
+            "Unsupported model. Use devstral or glm-4.7 (or their mapped litellm-local/* ids)."
+        )
+    return model_map.get(model_name, model_name)
+
+
 def check_stagnation(
     report_dir: Path,
     base_name: str,
@@ -260,6 +361,50 @@ def check_stagnation(
     return "STAGNATED" in text
 
 
+def prompt_has_pass(report_dir: Path, base_name: str) -> bool:
+    pattern = f"{base_name}_*_iter*_review.log"
+    logs = sorted(report_dir.glob(pattern))
+    if not logs:
+        return False
+    for log_path in reversed(logs):
+        try:
+            text = log_path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if REVIEW_PASS_TOKEN in text:
+            return True
+    return False
+
+
+def load_completed_prompts(report_dir: Path) -> set[str]:
+    marker = report_dir / "completed_prompts.txt"
+    if not marker.exists():
+        return set()
+    try:
+        lines = marker.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except OSError:
+        return set()
+    completed = set()
+    for line in lines:
+        name = line.strip()
+        if name:
+            completed.add(name)
+    return completed
+
+
+def mark_prompt_completed(report_dir: Path, base_name: str) -> None:
+    marker = report_dir / "completed_prompts.txt"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        existing = load_completed_prompts(report_dir)
+        if base_name in existing:
+            return
+    except OSError:
+        existing = set()
+    with marker.open("a", encoding="utf-8") as handle:
+        handle.write(f"{base_name}\n")
+
+
 def run_prompt(
     repo_root: Path,
     prompt: Path,
@@ -271,6 +416,8 @@ def run_prompt(
     retry_sleep: int,
     dry_run: bool,
     llm_classify: bool,
+    monitor_interval: int,
+    stuck_timeout: int,
 ) -> None:
     base_name = prompt.stem
     run_stamp = time.strftime("%Y%m%d_%H%M%S")
@@ -319,7 +466,15 @@ def run_prompt(
                     "--file",
                     str(impl_prompt_path),
                 ]
-                ok = run_command(cmd_impl, impl_log, retry_max, retry_sleep)
+                ok = run_command_monitored(
+                    cmd_impl,
+                    impl_log,
+                    retry_max,
+                    retry_sleep,
+                    monitor_interval=monitor_interval,
+                    stuck_timeout=stuck_timeout,
+                    heartbeat_file=report_dir / "batch_run_console.log",
+                )
                 if not ok:
                     raise RuntimeError(f"Implementer run failed for {base_name}")
 
@@ -363,7 +518,15 @@ def run_prompt(
                     "--file",
                     str(review_prompt_path),
                 ]
-                ok = run_command(cmd_review, review_log, retry_max, retry_sleep)
+                ok = run_command_monitored(
+                    cmd_review,
+                    review_log,
+                    retry_max,
+                    retry_sleep,
+                    monitor_interval=monitor_interval,
+                    stuck_timeout=stuck_timeout,
+                    heartbeat_file=report_dir / "batch_run_console.log",
+                )
                 if not ok:
                     raise RuntimeError(f"Reviewer run failed for {base_name}")
 
@@ -443,6 +606,8 @@ def main() -> int:
     parser.add_argument("--prompt-index", type=int, default=0)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--no-llm-classify", action="store_true")
+    parser.add_argument("--monitor-interval", type=int, default=3600)
+    parser.add_argument("--stuck-timeout", type=int, default=7200)
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parents[1]
@@ -467,9 +632,18 @@ def main() -> int:
             raise SystemExit("prompt-index out of range")
         prompts = [prompts[args.prompt_index - 1]]
 
+    model_impl = resolve_model(args.model_impl)
+    model_review = resolve_model(args.model_review)
+
+    completed_prompts = load_completed_prompts(report_dir)
+
     for prompt in prompts:
         if not prompt.exists():
             print(f"Skipping missing prompt file: {prompt}")
+            continue
+
+        if prompt.stem in completed_prompts or prompt_has_pass(report_dir, prompt.stem):
+            print(f"--- Skipping completed prompt: {prompt.name} ---", flush=True)
             continue
 
         print(f"--- Running prompt: {prompt.name} ---", flush=True)
@@ -478,14 +652,17 @@ def main() -> int:
                 repo_root=repo_root,
                 prompt=prompt,
                 report_dir=report_dir,
-                model_impl=args.model_impl,
-                model_review=args.model_review,
+                model_impl=model_impl,
+                model_review=model_review,
                 max_iters=args.max_iters,
                 retry_max=args.retry_max,
                 retry_sleep=args.retry_sleep,
                 dry_run=args.dry_run,
                 llm_classify=not args.no_llm_classify,
+                monitor_interval=args.monitor_interval,
+                stuck_timeout=args.stuck_timeout,
             )
+            mark_prompt_completed(report_dir, prompt.stem)
             print(f"✅ Finished prompt: {prompt.name}", flush=True)
         except Exception as e:
             print(f"❌ Failed prompt: {prompt.name} with error: {e}", flush=True)
