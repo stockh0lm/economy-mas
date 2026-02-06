@@ -307,13 +307,14 @@ def check_stagnation(
     run_stamp: str,
     current_iter: int,
     model_review: str,
-    opencode_env: dict[str, str] | None,
+    tail_max_lines: int = DEFAULT_PROGRESS_TAIL_LINES * 2,
+    opencode_env: dict[str, str] | None = None,
 ) -> bool:
     """Analyze logs to detect if the refactoring is stuck in a loop.
 
     Returns True if stagnation is detected.
     """
-    if current_iter < 3:
+    if current_iter < MIN_STAGNATION_ITERATIONS:
         return False
 
     # Collect the last two iterations of logs
@@ -322,9 +323,11 @@ def check_stagnation(
         impl_log = report_dir / f"{base_name}_{run_stamp}_iter{i}_impl.log"
         review_log = report_dir / f"{base_name}_{run_stamp}_iter{i}_review.log"
         if impl_log.exists():
-            logs.append(f"--- Iteration {i} Implementer ---\n{tail_lines(impl_log, 100)}")
+            logs.append(
+                f"--- Iteration {i} Implementer ---\n{tail_lines(impl_log, tail_max_lines)}"
+            )
         if review_log.exists():
-            logs.append(f"--- Iteration {i} Reviewer ---\n{tail_lines(review_log, 100)}")
+            logs.append(f"--- Iteration {i} Reviewer ---\n{tail_lines(review_log, tail_max_lines)}")
 
     log_context = "\n".join(logs)
     prompt = (
@@ -369,6 +372,12 @@ def run_prompt(
     retry_sleep: int,
     dry_run: bool,
     llm_classify: bool,
+    monitor_interval: int,
+    stuck_timeout: int,
+    progress_tail_lines: int,
+    progress_check_interval: int,
+    progress_stuck_threshold: int,
+    progress_check_enabled: bool,
     opencode_env: dict[str, str] | None,
 ) -> None:
     base_name = prompt.stem
@@ -524,15 +533,16 @@ def run_prompt(
 
     finally:
         # Enforce filesystem hygiene and cleanup illegal files.
-        cleanup_illegal_files(
-            repo_root=repo_root,
-            report_dir=report_dir,
-            model_review=model_review,
-            retry_max=retry_max,
-            retry_sleep=retry_sleep,
-            llm_classify=llm_classify and not dry_run,
-            opencode_env=opencode_env,
-        )
+        if success and not dry_run:
+            cleanup_illegal_files(
+                repo_root=repo_root,
+                report_dir=report_dir,
+                model_review=model_review,
+                retry_max=retry_max,
+                retry_sleep=retry_sleep,
+                llm_classify=llm_classify,
+                opencode_env=opencode_env,
+            )
 
         # Cleanup debug scripts and output artifacts after prompt completion.
         for debug_file in repo_root.glob("debug_*.py"):
@@ -608,7 +618,11 @@ def main() -> int:
             raise SystemExit("prompt-index out of range")
         prompts = [prompts[args.prompt_index - 1]]
 
+    model_impl = resolve_model(args.model_impl)
+    model_review = resolve_model(args.model_review)
     opencode_env = build_opencode_env(repo_root, allow_git=args.allow_git)
+
+    completed_prompts = load_completed_prompts(report_dir)
 
     for prompt in prompts:
         if not prompt.exists():
@@ -621,13 +635,19 @@ def main() -> int:
                 repo_root=repo_root,
                 prompt=prompt,
                 report_dir=report_dir,
-                model_impl=args.model_impl,
-                model_review=args.model_review,
+                model_impl=model_impl,
+                model_review=model_review,
                 max_iters=args.max_iters,
                 retry_max=args.retry_max,
                 retry_sleep=args.retry_sleep,
                 dry_run=args.dry_run,
                 llm_classify=not args.no_llm_classify,
+                monitor_interval=args.monitor_interval,
+                stuck_timeout=args.stuck_timeout,
+                progress_tail_lines=args.progress_tail_lines,
+                progress_check_interval=args.progress_check_interval,
+                progress_stuck_threshold=args.progress_stuck_threshold,
+                progress_check_enabled=not args.no_progress_check,
                 opencode_env=opencode_env,
             )
             logger.log(f"✅ Finished prompt: {prompt.name}", level="INFO")
