@@ -5,7 +5,6 @@ import shutil
 from pathlib import Path
 
 import pytest
-
 from config import SimulationConfig
 from main import run_simulation
 
