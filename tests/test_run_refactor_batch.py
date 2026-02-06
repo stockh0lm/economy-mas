@@ -140,9 +140,9 @@ def test_run_command_monitored_stops_on_no_output(tmp_path, monkeypatch):
         log_file=log_file,
         retry_max=1,
         retry_sleep=0,
-        timeout=999,
+        timeout=6,
         monitor_interval=0,
-        stuck_timeout=999,
+        stuck_timeout=0,
         progress_check_enabled=False,
         no_output_timeout=5,
     )
