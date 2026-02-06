@@ -67,6 +67,13 @@ def tail_lines(path: Path, max_lines: int = 200) -> str:
     return "\n".join(lines[-max_lines:])
 
 
+def log_has_token(log_file: Path, token: str) -> bool:
+    if not log_file.exists():
+        return False
+    text = log_file.read_text(encoding="utf-8", errors="ignore")
+    return token in text
+
+
 def write_text(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
@@ -119,6 +126,28 @@ def git_capture(repo_root: Path, args: list[str], out_path: Path) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     result = subprocess.run(["git", "-C", str(repo_root), *args], capture_output=True, text=True)
     out_path.write_text(result.stdout, encoding="utf-8")
+
+
+def get_git_snapshot(repo_root: Path) -> str:
+    status = subprocess.run(
+        ["git", "-C", str(repo_root), "status", "--porcelain=v1"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    diff = subprocess.run(
+        ["git", "-C", str(repo_root), "diff"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    status_text = status.stdout.strip()
+    diff_text = diff.stdout.strip()
+    if not status_text:
+        status_text = "(clean)"
+    if not diff_text:
+        diff_text = "(no diff)"
+    return f"Current git status:\n{status_text}\n\nCurrent git diff:\n{diff_text}"
 
 
 def git_status_untracked(repo_root: Path) -> list[Path]:
@@ -260,11 +289,16 @@ def cleanup_illegal_files(
                 pass
 
 
-def build_prompt(base_prompt: Path, extra: str | None) -> str:
+def build_prompt(base_prompt: Path, extra: str | None, state: str | None = None) -> str:
     base_text = base_prompt.read_text(encoding="utf-8")
-    if not extra:
+    if not extra and not state:
         return base_text
-    return f"{base_text}\n\n---\n\n{extra}\n"
+    sections: list[str] = []
+    if extra:
+        sections.append(extra)
+    if state:
+        sections.append(state)
+    return f"{base_text}\n\n---\n\n" + "\n\n---\n\n".join(sections) + "\n"
 
 
 def check_stagnation(
@@ -370,7 +404,10 @@ def run_prompt(
                         f"{prev_tail}\n"
                     )
 
-            write_text(impl_prompt_path, build_prompt(prompt, impl_extra))
+            state_context = get_git_snapshot(repo_root)
+            if iteration > 1:
+                state_context = f"Current state for iteration {iteration}:\n{state_context}"
+            write_text(impl_prompt_path, build_prompt(prompt, impl_extra, state_context))
 
             if dry_run:
                 write_text(impl_log, "DRY_RUN: implementer skipped\n")
@@ -384,8 +421,22 @@ def run_prompt(
                     "--file",
                     str(impl_prompt_path),
                 ]
-                ok = run_command(cmd_impl, impl_log, retry_max, retry_sleep, env=opencode_env)
-                if not ok:
+                ok = run_command_monitored(
+                    cmd_impl,
+                    impl_log,
+                    retry_max,
+                    retry_sleep,
+                    monitor_interval=monitor_interval,
+                    stuck_timeout=stuck_timeout,
+                    heartbeat_file=report_dir / "batch_run_console.log",
+                    progress_model=model_review,
+                    progress_label=f"{base_name}_iter{iteration}_impl",
+                    progress_tail_lines=progress_tail_lines,
+                    progress_check_interval=progress_check_interval,
+                    progress_stuck_threshold=progress_stuck_threshold,
+                    progress_check_enabled=progress_check_enabled,
+                )
+                if not ok and not log_has_token(impl_log, TESTS_PASS_TOKEN):
                     raise RuntimeError(f"Implementer run failed for {base_name}")
 
             if not dry_run:
@@ -418,7 +469,7 @@ def run_prompt(
             if impl_tail:
                 review_extra += f"Implementer log (tail):\n{impl_tail}\n"
 
-            write_text(review_prompt_path, build_prompt(prompt, review_extra))
+            write_text(review_prompt_path, build_prompt(prompt, review_extra, state_context))
 
             if dry_run:
                 write_text(review_log, "DRY_RUN: reviewer skipped\n")
@@ -432,8 +483,22 @@ def run_prompt(
                     "--file",
                     str(review_prompt_path),
                 ]
-                ok = run_command(cmd_review, review_log, retry_max, retry_sleep, env=opencode_env)
-                if not ok:
+                ok = run_command_monitored(
+                    cmd_review,
+                    review_log,
+                    retry_max,
+                    retry_sleep,
+                    monitor_interval=monitor_interval,
+                    stuck_timeout=stuck_timeout,
+                    heartbeat_file=report_dir / "batch_run_console.log",
+                    progress_model=model_review,
+                    progress_label=f"{base_name}_iter{iteration}_review",
+                    progress_tail_lines=progress_tail_lines,
+                    progress_check_interval=progress_check_interval,
+                    progress_stuck_threshold=progress_stuck_threshold,
+                    progress_check_enabled=progress_check_enabled,
+                )
+                if not ok and not log_has_token(review_log, REVIEW_PASS_TOKEN):
                     raise RuntimeError(f"Reviewer run failed for {base_name}")
 
             if dry_run:
