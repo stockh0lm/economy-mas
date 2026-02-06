@@ -1,6 +1,7 @@
 /output/*
 /doc/V*.txt
 /doc/refactoring_reports/
+/tools/.opencode/
 
 # Python temporäre Dateien
 *.pyc

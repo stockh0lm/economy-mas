@@ -8,6 +8,7 @@ signs off or max iterations are reached. Captures logs and git diffs.
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 import time
@@ -26,6 +27,25 @@ REVIEW_PASS_TOKEN = "REVIEW_PASS"
 REVIEW_FAIL_TOKEN = "REVIEW_FAIL"
 TESTS_PASS_TOKEN = "TESTS_PASS"
 TESTS_FAIL_TOKEN = "TESTS_FAIL"
+
+READONLY_GIT_WRAPPER = """#!/bin/sh
+set -eu
+
+cmd="${1:-}"
+if [ -z "$cmd" ]; then
+  exec "${REAL_GIT:-git}"
+fi
+
+case "$cmd" in
+  status|diff|log|show|grep|ls-files|rev-parse|describe|blame|cat-file|whatchanged)
+    exec "${REAL_GIT:-git}" "$@"
+    ;;
+  *)
+    echo "git command blocked in opencode: $cmd" 1>&2
+    exit 2
+    ;;
+esac
+"""
 
 
 def resolve_model(model: str) -> str:
@@ -53,13 +73,20 @@ def write_text(path: Path, content: str) -> None:
 
 
 def run_command(
-    cmd: list[str], log_file: Path, retry_max: int, retry_sleep: int, timeout: int = 3600
+    cmd: list[str],
+    log_file: Path,
+    retry_max: int,
+    retry_sleep: int,
+    timeout: int = 3600,
+    env: dict[str, str] | None = None,
 ) -> bool:
     attempt = 1
     while attempt <= retry_max:
         with log_file.open("w", encoding="utf-8") as handle:
             try:
-                proc = subprocess.run(cmd, stdout=handle, stderr=subprocess.STDOUT, timeout=timeout)
+                proc = subprocess.run(
+                    cmd, stdout=handle, stderr=subprocess.STDOUT, timeout=timeout, env=env
+                )
                 if proc.returncode == 0:
                     return True
             except subprocess.TimeoutExpired:
@@ -73,6 +100,19 @@ def run_command(
         attempt += 1
         time.sleep(retry_sleep)
     return False
+
+
+def build_opencode_env(repo_root: Path, allow_git: bool) -> dict[str, str]:
+    env = os.environ.copy()
+    if not allow_git:
+        wrapper_dir = repo_root / "tools" / ".opencode"
+        wrapper_dir.mkdir(parents=True, exist_ok=True)
+        wrapper_path = wrapper_dir / "git"
+        wrapper_path.write_text(READONLY_GIT_WRAPPER, encoding="utf-8")
+        wrapper_path.chmod(0o755)
+        env["REAL_GIT"] = env.get("REAL_GIT", "git")
+        env["PATH"] = f"{wrapper_dir}:{env.get('PATH', '')}"
+    return env
 
 
 def git_capture(repo_root: Path, args: list[str], out_path: Path) -> None:
@@ -118,6 +158,7 @@ def classify_illegal_file(
     log_file: Path,
     retry_max: int,
     retry_sleep: int,
+    opencode_env: dict[str, str] | None,
 ) -> str:
     """Ask the reviewer model to classify an illegal file.
 
@@ -139,7 +180,7 @@ def classify_illegal_file(
         "--file",
         str(file_path),
     ]
-    ok = run_command(cmd, log_file, retry_max, retry_sleep)
+    ok = run_command(cmd, log_file, retry_max, retry_sleep, env=opencode_env)
     if not ok:
         return "DELETE"
     text = log_file.read_text(encoding="utf-8", errors="ignore")
@@ -160,6 +201,7 @@ def cleanup_illegal_files(
     retry_max: int,
     retry_sleep: int,
     llm_classify: bool,
+    opencode_env: dict[str, str] | None,
 ) -> None:
     illegal = []
     for path in git_status_untracked(repo_root):
@@ -179,7 +221,9 @@ def cleanup_illegal_files(
         action = "DELETE"
         if llm_classify and path.exists() and path.is_file():
             classify_log = report_dir / f"illegal_classify_{path.name}.log"
-            action = classify_illegal_file(path, model_review, classify_log, retry_max, retry_sleep)
+            action = classify_illegal_file(
+                path, model_review, classify_log, retry_max, retry_sleep, opencode_env
+            )
 
         if action.startswith("MOVE:"):
             target = action.split(":", 1)[1].strip()
@@ -229,6 +273,7 @@ def check_stagnation(
     run_stamp: str,
     current_iter: int,
     model_review: str,
+    opencode_env: dict[str, str] | None,
 ) -> bool:
     """Analyze logs to detect if the refactoring is stuck in a loop.
 
@@ -271,7 +316,7 @@ def check_stagnation(
     cmd[2] = full_prompt
 
     # Short timeout for stagnation check
-    ok = run_command(cmd, log_file, retry_max=1, retry_sleep=2, timeout=300)
+    ok = run_command(cmd, log_file, retry_max=1, retry_sleep=2, timeout=300, env=opencode_env)
     if not ok:
         return False  # Assume progress if check fails
 
@@ -290,6 +335,7 @@ def run_prompt(
     retry_sleep: int,
     dry_run: bool,
     llm_classify: bool,
+    opencode_env: dict[str, str] | None,
 ) -> None:
     base_name = prompt.stem
     run_stamp = time.strftime("%Y%m%d_%H%M%S")
@@ -338,7 +384,7 @@ def run_prompt(
                     "--file",
                     str(impl_prompt_path),
                 ]
-                ok = run_command(cmd_impl, impl_log, retry_max, retry_sleep)
+                ok = run_command(cmd_impl, impl_log, retry_max, retry_sleep, env=opencode_env)
                 if not ok:
                     raise RuntimeError(f"Implementer run failed for {base_name}")
 
@@ -386,7 +432,7 @@ def run_prompt(
                     "--file",
                     str(review_prompt_path),
                 ]
-                ok = run_command(cmd_review, review_log, retry_max, retry_sleep)
+                ok = run_command(cmd_review, review_log, retry_max, retry_sleep, env=opencode_env)
                 if not ok:
                     raise RuntimeError(f"Reviewer run failed for {base_name}")
 
@@ -404,6 +450,7 @@ def run_prompt(
                 run_stamp=run_stamp,
                 current_iter=iteration,
                 model_review=model_review,
+                opencode_env=opencode_env,
             ):
                 raise RuntimeError(f"Stagnation detected for {base_name} at iteration {iteration}")
 
@@ -419,6 +466,7 @@ def run_prompt(
             retry_max=retry_max,
             retry_sleep=retry_sleep,
             llm_classify=llm_classify and not dry_run,
+            opencode_env=opencode_env,
         )
 
         # Cleanup debug scripts and output artifacts after prompt completion.
@@ -466,6 +514,11 @@ def main() -> int:
     parser.add_argument("--prompt-index", type=int, default=0)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--no-llm-classify", action="store_true")
+    parser.add_argument(
+        "--allow-git",
+        action="store_true",
+        help="Allow opencode to run full git commands (default: read-only)",
+    )
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parents[1]
@@ -490,6 +543,8 @@ def main() -> int:
             raise SystemExit("prompt-index out of range")
         prompts = [prompts[args.prompt_index - 1]]
 
+    opencode_env = build_opencode_env(repo_root, allow_git=args.allow_git)
+
     for prompt in prompts:
         if not prompt.exists():
             logger.log(f"Skipping missing prompt file: {prompt}", level="WARNING")
@@ -508,6 +563,7 @@ def main() -> int:
                 retry_sleep=args.retry_sleep,
                 dry_run=args.dry_run,
                 llm_classify=not args.no_llm_classify,
+                opencode_env=opencode_env,
             )
             logger.log(f"✅ Finished prompt: {prompt.name}", level="INFO")
         except Exception as e:
