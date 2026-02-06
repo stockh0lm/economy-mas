@@ -847,6 +847,20 @@ def main() -> int:
     parser.add_argument("--prompt-index", type=int, default=0)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--no-llm-classify", action="store_true")
+    parser.add_argument("--no-progress-check", action="store_true")
+    parser.add_argument("--monitor-interval", type=int, default=DEFAULT_MONITOR_INTERVAL)
+    parser.add_argument("--stuck-timeout", type=int, default=DEFAULT_STUCK_TIMEOUT)
+    parser.add_argument("--progress-tail-lines", type=int, default=DEFAULT_PROGRESS_TAIL_LINES)
+    parser.add_argument(
+        "--progress-check-interval",
+        type=int,
+        default=DEFAULT_PROGRESS_CHECK_INTERVAL,
+    )
+    parser.add_argument(
+        "--progress-stuck-threshold",
+        type=int,
+        default=DEFAULT_PROGRESS_STUCK_THRESHOLD,
+    )
     parser.add_argument(
         "--allow-git",
         action="store_true",
