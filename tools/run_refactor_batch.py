@@ -35,7 +35,7 @@ DEFAULT_PROGRESS_TAIL_LINES = 20
 DEFAULT_PROGRESS_CHECK_INTERVAL = 900
 DEFAULT_PROGRESS_STUCK_THRESHOLD = 2
 MIN_STAGNATION_ITERATIONS = 2
-DEFAULT_NO_OUTPUT_TIMEOUT = 600
+DEFAULT_NO_OUTPUT_TIMEOUT = 300
 
 READONLY_GIT_WRAPPER = """#!/bin/sh
 set -eu
@@ -726,6 +726,7 @@ def run_prompt(
     progress_check_interval: int,
     progress_stuck_threshold: int,
     progress_check_enabled: bool,
+    no_output_timeout: int,
     opencode_env: dict[str, str] | None,
 ) -> None:
     base_name = prompt.stem
@@ -794,7 +795,7 @@ def run_prompt(
                     progress_stuck_threshold=progress_stuck_threshold,
                     progress_check_enabled=progress_check_enabled,
                     env=opencode_env,
-                    no_output_timeout=stuck_timeout,
+                    no_output_timeout=no_output_timeout,
                 )
                 if not ok and not log_has_token(impl_log, TESTS_PASS_TOKEN):
                     raise RuntimeError(f"Implementer run failed for {base_name}")
@@ -858,7 +859,7 @@ def run_prompt(
                     progress_stuck_threshold=progress_stuck_threshold,
                     progress_check_enabled=progress_check_enabled,
                     env=opencode_env,
-                    no_output_timeout=stuck_timeout,
+                    no_output_timeout=no_output_timeout,
                 )
                 if not ok and not log_has_token(review_log, REVIEW_PASS_TOKEN):
                     raise RuntimeError(f"Reviewer run failed for {base_name}")
@@ -961,6 +962,11 @@ def main() -> int:
         default=DEFAULT_PROGRESS_STUCK_THRESHOLD,
     )
     parser.add_argument(
+        "--no-output-timeout",
+        type=int,
+        default=DEFAULT_NO_OUTPUT_TIMEOUT,
+    )
+    parser.add_argument(
         "--allow-git",
         action="store_true",
         help="Allow opencode to run full git commands (default: read-only)",
@@ -1039,6 +1045,7 @@ def main() -> int:
                 progress_check_interval=args.progress_check_interval,
                 progress_stuck_threshold=args.progress_stuck_threshold,
                 progress_check_enabled=not args.no_progress_check,
+                no_output_timeout=args.no_output_timeout,
                 opencode_env=opencode_env,
             )
             if prompt_has_pass(report_dir, prompt.stem):

@@ -226,6 +226,7 @@ def test_run_prompt_sets_success_on_review_pass(tmp_path, monkeypatch):
         progress_check_interval=0,
         progress_stuck_threshold=1,
         progress_check_enabled=False,
+        no_output_timeout=0,
         opencode_env=None,
     )
 
@@ -270,6 +271,7 @@ def test_run_prompt_includes_git_state_in_prompts(tmp_path, monkeypatch):
         progress_check_interval=0,
         progress_stuck_threshold=1,
         progress_check_enabled=False,
+        no_output_timeout=0,
         opencode_env=None,
     )
 
