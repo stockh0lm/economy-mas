@@ -1,6 +1,6 @@
 from config import SimulationConfig
 from main import run_simulation
-from simulation.engine import m1_proxy
+from simulation.engine import _m1_proxy
 
 
 def test_golden_run_snapshot(monkeypatch, tmp_path):
@@ -20,7 +20,7 @@ def test_golden_run_snapshot(monkeypatch, tmp_path):
     state = agents["state"]
     warengeld_banks = agents["warengeld_banks"]
 
-    m1 = m1_proxy(households=households, companies=companies, retailers=retailers, state=state)
+    m1 = _m1_proxy(households=households, companies=companies, retailers=retailers, state=state)
     total_inventory_value = sum(float(r.inventory_value) for r in retailers)
     total_cc_exposure = sum(float(b.total_cc_exposure) for b in warengeld_banks)
 
