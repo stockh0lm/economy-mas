@@ -15,6 +15,7 @@ import sys
 import time
 from pathlib import Path
 import re
+import signal
 
 try:
     import logger
@@ -550,6 +551,53 @@ def build_prompt(base_prompt: Path, extra: str | None, state: str | None = None)
     return f"{base_text}\n\n---\n\n" + "\n\n---\n\n".join(sections) + "\n"
 
 
+def list_opencode_processes() -> list[tuple[int, str]]:
+    result = subprocess.run(
+        ["ps", "-o", "pid=,args=", "-C", "opencode"],
+        capture_output=True,
+        text=True,
+    )
+    processes: list[tuple[int, str]] = []
+    for line in result.stdout.splitlines():
+        parts = line.strip().split(maxsplit=1)
+        if not parts:
+            continue
+        try:
+            pid = int(parts[0])
+        except ValueError:
+            continue
+        cmd = parts[1] if len(parts) > 1 else ""
+        processes.append((pid, cmd))
+    return processes
+
+
+def find_stale_opencode_pids(report_dir: Path) -> list[int]:
+    candidates = list_opencode_processes()
+    report_marker = str(report_dir)
+    pids: list[int] = []
+    for pid, cmd in candidates:
+        if "--file" in cmd and report_marker in cmd:
+            pids.append(pid)
+    return pids
+
+
+def terminate_stale_opencode(report_dir: Path, kill: bool) -> None:
+    pids = find_stale_opencode_pids(report_dir)
+    if not pids:
+        return
+    write_orchestrator_log(
+        report_dir,
+        f"Found stale opencode runs for report_dir: {', '.join(map(str, pids))}",
+    )
+    if not kill:
+        return
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            continue
+
+
 def prompt_has_pass(report_dir: Path, base_name: str) -> bool:
     pattern = f"{base_name}_*_iter*_review.log"
     logs = sorted(report_dir.glob(pattern))
@@ -797,8 +845,15 @@ def run_prompt(
                     env=opencode_env,
                     no_output_timeout=no_output_timeout,
                 )
-                if not ok and not log_has_token(impl_log, TESTS_PASS_TOKEN):
-                    raise RuntimeError(f"Implementer run failed for {base_name}")
+                if not ok:
+                    write_orchestrator_log(
+                        report_dir,
+                        f"Implementer run failed for {base_name}; skipping to reviewer.",
+                    )
+                    write_text(
+                        impl_log,
+                        f"{TESTS_FAIL_TOKEN}\n",
+                    )
 
             if not dry_run:
                 impl_text = impl_log.read_text(encoding="utf-8", errors="ignore")
@@ -967,6 +1022,11 @@ def main() -> int:
         default=DEFAULT_NO_OUTPUT_TIMEOUT,
     )
     parser.add_argument(
+        "--kill-stale-opencode",
+        action="store_true",
+        help="Terminate stale opencode runs targeting report_dir",
+    )
+    parser.add_argument(
         "--allow-git",
         action="store_true",
         help="Allow opencode to run full git commands (default: read-only)",
@@ -1016,6 +1076,7 @@ def main() -> int:
 
         logger.log(f"--- Running prompt: {prompt.name} ---", level="INFO")
         try:
+            terminate_stale_opencode(report_dir, args.kill_stale_opencode)
             current_branch = (
                 subprocess.run(
                     ["git", "-C", str(repo_root), "branch", "--show-current"],

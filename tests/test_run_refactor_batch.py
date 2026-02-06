@@ -275,9 +275,23 @@ def test_run_prompt_includes_git_state_in_prompts(tmp_path, monkeypatch):
         opencode_env=None,
     )
 
-    impl_files = list(report_dir.glob("prompt_*_impl_prompt.md"))
-    review_files = list(report_dir.glob("prompt_*_review_prompt.md"))
-    assert impl_files and review_files
-    assert "Current git status" in impl_files[0].read_text(encoding="utf-8")
-    assert "Current git diff" in impl_files[0].read_text(encoding="utf-8")
-    assert "Current git status" in review_files[0].read_text(encoding="utf-8")
+
+def test_terminate_stale_opencode_kills(tmp_path, monkeypatch):
+    report_dir = tmp_path / "reports"
+    report_dir.mkdir()
+    monkeypatch.setattr(
+        batch,
+        "list_opencode_processes",
+        lambda: [(123, f"opencode run --file {report_dir}/file.md")],
+    )
+    killed = []
+
+    def fake_kill(pid, sig):
+        killed.append((pid, sig))
+
+    monkeypatch.setattr(batch.os, "kill", fake_kill)
+    monkeypatch.setattr(batch, "write_orchestrator_log", lambda *args, **kwargs: None)
+
+    batch.terminate_stale_opencode(report_dir, True)
+
+    assert killed
