@@ -11,7 +11,6 @@ import sys
 from pathlib import Path
 from typing import Dict
 
-
 # Thresholds for regression detection (percentage deviation)
 REGRESSION_THRESHOLDS = {
     "m1_proxy": 0.05,  # 5% deviation
@@ -24,7 +23,7 @@ REGRESSION_THRESHOLDS = {
 }
 
 
-def load_baseline(baseline_path: Path) -> Dict[int, Dict[str, float]]:
+def load_baseline(baseline_path: Path) -> dict[int, dict[str, float]]:
     """Load baseline metrics from CSV file."""
     baseline: Dict[int, Dict[str, float]] = {}
     with open(baseline_path, "r", newline="", encoding="utf-8") as f:
@@ -36,9 +35,9 @@ def load_baseline(baseline_path: Path) -> Dict[int, Dict[str, float]]:
 
 
 def compare_metrics(
-    current: Dict[int, Dict[str, float]],
-    baseline: Dict[int, Dict[str, float]],
-    thresholds: Dict[str, float],
+    current: dict[int, dict[str, float]],
+    baseline: dict[int, dict[str, float]],
+    thresholds: dict[str, float],
 ) -> bool:
     """
     Compare current metrics against baseline.
@@ -63,7 +62,8 @@ def compare_metrics(
             baseline_val = baseline_row[metric]
 
             if baseline_val == 0.0:
-                if abs(current_val) > 0.001:
+                epsilon = 0.001
+                if abs(current_val) > epsilon:
                     print(f"❌ Step {step} {metric}: baseline=0, current={current_val}")
                     passed = False
                 continue
