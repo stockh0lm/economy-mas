@@ -35,6 +35,7 @@ DEFAULT_PROGRESS_TAIL_LINES = 20
 DEFAULT_PROGRESS_CHECK_INTERVAL = 900
 DEFAULT_PROGRESS_STUCK_THRESHOLD = 2
 MIN_STAGNATION_ITERATIONS = 2
+DEFAULT_NO_OUTPUT_TIMEOUT = 600
 
 READONLY_GIT_WRAPPER = """#!/bin/sh
 set -eu
@@ -125,6 +126,7 @@ def run_command_monitored(
     progress_stuck_threshold: int = DEFAULT_PROGRESS_STUCK_THRESHOLD,
     progress_check_enabled: bool = True,
     env: dict[str, str] | None = None,
+    no_output_timeout: int = DEFAULT_NO_OUTPUT_TIMEOUT,
 ) -> bool:
     attempt = 1
     while attempt <= retry_max:
@@ -132,13 +134,17 @@ def run_command_monitored(
         last_heartbeat = 0.0
         last_log_change = start_time
         last_log_mtime = 0.0
+        last_log_size = 0
         last_progress_check = 0.0
         stuck_score = 0
         if log_file.exists():
             try:
-                last_log_mtime = log_file.stat().st_mtime
+                stat = log_file.stat()
+                last_log_mtime = stat.st_mtime
+                last_log_size = stat.st_size
             except OSError:
                 last_log_mtime = 0.0
+                last_log_size = 0
 
         with log_file.open("w", encoding="utf-8") as handle:
             proc = subprocess.Popen(cmd, stdout=handle, stderr=subprocess.STDOUT, env=env)
@@ -146,12 +152,16 @@ def run_command_monitored(
                 now = time.time()
                 if log_file.exists():
                     try:
-                        mtime = log_file.stat().st_mtime
+                        stat = log_file.stat()
+                        mtime = stat.st_mtime
+                        size = stat.st_size
                     except OSError:
                         mtime = last_log_mtime
+                        size = last_log_size
                     if mtime > last_log_mtime:
                         last_log_mtime = mtime
                         last_log_change = now
+                    last_log_size = size
 
                 if monitor_interval and now - last_heartbeat >= monitor_interval:
                     last_heartbeat = now
@@ -219,6 +229,22 @@ def run_command_monitored(
                     with log_file.open("a", encoding="utf-8") as handle_append:
                         handle_append.write(
                             f"\nrun stalled for {stuck_timeout}s (attempt {attempt}/{retry_max})\n"
+                        )
+                    break
+
+                if (
+                    no_output_timeout
+                    and now - start_time >= no_output_timeout
+                    and last_log_size == 0
+                ):
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                    with log_file.open("a", encoding="utf-8") as handle_append:
+                        handle_append.write(
+                            f"\nrun produced no output for {no_output_timeout}s (attempt {attempt}/{retry_max})\n"
                         )
                     break
 
@@ -768,6 +794,7 @@ def run_prompt(
                     progress_stuck_threshold=progress_stuck_threshold,
                     progress_check_enabled=progress_check_enabled,
                     env=opencode_env,
+                    no_output_timeout=stuck_timeout,
                 )
                 if not ok and not log_has_token(impl_log, TESTS_PASS_TOKEN):
                     raise RuntimeError(f"Implementer run failed for {base_name}")
@@ -831,6 +858,7 @@ def run_prompt(
                     progress_stuck_threshold=progress_stuck_threshold,
                     progress_check_enabled=progress_check_enabled,
                     env=opencode_env,
+                    no_output_timeout=stuck_timeout,
                 )
                 if not ok and not log_has_token(review_log, REVIEW_PASS_TOKEN):
                     raise RuntimeError(f"Reviewer run failed for {base_name}")

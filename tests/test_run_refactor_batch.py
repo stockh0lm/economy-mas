@@ -102,6 +102,55 @@ def test_run_command_monitored_stops_on_progress_stuck(tmp_path, monkeypatch):
     assert "run stalled by progress check" in log_file.read_text(encoding="utf-8")
 
 
+def test_run_command_monitored_stops_on_no_output(tmp_path, monkeypatch):
+    log_file = tmp_path / "run.log"
+
+    class FakeProc:
+        def __init__(self):
+            self.pid = 123
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            return None
+
+        def wait(self, timeout=None):
+            return None
+
+        def kill(self):
+            return None
+
+    fake_proc = FakeProc()
+    monkeypatch.setattr(batch.subprocess, "Popen", lambda *args, **kwargs: fake_proc)
+
+    now = {"t": 0.0}
+
+    def fake_time():
+        return now["t"]
+
+    def fake_sleep(seconds):
+        now["t"] += seconds
+
+    monkeypatch.setattr(batch.time, "time", fake_time)
+    monkeypatch.setattr(batch.time, "sleep", fake_sleep)
+
+    ok = batch.run_command_monitored(
+        cmd=["echo", "noop"],
+        log_file=log_file,
+        retry_max=1,
+        retry_sleep=0,
+        timeout=999,
+        monitor_interval=0,
+        stuck_timeout=999,
+        progress_check_enabled=False,
+        no_output_timeout=5,
+    )
+
+    assert ok is False
+    assert "run produced no output" in log_file.read_text(encoding="utf-8")
+
+
 def test_check_stagnation_uses_llm_result(tmp_path, monkeypatch):
     report_dir = tmp_path
     base_name = "test_prompt"
