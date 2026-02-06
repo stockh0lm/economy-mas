@@ -82,6 +82,7 @@ def compare_metrics(
 
 
 def main() -> int:
+def main() -> int:
     parser = argparse.ArgumentParser(description="Validate golden test scenarios against baselines")
     parser.add_argument(
         "--baseline-dir",
