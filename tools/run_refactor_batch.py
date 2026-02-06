@@ -14,13 +14,30 @@ import time
 from pathlib import Path
 import re
 
-import logger
+try:
+    import logger
+except ModuleNotFoundError:
+    repo_root = Path(__file__).resolve().parents[1]
+    sys.path.insert(0, str(repo_root))
+    import logger
 
 
 REVIEW_PASS_TOKEN = "REVIEW_PASS"
 REVIEW_FAIL_TOKEN = "REVIEW_FAIL"
 TESTS_PASS_TOKEN = "TESTS_PASS"
 TESTS_FAIL_TOKEN = "TESTS_FAIL"
+
+
+def resolve_model(model: str) -> str:
+    normalized = (model or "").strip()
+    if not normalized:
+        return normalized
+    lowered = normalized.lower()
+    if lowered == "devstral":
+        return "litellm-local/devstral-2-123b-instruct-2512"
+    if lowered == "glm-4.7":
+        return "litellm-local/glm-4.7-awq"
+    return normalized
 
 
 def tail_lines(path: Path, max_lines: int = 200) -> str:
@@ -118,7 +135,7 @@ def classify_illegal_file(
         "run",
         prompt,
         "--model",
-        model_review,
+        resolve_model(model_review),
         "--file",
         str(file_path),
     ]
@@ -245,7 +262,7 @@ def check_stagnation(
         "run",
         prompt,
         "--model",
-        model_review,
+        resolve_model(model_review),
     ]
 
     # We pass the log context via stdin if opencode supports it, or we just rely on the LLM's
@@ -317,7 +334,7 @@ def run_prompt(
                     "run",
                     "Execute the attached prompt file end-to-end.",
                     "--model",
-                    model_impl,
+                    resolve_model(model_impl),
                     "--file",
                     str(impl_prompt_path),
                 ]
@@ -365,7 +382,7 @@ def run_prompt(
                     "run",
                     "Execute the attached prompt file end-to-end.",
                     "--model",
-                    model_review,
+                    resolve_model(model_review),
                     "--file",
                     str(review_prompt_path),
                 ]
