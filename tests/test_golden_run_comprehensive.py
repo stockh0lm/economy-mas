@@ -21,7 +21,7 @@ def _load_global_metrics(metrics_dir: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(f))
 
 
-def _update_baseline(metrics_dir: Path, scenario_name: str):
+def _update_baseline(metrics_dir: Path, scenario_name: str) -> None:
     if os.environ.get("UPDATE_BASELINES") == "1":
         baseline_dir = Path("output/golden_run_baseline")
         baseline_dir.mkdir(parents=True, exist_ok=True)
@@ -71,8 +71,8 @@ class TestGoldenRunComprehensive:
         """90-step run with high Demography settings (mortality, fertility)."""
         cfg = default_config
         cfg.simulation_steps = 90
-        cfg.household.mortality_base_annual = 0.05  # Higher death rate
-        cfg.household.fertility_base_annual = 0.05  # Higher birth rate
+        cfg.household.mortality_base_annual = 0.05
+        cfg.household.fertility_base_annual = 0.05
         cfg.log_file = str(tmp_path / "sim.log")
         cfg.metrics_export_path = str(tmp_path / "metrics")
 
@@ -102,8 +102,8 @@ class TestGoldenRunComprehensive:
         """30-step run with company founding and mergers enabled."""
         cfg = default_config
         cfg.simulation_steps = 30
-        cfg.company.founding_base_annual = 0.1  # Higher founding rate
-        cfg.company.merger_rate_annual = 0.1  # Higher merger rate
+        cfg.company.founding_base_annual = 0.1
+        cfg.company.merger_rate_annual = 0.1
         cfg.log_file = str(tmp_path / "sim.log")
         cfg.metrics_export_path = str(tmp_path / "metrics")
 

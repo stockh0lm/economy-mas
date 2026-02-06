@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Validate golden test scenarios against baseline snapshots.
 
@@ -10,7 +9,8 @@ import argparse
 import csv
 import sys
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict
+
 
 # Thresholds for regression detection (percentage deviation)
 REGRESSION_THRESHOLDS = {
@@ -26,7 +26,7 @@ REGRESSION_THRESHOLDS = {
 
 def load_baseline(baseline_path: Path) -> Dict[int, Dict[str, float]]:
     """Load baseline metrics from CSV file."""
-    baseline = {}
+    baseline: Dict[int, Dict[str, float]] = {}
     with open(baseline_path, "r", newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
@@ -63,7 +63,7 @@ def compare_metrics(
             baseline_val = baseline_row[metric]
 
             if baseline_val == 0.0:
-                if abs(current_val) > 0.001:  # Small epsilon
+                if abs(current_val) > 0.001:
                     print(f"❌ Step {step} {metric}: baseline=0, current={current_val}")
                     passed = False
                 continue
@@ -77,14 +77,11 @@ def compare_metrics(
                     f"deviation={deviation * 100:.2f}% (threshold={threshold * 100:.1f}%)"
                 )
                 passed = False
-            else:
-                # We don't print every success to avoid clutter
-                pass
 
     return passed
 
 
-def main():
+def main() -> int:
     parser = argparse.ArgumentParser(description="Validate golden test scenarios against baselines")
     parser.add_argument(
         "--baseline-dir",
@@ -106,13 +103,12 @@ def main():
 
     if not baseline_dir.exists():
         print(f"Error: Baseline directory not found: {baseline_dir}")
-        sys.exit(1)
+        return 1
 
     if not metrics_dir.exists():
         print(f"Error: Metrics directory not found: {metrics_dir}")
-        sys.exit(1)
+        return 1
 
-    # Define scenarios to validate
     scenarios = [
         "baseline_short_default",
         "baseline_medium_quarterly",
@@ -133,14 +129,8 @@ def main():
             print(f"WARNING: Baseline not found for {scenario}, skipping")
             continue
 
-        # Try to find matching current metrics
-        # (In practice, run the scenario first or specify exact path)
-        # For simplicity in this script, we look for global_metrics_seed_12345.csv
-        # but in a real test it might be different.
-        current_path = metrics_dir / f"global_metrics_seed_12345.csv"
-
+        current_path = metrics_dir / "global_metrics_seed_12345.csv"
         if not current_path.exists():
-            # Try to find any global_metrics_*.csv if the seed one isn't there
             files = sorted(
                 metrics_dir.glob("global_metrics_*.csv"), key=lambda p: p.stat().st_mtime
             )
@@ -164,11 +154,10 @@ def main():
     print(f"\n{'=' * 60}")
     if all_passed:
         print("✅ All golden test scenarios PASSED")
-        sys.exit(0)
-    else:
-        print("❌ Some golden test scenarios FAILED")
-        sys.exit(1)
+        return 0
+    print("❌ Some golden test scenarios FAILED")
+    return 1
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
