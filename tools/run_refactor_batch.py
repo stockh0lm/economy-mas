@@ -615,7 +615,8 @@ def terminate_stale_opencode(report_dir: Path, kill: bool) -> None:
 
 
 def preflight_opencode(repo_root: Path, model: str, report_dir: Path) -> None:
-    log_file = report_dir / "opencode_preflight.log"
+    safe_model = resolve_model(model).replace("/", "_")
+    log_file = report_dir / f"opencode_preflight_{safe_model}.log"
     title = f"preflight-{uuid.uuid4().hex}"
     cmd = [
         resolve_opencode_path(),
@@ -643,6 +644,12 @@ def preflight_opencode(repo_root: Path, model: str, report_dir: Path) -> None:
             "Check opencode logs under ~/.local/share/opencode/log"
             + (f"\n{error_tail}" if error_tail else "")
         )
+
+
+def preflight_models(repo_root: Path, model_impl: str, model_review: str, report_dir: Path) -> None:
+    preflight_opencode(repo_root, model_impl, report_dir)
+    if model_review != model_impl:
+        preflight_opencode(repo_root, model_review, report_dir)
 
 
 def prompt_has_pass(report_dir: Path, base_name: str) -> bool:
@@ -1127,7 +1134,7 @@ def main() -> int:
 
         logger.log(f"--- Running prompt: {prompt.name} ---", level="INFO")
         try:
-            preflight_opencode(repo_root, model_impl, report_dir)
+            preflight_models(repo_root, model_impl, model_review, report_dir)
             terminate_stale_opencode(report_dir, args.kill_stale_opencode)
             current_branch = (
                 subprocess.run(

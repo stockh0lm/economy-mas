@@ -320,3 +320,18 @@ def test_preflight_opencode_raises_on_failure(tmp_path, monkeypatch):
     except RuntimeError:
         return
     assert False, "Expected RuntimeError"
+
+
+def test_preflight_models_calls_both(tmp_path, monkeypatch):
+    report_dir = tmp_path / "reports"
+    report_dir.mkdir()
+    calls = []
+
+    def fake_preflight(repo_root, model, report_dir):
+        calls.append(model)
+
+    monkeypatch.setattr(batch, "preflight_opencode", fake_preflight)
+
+    batch.preflight_models(tmp_path, "devstral", "glm-4.7", report_dir)
+
+    assert calls == ["devstral", "glm-4.7"]
