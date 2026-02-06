@@ -124,6 +124,7 @@ def run_command_monitored(
     progress_check_interval: int = DEFAULT_PROGRESS_CHECK_INTERVAL,
     progress_stuck_threshold: int = DEFAULT_PROGRESS_STUCK_THRESHOLD,
     progress_check_enabled: bool = True,
+    env: dict[str, str] | None = None,
 ) -> bool:
     attempt = 1
     while attempt <= retry_max:
@@ -140,7 +141,7 @@ def run_command_monitored(
                 last_log_mtime = 0.0
 
         with log_file.open("w", encoding="utf-8") as handle:
-            proc = subprocess.Popen(cmd, stdout=handle, stderr=subprocess.STDOUT)
+            proc = subprocess.Popen(cmd, stdout=handle, stderr=subprocess.STDOUT, env=env)
             while True:
                 now = time.time()
                 if log_file.exists():
@@ -554,6 +555,74 @@ def load_completed_prompts(report_dir: Path) -> set[str]:
     return completed
 
 
+def mark_prompt_completed(report_dir: Path, prompt_name: str) -> None:
+    report_dir.mkdir(parents=True, exist_ok=True)
+    marker = report_dir / "completed_prompts.txt"
+    completed = load_completed_prompts(report_dir)
+    if prompt_name in completed:
+        return
+    with marker.open("a", encoding="utf-8") as handle:
+        handle.write(f"{prompt_name}\n")
+
+
+def git_status_entries(repo_root: Path) -> list[tuple[str, str]]:
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), "status", "--porcelain=v1"],
+        capture_output=True,
+        text=True,
+    )
+    entries: list[tuple[str, str]] = []
+    for line in result.stdout.splitlines():
+        if not line:
+            continue
+        status = line[:2]
+        path = line[3:]
+        entries.append((status, path))
+    return entries
+
+
+def commit_prompt_changes(
+    repo_root: Path,
+    prompt_name: str,
+    dry_run: bool,
+    report_dir: Path,
+) -> None:
+    if dry_run:
+        return
+    entries = git_status_entries(repo_root)
+    if not entries:
+        raise RuntimeError(f"No changes to commit for {prompt_name}")
+
+    tracked: list[str] = []
+    for status, path in entries:
+        if path.startswith("doc/refactoring_reports"):
+            continue
+        if path.startswith("output/"):
+            continue
+        if status == "??":
+            tracked.append(path)
+        else:
+            tracked.append(path)
+
+    if not tracked:
+        raise RuntimeError(f"No eligible changes to commit for {prompt_name}")
+
+    subprocess.run(["git", "-C", str(repo_root), "add", "--", *tracked], check=False)
+    message = f"refactor({prompt_name}): apply prompt changes"
+    result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo_root),
+            "commit",
+            "-m",
+            message,
+        ]
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"Git commit failed for {prompt_name}")
+
+
 def check_stagnation(
     report_dir: Path,
     base_name: str,
@@ -698,6 +767,7 @@ def run_prompt(
                     progress_check_interval=progress_check_interval,
                     progress_stuck_threshold=progress_stuck_threshold,
                     progress_check_enabled=progress_check_enabled,
+                    env=opencode_env,
                 )
                 if not ok and not log_has_token(impl_log, TESTS_PASS_TOKEN):
                     raise RuntimeError(f"Implementer run failed for {base_name}")
@@ -760,6 +830,7 @@ def run_prompt(
                     progress_check_interval=progress_check_interval,
                     progress_stuck_threshold=progress_stuck_threshold,
                     progress_check_enabled=progress_check_enabled,
+                    env=opencode_env,
                 )
                 if not ok and not log_has_token(review_log, REVIEW_PASS_TOKEN):
                     raise RuntimeError(f"Reviewer run failed for {base_name}")
@@ -893,6 +964,14 @@ def main() -> int:
     model_impl = resolve_model(args.model_impl)
     model_review = resolve_model(args.model_review)
     opencode_env = build_opencode_env(repo_root, allow_git=args.allow_git)
+    expected_branch = (
+        subprocess.run(
+            ["git", "-C", str(repo_root), "branch", "--show-current"],
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        or "HEAD"
+    )
 
     completed_prompts = load_completed_prompts(report_dir)
 
@@ -903,6 +982,18 @@ def main() -> int:
 
         logger.log(f"--- Running prompt: {prompt.name} ---", level="INFO")
         try:
+            current_branch = (
+                subprocess.run(
+                    ["git", "-C", str(repo_root), "branch", "--show-current"],
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip()
+                or "HEAD"
+            )
+            if current_branch != expected_branch:
+                raise RuntimeError(
+                    f"Branch changed during run: expected {expected_branch}, got {current_branch}"
+                )
             run_prompt(
                 repo_root=repo_root,
                 prompt=prompt,
@@ -922,6 +1013,9 @@ def main() -> int:
                 progress_check_enabled=not args.no_progress_check,
                 opencode_env=opencode_env,
             )
+            if prompt_has_pass(report_dir, prompt.stem):
+                commit_prompt_changes(repo_root, prompt.stem, args.dry_run, report_dir)
+                mark_prompt_completed(report_dir, prompt.stem)
             logger.log(f"✅ Finished prompt: {prompt.name}", level="INFO")
         except Exception as e:
             logger.log(f"❌ Failed prompt: {prompt.name} with error: {e}", level="ERROR")
