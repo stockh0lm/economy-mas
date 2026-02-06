@@ -149,6 +149,8 @@ def test_run_command_monitored_stops_on_no_output(tmp_path, monkeypatch):
 
     assert ok is False
     assert "run produced no output" in log_file.read_text(encoding="utf-8")
+    stderr_file = log_file.with_suffix(log_file.suffix + ".stderr")
+    assert stderr_file.exists()
 
 
 def test_check_stagnation_uses_llm_result(tmp_path, monkeypatch):
@@ -228,6 +230,8 @@ def test_run_prompt_sets_success_on_review_pass(tmp_path, monkeypatch):
         progress_check_enabled=False,
         no_output_timeout=0,
         opencode_env=None,
+        impl_title=None,
+        review_title=None,
     )
 
 
@@ -273,6 +277,8 @@ def test_run_prompt_includes_git_state_in_prompts(tmp_path, monkeypatch):
         progress_check_enabled=False,
         no_output_timeout=0,
         opencode_env=None,
+        impl_title=None,
+        review_title=None,
     )
 
 
@@ -295,3 +301,22 @@ def test_terminate_stale_opencode_kills(tmp_path, monkeypatch):
     batch.terminate_stale_opencode(report_dir, True)
 
     assert killed
+
+
+def test_preflight_opencode_raises_on_failure(tmp_path, monkeypatch):
+    report_dir = tmp_path / "reports"
+    report_dir.mkdir()
+
+    def fake_run_command(cmd, log_file, retry_max, retry_sleep, timeout=3600, env=None):
+        log_file.write_text("boom", encoding="utf-8")
+        return False
+
+    monkeypatch.setattr(batch, "run_command", fake_run_command)
+    monkeypatch.setattr(batch, "resolve_opencode_path", lambda: "opencode")
+    monkeypatch.setattr(batch, "build_opencode_env", lambda *args, **kwargs: {})
+
+    try:
+        batch.preflight_opencode(tmp_path, "glm-4.7", report_dir)
+    except RuntimeError:
+        return
+    assert False, "Expected RuntimeError"

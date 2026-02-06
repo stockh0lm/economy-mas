@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 import re
 import signal
+import uuid
 
 try:
     import logger
@@ -68,6 +69,12 @@ def resolve_model(model: str) -> str:
     if lowered == "glm-4.7":
         return "litellm-local/glm-4.7-awq"
     return normalized
+
+
+def maybe_add_title(cmd: list[str], title: str | None) -> list[str]:
+    if not title:
+        return cmd
+    return [*cmd, "--title", title]
 
 
 def tail_lines(path: Path, max_lines: int = 200) -> str:
@@ -147,8 +154,12 @@ def run_command_monitored(
                 last_log_mtime = 0.0
                 last_log_size = 0
 
-        with log_file.open("w", encoding="utf-8") as handle:
-            proc = subprocess.Popen(cmd, stdout=handle, stderr=subprocess.STDOUT, env=env)
+        stderr_file = log_file.with_suffix(log_file.suffix + ".stderr")
+        with (
+            log_file.open("w", encoding="utf-8") as handle,
+            stderr_file.open("w", encoding="utf-8") as err_handle,
+        ):
+            proc = subprocess.Popen(cmd, stdout=handle, stderr=err_handle, env=env)
             while True:
                 now = time.time()
                 if log_file.exists():
@@ -603,6 +614,37 @@ def terminate_stale_opencode(report_dir: Path, kill: bool) -> None:
             continue
 
 
+def preflight_opencode(repo_root: Path, model: str, report_dir: Path) -> None:
+    log_file = report_dir / "opencode_preflight.log"
+    title = f"preflight-{uuid.uuid4().hex}"
+    cmd = [
+        resolve_opencode_path(),
+        "run",
+        "Reply with OK.",
+        "--model",
+        resolve_model(model),
+    ]
+    cmd = maybe_add_title(cmd, title)
+    ok = run_command(
+        cmd,
+        log_file,
+        retry_max=1,
+        retry_sleep=0,
+        timeout=30,
+        env=build_opencode_env(repo_root, allow_git=True),
+    )
+    if not ok:
+        stderr_file = log_file.with_suffix(log_file.suffix + ".stderr")
+        error_tail = ""
+        if stderr_file.exists():
+            error_tail = tail_lines(stderr_file, 40)
+        raise RuntimeError(
+            "opencode preflight failed. "
+            "Check opencode logs under ~/.local/share/opencode/log"
+            + (f"\n{error_tail}" if error_tail else "")
+        )
+
+
 def prompt_has_pass(report_dir: Path, base_name: str) -> bool:
     pattern = f"{base_name}_*_iter*_review.log"
     logs = sorted(report_dir.glob(pattern))
@@ -781,6 +823,8 @@ def run_prompt(
     progress_check_enabled: bool,
     no_output_timeout: int,
     opencode_env: dict[str, str] | None,
+    impl_title: str | None,
+    review_title: str | None,
 ) -> None:
     base_name = prompt.stem
     run_stamp = time.strftime("%Y%m%d_%H%M%S")
@@ -833,6 +877,7 @@ def run_prompt(
                     "--file",
                     str(impl_prompt_path),
                 ]
+                cmd_impl = maybe_add_title(cmd_impl, impl_title)
                 ok = run_command_monitored(
                     cmd_impl,
                     impl_log,
@@ -904,6 +949,7 @@ def run_prompt(
                     "--file",
                     str(review_prompt_path),
                 ]
+                cmd_review = maybe_add_title(cmd_review, review_title)
                 ok = run_command_monitored(
                     cmd_review,
                     review_log,
@@ -1081,6 +1127,7 @@ def main() -> int:
 
         logger.log(f"--- Running prompt: {prompt.name} ---", level="INFO")
         try:
+            preflight_opencode(repo_root, model_impl, report_dir)
             terminate_stale_opencode(report_dir, args.kill_stale_opencode)
             current_branch = (
                 subprocess.run(
@@ -1094,6 +1141,9 @@ def main() -> int:
                 raise RuntimeError(
                     f"Branch changed during run: expected {expected_branch}, got {current_branch}"
                 )
+            session_seed = uuid.uuid4().hex
+            impl_title = f"{prompt.stem}-impl-{session_seed}"
+            review_title = f"{prompt.stem}-review-{session_seed}"
             run_prompt(
                 repo_root=repo_root,
                 prompt=prompt,
@@ -1113,6 +1163,8 @@ def main() -> int:
                 progress_check_enabled=not args.no_progress_check,
                 no_output_timeout=args.no_output_timeout,
                 opencode_env=opencode_env,
+                impl_title=impl_title,
+                review_title=review_title,
             )
             if prompt_has_pass(report_dir, prompt.stem):
                 commit_prompt_changes(repo_root, prompt.stem, args.dry_run, report_dir)
