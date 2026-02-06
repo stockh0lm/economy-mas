@@ -523,6 +523,37 @@ def build_prompt(base_prompt: Path, extra: str | None, state: str | None = None)
     return f"{base_text}\n\n---\n\n" + "\n\n---\n\n".join(sections) + "\n"
 
 
+def prompt_has_pass(report_dir: Path, base_name: str) -> bool:
+    pattern = f"{base_name}_*_iter*_review.log"
+    logs = sorted(report_dir.glob(pattern))
+    if not logs:
+        return False
+    for log_path in reversed(logs):
+        try:
+            text = log_path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if REVIEW_PASS_TOKEN in text:
+            return True
+    return False
+
+
+def load_completed_prompts(report_dir: Path) -> set[str]:
+    marker = report_dir / "completed_prompts.txt"
+    if not marker.exists():
+        return set()
+    try:
+        lines = marker.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except OSError:
+        return set()
+    completed = set()
+    for line in lines:
+        name = line.strip()
+        if name:
+            completed.add(name)
+    return completed
+
+
 def check_stagnation(
     report_dir: Path,
     base_name: str,
