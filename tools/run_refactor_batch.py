@@ -365,8 +365,13 @@ def build_opencode_env(repo_root: Path, allow_git: bool) -> dict[str, str]:
         wrapper_dir = repo_root / "tools" / ".opencode"
         wrapper_dir.mkdir(parents=True, exist_ok=True)
         wrapper_path = wrapper_dir / "git"
-        wrapper_path.write_text(READONLY_GIT_WRAPPER, encoding="utf-8")
-        wrapper_path.chmod(0o755)
+        tmp_path = wrapper_dir / f"git.{os.getpid()}.tmp"
+        tmp_path.write_text(READONLY_GIT_WRAPPER, encoding="utf-8")
+        tmp_path.chmod(0o755)
+        try:
+            tmp_path.replace(wrapper_path)
+        except OSError:
+            tmp_path.unlink(missing_ok=True)
         env["REAL_GIT"] = env.get("REAL_GIT", "git")
         env["PATH"] = f"{wrapper_dir}:{env.get('PATH', '')}"
     return env
