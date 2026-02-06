@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -27,6 +28,13 @@ REVIEW_PASS_TOKEN = "REVIEW_PASS"
 REVIEW_FAIL_TOKEN = "REVIEW_FAIL"
 TESTS_PASS_TOKEN = "TESTS_PASS"
 TESTS_FAIL_TOKEN = "TESTS_FAIL"
+
+DEFAULT_MONITOR_INTERVAL = 900
+DEFAULT_STUCK_TIMEOUT = 7200
+DEFAULT_PROGRESS_TAIL_LINES = 20
+DEFAULT_PROGRESS_CHECK_INTERVAL = 900
+DEFAULT_PROGRESS_STUCK_THRESHOLD = 2
+MIN_STAGNATION_ITERATIONS = 2
 
 READONLY_GIT_WRAPPER = """#!/bin/sh
 set -eu
@@ -77,6 +85,220 @@ def log_has_token(log_file: Path, token: str) -> bool:
 def write_text(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
+
+
+def write_orchestrator_log(report_dir: Path, message: str) -> None:
+    report_dir.mkdir(parents=True, exist_ok=True)
+    log_path = report_dir / "batch_orchestrator.log"
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write(f"{message}\n")
+    logger.log(message, level="INFO")
+
+
+def resolve_opencode_path() -> str:
+    candidates = [
+        shutil.which("opencode"),
+        str(Path.home() / ".opencode" / "bin" / "opencode"),
+        str(Path.home() / ".local" / "bin" / "opencode"),
+    ]
+    for path in candidates:
+        if path and Path(path).exists():
+            return path
+    raise SystemExit(
+        "opencode executable not found. Ensure it is in PATH or installed in ~/.opencode/bin."
+    )
+
+
+def run_command_monitored(
+    cmd: list[str],
+    log_file: Path,
+    retry_max: int,
+    retry_sleep: int,
+    timeout: int = 3600,
+    monitor_interval: int = DEFAULT_MONITOR_INTERVAL,
+    stuck_timeout: int = DEFAULT_STUCK_TIMEOUT,
+    heartbeat_file: Path | None = None,
+    progress_model: str | None = None,
+    progress_label: str | None = None,
+    progress_tail_lines: int = DEFAULT_PROGRESS_TAIL_LINES,
+    progress_check_interval: int = DEFAULT_PROGRESS_CHECK_INTERVAL,
+    progress_stuck_threshold: int = DEFAULT_PROGRESS_STUCK_THRESHOLD,
+    progress_check_enabled: bool = True,
+) -> bool:
+    attempt = 1
+    while attempt <= retry_max:
+        start_time = time.time()
+        last_heartbeat = 0.0
+        last_log_change = start_time
+        last_log_mtime = 0.0
+        last_progress_check = 0.0
+        stuck_score = 0
+        if log_file.exists():
+            try:
+                last_log_mtime = log_file.stat().st_mtime
+            except OSError:
+                last_log_mtime = 0.0
+
+        with log_file.open("w", encoding="utf-8") as handle:
+            proc = subprocess.Popen(cmd, stdout=handle, stderr=subprocess.STDOUT)
+            while True:
+                now = time.time()
+                if log_file.exists():
+                    try:
+                        mtime = log_file.stat().st_mtime
+                    except OSError:
+                        mtime = last_log_mtime
+                    if mtime > last_log_mtime:
+                        last_log_mtime = mtime
+                        last_log_change = now
+
+                if monitor_interval and now - last_heartbeat >= monitor_interval:
+                    last_heartbeat = now
+                    message = (
+                        f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] heartbeat: "
+                        f"pid={proc.pid} elapsed={int(now - start_time)}s "
+                        f"log={log_file.name}\n"
+                    )
+                    if heartbeat_file is not None:
+                        heartbeat_file.parent.mkdir(parents=True, exist_ok=True)
+                        with heartbeat_file.open("a", encoding="utf-8") as heartbeat:
+                            heartbeat.write(message)
+                    else:
+                        logger.log(message.rstrip(), level="DEBUG")
+
+                if (
+                    progress_check_enabled
+                    and progress_model
+                    and progress_label
+                    and progress_check_interval
+                    and now - last_progress_check >= progress_check_interval
+                ):
+                    last_progress_check = now
+                    status = live_progress_check(
+                        log_file=log_file,
+                        report_dir=heartbeat_file.parent if heartbeat_file else log_file.parent,
+                        label=progress_label,
+                        model_review=progress_model,
+                        tail_lines_count=progress_tail_lines,
+                    )
+                    if status == "STUCK":
+                        stuck_score += 1
+                    elif status == "PROGRESS":
+                        stuck_score = 0
+                    if stuck_score >= progress_stuck_threshold:
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=10)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                        with log_file.open("a", encoding="utf-8") as handle_append:
+                            handle_append.write(
+                                f"\nrun stalled by progress check (attempt {attempt}/{retry_max})\n"
+                            )
+                        break
+
+                if timeout and now - start_time >= timeout:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                    with log_file.open("a", encoding="utf-8") as handle_append:
+                        handle_append.write(
+                            f"\nrun timed out after {timeout}s (attempt {attempt}/{retry_max})\n"
+                        )
+                    break
+
+                if stuck_timeout and now - last_log_change >= stuck_timeout:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                    with log_file.open("a", encoding="utf-8") as handle_append:
+                        handle_append.write(
+                            f"\nrun stalled for {stuck_timeout}s (attempt {attempt}/{retry_max})\n"
+                        )
+                    break
+
+                return_code = proc.poll()
+                if return_code is not None:
+                    if return_code == 0:
+                        return True
+                    break
+
+                time.sleep(5)
+
+        with log_file.open("a", encoding="utf-8") as handle_append:
+            handle_append.write(f"\nrun failed (attempt {attempt}/{retry_max})\n")
+        attempt += 1
+        time.sleep(retry_sleep)
+    return False
+
+
+def live_progress_check(
+    log_file: Path,
+    report_dir: Path,
+    label: str,
+    model_review: str,
+    tail_lines_count: int = DEFAULT_PROGRESS_TAIL_LINES,
+    unchanged_threshold: int = DEFAULT_PROGRESS_STUCK_THRESHOLD,
+) -> str:
+    log_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", label).strip("_")
+    meta_path = report_dir / f"{log_name}_progress_meta.txt"
+    count_path = report_dir / f"{log_name}_progress_count.txt"
+
+    log_tail = tail_lines(log_file, tail_lines_count)
+    if not log_tail.strip():
+        return "UNKNOWN"
+
+    prev_tail = ""
+    if meta_path.exists():
+        try:
+            prev_tail = meta_path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            prev_tail = ""
+
+    if log_tail == prev_tail:
+        prev_count = 0
+        if count_path.exists():
+            try:
+                prev_count = int(count_path.read_text(encoding="utf-8", errors="ignore") or "0")
+            except ValueError:
+                prev_count = 0
+        prev_count += 1
+        count_path.write_text(str(prev_count), encoding="utf-8")
+        if prev_count >= unchanged_threshold:
+            prompt = (
+                "Analyze the latest refactor log tail. "
+                "If it shows no progress or repeated failures, reply STUCK. "
+                "If it shows progress, reply PROGRESS. "
+                "Only output one of these tokens.\n\nLog tail:\n"
+            )
+            cmd = [
+                resolve_opencode_path(),
+                "run",
+                prompt + log_tail,
+                "--model",
+                resolve_model(model_review),
+            ]
+            log_path = report_dir / f"{log_name}_progress_check.log"
+            ok = run_command(cmd, log_path, retry_max=1, retry_sleep=2)
+            if not ok:
+                return "UNKNOWN"
+            response = log_path.read_text(encoding="utf-8", errors="ignore")
+            for line in reversed(response.splitlines()):
+                if line.strip().startswith("STUCK"):
+                    return "STUCK"
+                if line.strip().startswith("PROGRESS"):
+                    return "PROGRESS"
+            return "UNKNOWN"
+    else:
+        meta_path.write_text(log_tail, encoding="utf-8")
+        count_path.write_text("0", encoding="utf-8")
+        return "PROGRESS"
+
+    return "UNKNOWN"
 
 
 def run_command(
@@ -340,7 +562,7 @@ def check_stagnation(
 
     log_file = report_dir / f"{base_name}_{run_stamp}_stagnation_check.log"
     cmd = [
-        "opencode",
+        resolve_opencode_path(),
         "run",
         prompt,
         "--model",
@@ -382,6 +604,7 @@ def run_prompt(
 ) -> None:
     base_name = prompt.stem
     run_stamp = time.strftime("%Y%m%d_%H%M%S")
+    success = False
 
     git_capture(
         repo_root, ["status", "--porcelain=v1"], report_dir / f"{base_name}_{run_stamp}_status.txt"
@@ -422,7 +645,7 @@ def run_prompt(
                 write_text(impl_log, "DRY_RUN: implementer skipped\n")
             else:
                 cmd_impl = [
-                    "opencode",
+                    resolve_opencode_path(),
                     "run",
                     "Execute the attached prompt file end-to-end.",
                     "--model",
@@ -484,7 +707,7 @@ def run_prompt(
                 write_text(review_log, "DRY_RUN: reviewer skipped\n")
             else:
                 cmd_review = [
-                    "opencode",
+                    resolve_opencode_path(),
                     "run",
                     "Execute the attached prompt file end-to-end.",
                     "--model",
@@ -515,6 +738,7 @@ def run_prompt(
 
             review_text = review_log.read_text(encoding="utf-8", errors="ignore")
             if REVIEW_PASS_TOKEN in review_text:
+                success = True
                 break
 
             # Check for stagnation before continuing to next iteration
@@ -530,6 +754,9 @@ def run_prompt(
 
             if iteration == max_iters:
                 raise RuntimeError(f"Max iterations reached for {base_name}")
+
+        if not dry_run and not success:
+            raise RuntimeError(f"Review did not pass for {base_name}")
 
     finally:
         # Enforce filesystem hygiene and cleanup illegal files.
