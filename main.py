@@ -545,6 +545,38 @@ def _settle_household_estate(
 
 
 def run_simulation(config: SimulationConfig) -> dict[str, Any]:
+    # Reproducibility in CI/tests should be explicit.
+    # - If SIM_SEED is set, seed immediately.
+    # - If SIM_SEED_FROM_CONFIG=1, also seed from config.population.seed when present.
+    env_seed = os.getenv("SIM_SEED")
+    np_rng: np.random.Generator | None = None
+    if env_seed is not None and env_seed != "":
+        seed_val = int(env_seed)
+        random.seed(seed_val)
+        np.random.seed(seed_val)
+        np_rng = np.random.default_rng(seed_val)
+        try:
+            from agents import household_agent
+
+            household_agent._DEFAULT_NP_RNG = np_rng
+        except Exception:
+            pass
+    elif os.getenv("SIM_SEED_FROM_CONFIG") == "1":
+        seed = getattr(getattr(config, "time", None), "seed", None)
+        if seed is None:
+            seed = getattr(getattr(config, "population", None), "seed", None)
+        if seed is not None:
+            seed_val = int(seed)
+            random.seed(seed_val)
+            np.random.seed(seed_val)
+            np_rng = np.random.default_rng(seed_val)
+            try:
+                from agents import household_agent
+
+                household_agent._DEFAULT_NP_RNG = np_rng
+            except Exception:
+                pass
+
     agents = initialize_agents(config)
 
     households: list[Household] = agents["households"]
@@ -570,23 +602,6 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
 
     steps = int(config.simulation_steps)
     clock = SimulationClock(config.time)
-
-    # Reproducibility in CI/tests should be explicit.
-    # - If SIM_SEED is set, seed immediately.
-    # - If SIM_SEED_FROM_CONFIG=1, also seed from config.population.seed when present.
-    env_seed = os.getenv("SIM_SEED")
-    if env_seed is not None and env_seed != "":
-        seed_val = int(env_seed)
-        random.seed(seed_val)
-        np.random.seed(seed_val)
-    elif os.getenv("SIM_SEED_FROM_CONFIG") == "1":
-        seed = getattr(getattr(config, "time", None), "seed", None)
-        if seed is None:
-            seed = getattr(getattr(config, "population", None), "seed", None)
-        if seed is not None:
-            seed_val = int(seed)
-            random.seed(seed_val)
-            np.random.seed(seed_val)
 
     # Metrics
     from metrics import MetricsCollector
@@ -1042,6 +1057,8 @@ def run_simulation(config: SimulationConfig) -> dict[str, Any]:
                 clock=clock,
                 savings_bank=h_savings_bank,
                 retailers=h_retailers,
+                py_rng=random,
+                rng=np_rng,
             )
 
             alive_households.extend(region_households)

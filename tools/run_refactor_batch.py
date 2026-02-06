@@ -14,6 +14,8 @@ import time
 from pathlib import Path
 import re
 
+import logger
+
 
 REVIEW_PASS_TOKEN = "REVIEW_PASS"
 REVIEW_FAIL_TOKEN = "REVIEW_FAIL"
@@ -329,12 +331,16 @@ def run_prompt(
                 # Instead, we let the Reviewer analyze the log and decide to fail the iteration,
                 # which allows the Implementer to fix the issue in the next iteration.
                 if TESTS_FAIL_TOKEN in impl_text:
-                    print(f"Note: Implementer reported explicit {TESTS_FAIL_TOKEN} for {base_name}")
+                    logger.log(
+                        f"Note: Implementer reported explicit {TESTS_FAIL_TOKEN} for {base_name}",
+                        level="WARNING",
+                    )
                 elif TESTS_PASS_TOKEN not in impl_text:
                     success_regex = re.compile(r"\b\d+\s+passed\b", re.IGNORECASE)
                     if not success_regex.search(impl_text):
-                        print(
-                            f"Note: Implementer logs do not indicate test success for {base_name}"
+                        logger.log(
+                            f"Note: Implementer logs do not indicate test success for {base_name}",
+                            level="WARNING",
                         )
 
             review_extra = (
@@ -469,10 +475,10 @@ def main() -> int:
 
     for prompt in prompts:
         if not prompt.exists():
-            print(f"Skipping missing prompt file: {prompt}")
+            logger.log(f"Skipping missing prompt file: {prompt}", level="WARNING")
             continue
 
-        print(f"--- Running prompt: {prompt.name} ---", flush=True)
+        logger.log(f"--- Running prompt: {prompt.name} ---", level="INFO")
         try:
             run_prompt(
                 repo_root=repo_root,
@@ -486,12 +492,12 @@ def main() -> int:
                 dry_run=args.dry_run,
                 llm_classify=not args.no_llm_classify,
             )
-            print(f"✅ Finished prompt: {prompt.name}", flush=True)
+            logger.log(f"✅ Finished prompt: {prompt.name}", level="INFO")
         except Exception as e:
-            print(f"❌ Failed prompt: {prompt.name} with error: {e}", flush=True)
-            print(
+            logger.log(f"❌ Failed prompt: {prompt.name} with error: {e}", level="ERROR")
+            logger.log(
                 "\nAborting: Prompts are sequential and build on each other. Resolve the issue before continuing.",
-                flush=True,
+                level="ERROR",
             )
             return 1
 
