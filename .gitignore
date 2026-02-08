@@ -28,3 +28,33 @@ venv/*
 *.tmp
 *.swp
 \#*\#
+
+# Test artifacts and temporary files
+*.log
+test_*.txt
+test_*.json
+test_*.log
+test_*.sh
+test_*.md
+cline_*.txt
+cline_*.log
+
+# Debugging scripts
+analyze_encoding.py
+clean_and_decode.py
+decode_task.py
+save_decoded_binary.py
+
+# Binary artifacts
+*.bin
+encoded_task.txt
+
+# Test coverage
+.coverage
+.coverage.*
+htmlcov/
+test_coverage_analysis.md
+
+# Node.js
+node_modules/
+package-lock.json
