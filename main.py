@@ -28,18 +28,8 @@ from typing import Any
 import numpy as np
 import yaml
 
-from agents.bank import WarengeldBank
-from agents.clearing_agent import ClearingAgent
-from agents.company_agent import Company
-from agents.environmental_agency import EnvironmentalAgency
-from agents.household_agent import Household
-from agents.labor_market import LaborMarket
-from agents.retailer_agent import RetailerAgent
-from agents.savings_bank_agent import SavingsBank
-from agents.state_agent import State
 from config import SimulationConfig
 from logger import log, setup_logger
-from sim_clock import SimulationClock
 from simulation.engine import SimulationEngine
 
 
@@ -133,9 +123,18 @@ def _resolve_config_from_args_or_env() -> SimulationConfig:
 
 
 # ---------------------------
-# Agent creation
+# Agent creation (kept for backwards compatibility)
 # ---------------------------
 
+from agents.bank import WarengeldBank
+from agents.clearing_agent import ClearingAgent
+from agents.company_agent import Company
+from agents.environmental_agency import EnvironmentalAgency
+from agents.household_agent import Household
+from agents.labor_market import LaborMarket
+from agents.retailer_agent import RetailerAgent
+from agents.savings_bank_agent import SavingsBank
+from agents.state_agent import State
 
 def create_households(config: SimulationConfig) -> list[Household]:
     """Create households with a realistic initial age distribution.
@@ -189,7 +188,6 @@ def create_households(config: SimulationConfig) -> list[Household]:
         households.append(hh)
     return households
 
-
 def create_companies(config: SimulationConfig) -> list[Company]:
     if config.population.num_companies is not None:
         count = int(config.population.num_companies)
@@ -213,7 +211,6 @@ def create_companies(config: SimulationConfig) -> list[Company]:
             )
         )
     return companies
-
 
 def create_retailers(config: SimulationConfig) -> list[RetailerAgent]:
     # explicit list wins if present and population not specified
@@ -260,7 +257,6 @@ def create_retailers(config: SimulationConfig) -> list[RetailerAgent]:
         for i in range(default_count)
     ]
 
-
 @dataclass
 class SimulationAgents:
     households: list[Household]
@@ -272,7 +268,6 @@ class SimulationAgents:
     clearing: ClearingAgent
     labor_market: LaborMarket
     environmental_agency: EnvironmentalAgency
-
 
 def initialize_agents(config: SimulationConfig) -> dict[str, Any]:
     """Create agent instances.
