@@ -230,6 +230,7 @@ def test_run_prompt_sets_success_on_review_pass(tmp_path, monkeypatch):
         progress_check_enabled=False,
         no_output_timeout=0,
         opencode_env=None,
+        backend="opencode",
         impl_title=None,
         review_title=None,
     )
@@ -277,6 +278,7 @@ def test_run_prompt_includes_git_state_in_prompts(tmp_path, monkeypatch):
         progress_check_enabled=False,
         no_output_timeout=0,
         opencode_env=None,
+        backend="opencode",
         impl_title=None,
         review_title=None,
     )
@@ -303,7 +305,7 @@ def test_terminate_stale_opencode_kills(tmp_path, monkeypatch):
     assert killed
 
 
-def test_preflight_opencode_raises_on_failure(tmp_path, monkeypatch):
+def test_preflight_backend_raises_on_failure(tmp_path, monkeypatch):
     report_dir = tmp_path / "reports"
     report_dir.mkdir()
 
@@ -313,13 +315,22 @@ def test_preflight_opencode_raises_on_failure(tmp_path, monkeypatch):
 
     monkeypatch.setattr(batch, "run_command", fake_run_command)
     monkeypatch.setattr(batch, "resolve_opencode_path", lambda: "opencode")
+    monkeypatch.setattr(batch, "shutil", type('obj', (object,), {'which': lambda x: x}))
     monkeypatch.setattr(batch, "build_opencode_env", lambda *args, **kwargs: {})
 
     try:
-        batch.preflight_opencode(tmp_path, "glm-4.7", report_dir)
+        batch.preflight_backend(tmp_path, "glm-4.7", "opencode", report_dir)
     except RuntimeError:
-        return
-    assert False, "Expected RuntimeError"
+        pass
+    else:
+        assert False, "Expected RuntimeError for opencode"
+
+    try:
+        batch.preflight_backend(tmp_path, "devstral", "cline", report_dir)
+    except RuntimeError:
+        pass
+    else:
+        assert False, "Expected RuntimeError for cline"
 
 
 def test_preflight_models_calls_both(tmp_path, monkeypatch):
@@ -327,11 +338,26 @@ def test_preflight_models_calls_both(tmp_path, monkeypatch):
     report_dir.mkdir()
     calls = []
 
-    def fake_preflight(repo_root, model, report_dir):
-        calls.append(model)
+    def fake_preflight(repo_root, model, backend, report_dir):
+        calls.append((model, backend))
 
-    monkeypatch.setattr(batch, "preflight_opencode", fake_preflight)
+    monkeypatch.setattr(batch, "preflight_backend", fake_preflight)
 
-    batch.preflight_models(tmp_path, "devstral", "glm-4.7", report_dir)
+    batch.preflight_models(tmp_path, "devstral", "glm-4.7", "opencode", report_dir)
+    assert calls == [("devstral", "opencode"), ("glm-4.7", "opencode")]
 
-    assert calls == ["devstral", "glm-4.7"]
+    calls.clear()
+    batch.preflight_models(tmp_path, "devstral", "glm-4.7", "cline", report_dir)
+    assert calls == [("devstral", "cline"), ("glm-4.7", "cline")]
+
+
+def test_resolve_model_handles_backends():
+    # opencode
+    assert batch.resolve_model("devstral", "opencode") == "litellm-local/devstral-2-123b-instruct-2512"
+    assert batch.resolve_model("glm-4.7", "opencode") == "litellm-local/glm-4.7-awq"
+    assert batch.resolve_model("gemini-free", "opencode") == "google/gemini-2.0-flash-lite-preview-02-05:free"
+
+    # cline
+    assert batch.resolve_model("devstral", "cline") == "devstral-2-123b-instruct-2512"
+    assert batch.resolve_model("glm-4.7", "cline") == "glm-4.7-awq"
+    assert batch.resolve_model("gemini-free", "cline") == "google/gemini-2.0-flash-lite-preview-02-05:free"

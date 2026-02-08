@@ -7,6 +7,7 @@ signs off or max iterations are reached. Captures logs and git diffs.
 
 from __future__ import annotations
 
+import json
 import argparse
 import os
 import shutil
@@ -37,7 +38,62 @@ DEFAULT_PROGRESS_TAIL_LINES = 20
 DEFAULT_PROGRESS_CHECK_INTERVAL = 900
 DEFAULT_PROGRESS_STUCK_THRESHOLD = 2
 MIN_STAGNATION_ITERATIONS = 2
-DEFAULT_NO_OUTPUT_TIMEOUT = 60
+DEFAULT_NO_OUTPUT_TIMEOUT = 300
+
+
+def get_opencode_config() -> dict:
+    config_path = Path.home() / ".config" / "opencode" / "config.json"
+    if config_path.exists():
+        try:
+            return json.loads(config_path.read_text())
+        except Exception:
+            pass
+    return {}
+
+
+def configure_cline_from_opencode():
+    config = get_opencode_config()
+    providers = config.get("provider", {})
+    litellm = providers.get("litellm-local", {})
+    options = litellm.get("options", {})
+    base_url = options.get("baseURL")
+    headers = options.get("headers", {})
+    auth = headers.get("Authorization", "")
+    api_key = auth.replace("Bearer ", "").strip()
+
+    if base_url and api_key:
+        # Get models and configure them. cline auth usually sets the current one.
+        # We also want to make sure OpenRouter free models are at least mentioned or configured if possible.
+        models = list(litellm.get("models", {}).keys())
+        if not models:
+            return
+
+        # Configure the primary backend
+        logger.log(f"Configuring Cline with LiteLLM backend: {base_url}", level="INFO")
+        subprocess.run([
+            "cline", "auth",
+            "--provider", "openai",
+            "--baseurl", base_url,
+            "--apikey", api_key,
+            "--modelid", models[0]
+        ], capture_output=True)
+
+        # Note: cline CLI doesn't easily support multiple pre-configured models/backends
+        # like the UI does, but we can switch via -m if the base URL/key remains correct.
+
+    # Check if we can add free models from OpenRouter (gemini-2.0-flash-lite-preview-02-05:free etc)
+    # This requires an OpenRouter key which might not be present.
+    # If the user has one in environment, we could try to use it.
+    or_key = os.environ.get("OPENROUTER_API_KEY")
+    if or_key:
+        logger.log("Found OPENROUTER_API_KEY, configuring Cline for OpenRouter free models", level="INFO")
+        subprocess.run([
+            "cline", "auth",
+            "--provider", "openrouter",
+            "--apikey", or_key,
+            "--modelid", "google/gemini-2.0-flash-lite-preview-02-05:free"
+        ], capture_output=True)
+
 
 READONLY_GIT_WRAPPER = """#!/bin/sh
 set -eu
@@ -59,16 +115,31 @@ esac
 """
 
 
-def resolve_model(model: str) -> str:
+def resolve_model(model: str, backend: str = "opencode") -> str:
     normalized = (model or "").strip()
     if not normalized:
         return normalized
     lowered = normalized.lower()
+
+    # Common mappings for specific project models
     if lowered == "devstral":
-        return "litellm-local/devstral-2-123b-instruct-2512"
-    if lowered == "glm-4.7":
-        return "litellm-local/glm-4.7-awq"
-    return normalized
+        model_id = "devstral-2-123b-instruct-2512"
+    elif lowered == "glm-4.7":
+        model_id = "glm-4.7-awq"
+    elif lowered == "gemini-free":
+        # Free model candidate on OpenRouter
+        return "google/gemini-2.0-flash-lite-preview-02-05:free"
+    else:
+        model_id = normalized
+
+    if backend == "opencode":
+        # opencode expects provider prefix for LiteLLM Local
+        if model_id in ["devstral-2-123b-instruct-2512", "glm-4.7-awq"]:
+            return f"litellm-local/{model_id}"
+        return model_id
+
+    # For cline, we use the raw model ID as it should be configured with the base URL
+    return model_id
 
 
 def maybe_add_title(cmd: list[str], title: str | None) -> list[str]:
@@ -135,6 +206,7 @@ def run_command_monitored(
     progress_check_enabled: bool = True,
     env: dict[str, str] | None = None,
     no_output_timeout: int = DEFAULT_NO_OUTPUT_TIMEOUT,
+    stdin_file: Path | None = None,
 ) -> bool:
     attempt = 1
     while attempt <= retry_max:
@@ -155,60 +227,84 @@ def run_command_monitored(
                 last_log_size = 0
 
         stderr_file = log_file.with_suffix(log_file.suffix + ".stderr")
-        with (
-            log_file.open("w", encoding="utf-8") as handle,
-            stderr_file.open("w", encoding="utf-8") as err_handle,
-        ):
-            proc = subprocess.Popen(cmd, stdout=handle, stderr=err_handle, env=env)
-            while True:
-                now = time.time()
-                if log_file.exists():
+        with log_file.open("w", encoding="utf-8") as handle:
+            with stderr_file.open("w", encoding="utf-8") as err_handle:
+                stdin_handle = None
+                if stdin_file:
                     try:
-                        stat = log_file.stat()
-                        mtime = stat.st_mtime
-                        size = stat.st_size
+                        stdin_handle = stdin_file.open("r", encoding="utf-8")
                     except OSError:
-                        mtime = last_log_mtime
-                        size = last_log_size
-                    if mtime > last_log_mtime:
-                        last_log_mtime = mtime
-                        last_log_change = now
-                    last_log_size = size
+                        pass
 
-                if monitor_interval and now - last_heartbeat >= monitor_interval:
-                    last_heartbeat = now
-                    message = (
-                        f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] heartbeat: "
-                        f"pid={proc.pid} elapsed={int(now - start_time)}s "
-                        f"log={log_file.name}\n"
-                    )
-                    if heartbeat_file is not None:
-                        heartbeat_file.parent.mkdir(parents=True, exist_ok=True)
-                        with heartbeat_file.open("a", encoding="utf-8") as heartbeat:
-                            heartbeat.write(message)
-                    else:
-                        logger.log(message.rstrip(), level="DEBUG")
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=handle,
+                    stderr=err_handle,
+                    stdin=stdin_handle,
+                    env=env,
+                    start_new_session=True,
+                )
+                while True:
+                    now = time.time()
+                    if log_file.exists():
+                        try:
+                            stat = log_file.stat()
+                            mtime = stat.st_mtime
+                            size = stat.st_size
+                        except OSError:
+                            mtime = last_log_mtime
+                            size = last_log_size
+                        if mtime > last_log_mtime:
+                            last_log_mtime = mtime
+                            last_log_change = now
+                        last_log_size = size
 
-                if (
-                    progress_check_enabled
-                    and progress_model
-                    and progress_label
-                    and progress_check_interval
-                    and now - last_progress_check >= progress_check_interval
-                ):
-                    last_progress_check = now
-                    status = live_progress_check(
-                        log_file=log_file,
-                        report_dir=heartbeat_file.parent if heartbeat_file else log_file.parent,
-                        label=progress_label,
-                        model_review=progress_model,
-                        tail_lines_count=progress_tail_lines,
-                    )
-                    if status == "STUCK":
-                        stuck_score += 1
-                    elif status == "PROGRESS":
-                        stuck_score = 0
-                    if stuck_score >= progress_stuck_threshold:
+                    if monitor_interval and now - last_heartbeat >= monitor_interval:
+                        last_heartbeat = now
+                        message = (
+                            f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] heartbeat: "
+                            f"pid={proc.pid} elapsed={int(now - start_time)}s "
+                            f"log={log_file.name}\n"
+                        )
+                        if heartbeat_file is not None:
+                            heartbeat_file.parent.mkdir(parents=True, exist_ok=True)
+                            with heartbeat_file.open("a", encoding="utf-8") as heartbeat:
+                                heartbeat.write(message)
+                        else:
+                            logger.log(message.rstrip(), level="DEBUG")
+
+                    if (
+                        progress_check_enabled
+                        and progress_model
+                        and progress_label
+                        and progress_check_interval
+                        and now - last_progress_check >= progress_check_interval
+                    ):
+                        last_progress_check = now
+                        status = live_progress_check(
+                            log_file=log_file,
+                            report_dir=heartbeat_file.parent if heartbeat_file else log_file.parent,
+                            label=progress_label,
+                            model_review=progress_model,
+                            tail_lines_count=progress_tail_lines,
+                        )
+                        if status == "STUCK":
+                            stuck_score += 1
+                        elif status == "PROGRESS":
+                            stuck_score = 0
+                        if stuck_score >= progress_stuck_threshold:
+                            proc.terminate()
+                            try:
+                                proc.wait(timeout=10)
+                            except subprocess.TimeoutExpired:
+                                proc.kill()
+                            with log_file.open("a", encoding="utf-8") as handle_append:
+                                handle_append.write(
+                                    f"\nrun stalled by progress check (attempt {attempt}/{retry_max})\n"
+                                )
+                            break
+
+                    if timeout and now - start_time >= timeout:
                         proc.terminate()
                         try:
                             proc.wait(timeout=10)
@@ -216,57 +312,46 @@ def run_command_monitored(
                             proc.kill()
                         with log_file.open("a", encoding="utf-8") as handle_append:
                             handle_append.write(
-                                f"\nrun stalled by progress check (attempt {attempt}/{retry_max})\n"
+                                f"\nrun timed out after {timeout}s (attempt {attempt}/{retry_max})\n"
                             )
                         break
 
-                if timeout and now - start_time >= timeout:
-                    proc.terminate()
-                    try:
-                        proc.wait(timeout=10)
-                    except subprocess.TimeoutExpired:
-                        proc.kill()
-                    with log_file.open("a", encoding="utf-8") as handle_append:
-                        handle_append.write(
-                            f"\nrun timed out after {timeout}s (attempt {attempt}/{retry_max})\n"
-                        )
-                    break
+                    if stuck_timeout and now - last_log_change >= stuck_timeout:
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=10)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                        with log_file.open("a", encoding="utf-8") as handle_append:
+                            handle_append.write(
+                                f"\nrun stalled for {stuck_timeout}s (attempt {attempt}/{retry_max})\n"
+                            )
+                        break
 
-                if stuck_timeout and now - last_log_change >= stuck_timeout:
-                    proc.terminate()
-                    try:
-                        proc.wait(timeout=10)
-                    except subprocess.TimeoutExpired:
-                        proc.kill()
-                    with log_file.open("a", encoding="utf-8") as handle_append:
-                        handle_append.write(
-                            f"\nrun stalled for {stuck_timeout}s (attempt {attempt}/{retry_max})\n"
-                        )
-                    break
+                    if (
+                        no_output_timeout
+                        and now - start_time >= no_output_timeout
+                        and last_log_size == 0
+                    ):
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=10)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                        with log_file.open("a", encoding="utf-8") as handle_append:
+                            handle_append.write(
+                                f"\nrun produced no output for {no_output_timeout}s (attempt {attempt}/{retry_max})\n"
+                            )
+                        break
 
-                if (
-                    no_output_timeout
-                    and now - start_time >= no_output_timeout
-                    and last_log_size == 0
-                ):
-                    proc.terminate()
-                    try:
-                        proc.wait(timeout=10)
-                    except subprocess.TimeoutExpired:
-                        proc.kill()
-                    with log_file.open("a", encoding="utf-8") as handle_append:
-                        handle_append.write(
-                            f"\nrun produced no output for {no_output_timeout}s (attempt {attempt}/{retry_max})\n"
-                        )
-                    break
+                    return_code = proc.poll()
+                    if return_code is not None:
+                        if return_code == 0:
+                            return True
+                        logger.log(f"Process {cmd[0]} failed with return code {return_code}", level="ERROR")
+                        break
 
-                return_code = proc.poll()
-                if return_code is not None:
-                    if return_code == 0:
-                        return True
-                    break
-
-                time.sleep(5)
+                    time.sleep(5)
 
         with log_file.open("a", encoding="utf-8") as handle_append:
             handle_append.write(f"\nrun failed (attempt {attempt}/{retry_max})\n")
@@ -614,24 +699,36 @@ def terminate_stale_opencode(report_dir: Path, kill: bool) -> None:
             continue
 
 
-def preflight_opencode(repo_root: Path, model: str, report_dir: Path) -> None:
-    safe_model = resolve_model(model).replace("/", "_")
-    log_file = report_dir / f"opencode_preflight_{safe_model}.log"
+def preflight_backend(repo_root: Path, model: str, backend: str, report_dir: Path) -> None:
+    safe_model = resolve_model(model, backend).replace("/", "_")
+    log_file = report_dir / f"{backend}_preflight_{safe_model}.log"
     title = f"preflight-{uuid.uuid4().hex}"
-    cmd = [
-        resolve_opencode_path(),
-        "run",
-        "Reply with OK.",
-        "--model",
-        resolve_model(model),
-    ]
-    cmd = maybe_add_title(cmd, title)
+
+    if backend == "opencode":
+        cmd = [
+            resolve_opencode_path(),
+            "run",
+            "Reply with OK.",
+            "--model",
+            resolve_model(model, backend),
+        ]
+        cmd = maybe_add_title(cmd, title)
+    else:
+        # cline backend
+        cmd = [
+            shutil.which("cline") or "cline",
+            "Reply with OK.",
+            "-m",
+            resolve_model(model, backend),
+            "--yolo"
+        ]
+
     ok = run_command(
         cmd,
         log_file,
         retry_max=1,
         retry_sleep=0,
-        timeout=30,
+        timeout=180,
         env=build_opencode_env(repo_root, allow_git=True),
     )
     if not ok:
@@ -640,16 +737,16 @@ def preflight_opencode(repo_root: Path, model: str, report_dir: Path) -> None:
         if stderr_file.exists():
             error_tail = tail_lines(stderr_file, 40)
         raise RuntimeError(
-            "opencode preflight failed. "
-            "Check opencode logs under ~/.local/share/opencode/log"
+            f"{backend} preflight failed. "
+            f"Check logs under ~/.local/share/{backend}/log or {log_file}"
             + (f"\n{error_tail}" if error_tail else "")
         )
 
 
-def preflight_models(repo_root: Path, model_impl: str, model_review: str, report_dir: Path) -> None:
-    preflight_opencode(repo_root, model_impl, report_dir)
+def preflight_models(repo_root: Path, model_impl: str, model_review: str, backend: str, report_dir: Path) -> None:
+    preflight_backend(repo_root, model_impl, backend, report_dir)
     if model_review != model_impl:
-        preflight_opencode(repo_root, model_review, report_dir)
+        preflight_backend(repo_root, model_review, backend, report_dir)
 
 
 def prompt_has_pass(report_dir: Path, base_name: str) -> bool:
@@ -830,6 +927,7 @@ def run_prompt(
     progress_check_enabled: bool,
     no_output_timeout: int,
     opencode_env: dict[str, str] | None,
+    backend: str,
     impl_title: str | None,
     review_title: str | None,
 ) -> None:
@@ -875,16 +973,28 @@ def run_prompt(
             if dry_run:
                 write_text(impl_log, "DRY_RUN: implementer skipped\n")
             else:
-                cmd_impl = [
-                    resolve_opencode_path(),
-                    "run",
-                    "Execute the attached prompt file end-to-end.",
-                    "--model",
-                    resolve_model(model_impl),
-                    "--file",
-                    str(impl_prompt_path),
-                ]
-                cmd_impl = maybe_add_title(cmd_impl, impl_title)
+                if backend == "opencode":
+                    cmd_impl = [
+                        resolve_opencode_path(),
+                        "run",
+                        "Execute the attached prompt file end-to-end.",
+                        "--model",
+                        resolve_model(model_impl, backend),
+                        "--file",
+                        str(impl_prompt_path),
+                    ]
+                    cmd_impl = maybe_add_title(cmd_impl, impl_title)
+                    stdin_file = None
+                else:
+                    cmd_impl = [
+                        shutil.which("cline") or "cline",
+                        "-m",
+                        resolve_model(model_impl, backend),
+                        "--yolo",
+                        "-"
+                    ]
+                    stdin_file = impl_prompt_path
+
                 ok = run_command_monitored(
                     cmd_impl,
                     impl_log,
@@ -901,6 +1011,7 @@ def run_prompt(
                     progress_check_enabled=progress_check_enabled,
                     env=opencode_env,
                     no_output_timeout=no_output_timeout,
+                    stdin_file=stdin_file,
                 )
                 if not ok:
                     write_orchestrator_log(
@@ -947,16 +1058,28 @@ def run_prompt(
             if dry_run:
                 write_text(review_log, "DRY_RUN: reviewer skipped\n")
             else:
-                cmd_review = [
-                    resolve_opencode_path(),
-                    "run",
-                    "Execute the attached prompt file end-to-end.",
-                    "--model",
-                    resolve_model(model_review),
-                    "--file",
-                    str(review_prompt_path),
-                ]
-                cmd_review = maybe_add_title(cmd_review, review_title)
+                if backend == "opencode":
+                    cmd_review = [
+                        resolve_opencode_path(),
+                        "run",
+                        "Execute the attached prompt file end-to-end.",
+                        "--model",
+                        resolve_model(model_review, backend),
+                        "--file",
+                        str(review_prompt_path),
+                    ]
+                    cmd_review = maybe_add_title(cmd_review, review_title)
+                    stdin_file = None
+                else:
+                    cmd_review = [
+                        shutil.which("cline") or "cline",
+                        "-m",
+                        resolve_model(model_review, backend),
+                        "--yolo",
+                        "-"
+                    ]
+                    stdin_file = review_prompt_path
+
                 ok = run_command_monitored(
                     cmd_review,
                     review_log,
@@ -973,6 +1096,7 @@ def run_prompt(
                     progress_check_enabled=progress_check_enabled,
                     env=opencode_env,
                     no_output_timeout=no_output_timeout,
+                    stdin_file=stdin_file,
                 )
                 if not ok and not log_has_token(review_log, REVIEW_PASS_TOKEN):
                     raise RuntimeError(f"Reviewer run failed for {base_name}")
@@ -1089,11 +1213,21 @@ def main() -> int:
         action="store_true",
         help="Allow opencode to run full git commands (default: read-only)",
     )
+    parser.add_argument(
+        "--backend",
+        choices=["opencode", "cline"],
+        default="opencode",
+        help="Backend to use for LLM communication",
+    )
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parents[1]
     prompt_dir = repo_root / "doc" / "refactoring_prompts"
     report_dir = repo_root / "doc" / "refactoring_reports"
+
+    # Configure cline if needed
+    if args.backend == "cline":
+        configure_cline_from_opencode()
 
     prompts = [
         prompt_dir / "01_golden_test_fix.md",
@@ -1113,8 +1247,8 @@ def main() -> int:
             raise SystemExit("prompt-index out of range")
         prompts = [prompts[args.prompt_index - 1]]
 
-    model_impl = resolve_model(args.model_impl)
-    model_review = resolve_model(args.model_review)
+    model_impl = resolve_model(args.model_impl, backend=args.backend)
+    model_review = resolve_model(args.model_review, backend=args.backend)
     opencode_env = build_opencode_env(repo_root, allow_git=args.allow_git)
     expected_branch = (
         subprocess.run(
@@ -1134,7 +1268,7 @@ def main() -> int:
 
         logger.log(f"--- Running prompt: {prompt.name} ---", level="INFO")
         try:
-            preflight_models(repo_root, model_impl, model_review, report_dir)
+            preflight_models(repo_root, model_impl, model_review, args.backend, report_dir)
             terminate_stale_opencode(report_dir, args.kill_stale_opencode)
             current_branch = (
                 subprocess.run(
@@ -1170,6 +1304,7 @@ def main() -> int:
                 progress_check_enabled=not args.no_progress_check,
                 no_output_timeout=args.no_output_timeout,
                 opencode_env=opencode_env,
+                backend=args.backend,
                 impl_title=impl_title,
                 review_title=review_title,
             )
