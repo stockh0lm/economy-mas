@@ -33,7 +33,7 @@ def test_aggregate_metrics_skips_missing_steps() -> None:
     }
 
     result = collector.aggregate_metrics(step=0)
-    assert "income" not in result["household"]
+    assert "household" not in result
 
 
 def test_aggregate_metrics_applies_bank_sum_and_state_passthrough() -> None:

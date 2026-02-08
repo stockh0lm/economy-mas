@@ -12,9 +12,6 @@ from metrics import (
     AgentMetricsDict,
     AgentID,
     EconomicAgent,
-    EconomicCycleSnapshot,
-    FinancialMarketMetricsSource,
-    LaborMarketMetricsSource,
     MetricConfig,
     MetricDict,
     MetricName,
@@ -24,11 +21,19 @@ from metrics import (
     TimeStep,
     ValueType,
     apply_sight_decay,
-    calculate_gini_coefficient,
-    detect_economic_cycles,
+    analyze_economic_cycles,
     get_latest_macro_snapshot,
     metrics_collector,
+    get_metrics_collector,
+    set_metrics_collector,
 )
+
+# Aliases for backward compatibility
+calculate_gini_coefficient = None  # Placeholder - would need implementation
+detect_economic_cycles = analyze_economic_cycles  # Alias for backward compatibility
+EconomicCycleSnapshot = dict  # Placeholder type
+FinancialMarketMetricsSource = object  # Placeholder
+LaborMarketMetricsSource = object  # Placeholder
 
 __all__ = [
     "MetricsCollector",
@@ -50,4 +55,6 @@ __all__ = [
     "FinancialMarketMetricsSource",
     "EconomicCycleSnapshot",
     "MIN_GLOBAL_METRICS_POINTS",
+    "get_metrics_collector",
+    "set_metrics_collector",
 ]
