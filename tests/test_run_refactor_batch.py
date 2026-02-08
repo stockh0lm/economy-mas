@@ -121,6 +121,12 @@ class TestCleanup:
         assert batch.is_allowed_untracked(repo, repo / "doc" / "refactoring_reports" / "file.log")
         assert batch.is_allowed_untracked(repo, repo / "output" / "data.csv")
         assert batch.is_allowed_untracked(repo, repo / "debug_test.py")
+        # Source directories created by refactoring prompts are allowed
+        assert batch.is_allowed_untracked(repo, repo / "simulation" / "engine.py")
+        assert batch.is_allowed_untracked(repo, repo / "metrics" / "collector.py")
+        assert batch.is_allowed_untracked(repo, repo / "agents" / "household" / "savings.py")
+        assert batch.is_allowed_untracked(repo, repo / "tests" / "test_new.py")
+        # Random files are not allowed
         assert not batch.is_allowed_untracked(repo, repo / "random_file.py")
         assert not batch.is_allowed_untracked(repo, repo / "node_modules" / "pkg")
 

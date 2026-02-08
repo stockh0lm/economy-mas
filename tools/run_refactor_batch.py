@@ -335,11 +335,31 @@ def configure_cline_from_opencode() -> None:
 READONLY_GIT_WRAPPER = """\
 #!/bin/sh
 set -eu
+# Resolve the real git binary, avoiding recursive calls to this wrapper.
+if [ -z "${REAL_GIT:-}" ]; then
+  SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+  REAL_GIT=""
+  # Walk PATH entries, skipping our own directory
+  OLDIFS="$IFS"
+  IFS=":"
+  for d in $PATH; do
+    IFS="$OLDIFS"
+    [ "$d" = "$SCRIPT_DIR" ] && continue
+    [ -z "$d" ] && continue
+    if [ -x "$d/git" ]; then
+      REAL_GIT="$d/git"
+      break
+    fi
+  done
+  IFS="$OLDIFS"
+  # Fallback
+  [ -z "$REAL_GIT" ] && REAL_GIT="/usr/bin/git"
+fi
 cmd="${1:-}"
-[ -z "$cmd" ] && exec "${REAL_GIT:-git}"
+[ -z "$cmd" ] && exec "$REAL_GIT" "$@"
 case "$cmd" in
-  status|diff|log|show|grep|ls-files|rev-parse|describe|blame|cat-file|whatchanged)
-    exec "${REAL_GIT:-git}" "$@" ;;
+  status|diff|log|show|grep|ls-files|rev-parse|describe|blame|cat-file|whatchanged|branch)
+    exec "$REAL_GIT" "$@" ;;
   *)
     echo "git write blocked by refactor batch: $cmd" >&2; exit 2 ;;
 esac
@@ -361,7 +381,16 @@ def build_env(cfg: BatchConfig) -> dict[str, str]:
         tmp.replace(wrapper_path)
     except OSError:
         tmp.unlink(missing_ok=True)
-    env["REAL_GIT"] = env.get("REAL_GIT") or shutil.which("git") or "git"
+    # Always resolve REAL_GIT to an absolute path to prevent recursive shim calls.
+    # Look up git in the ORIGINAL PATH (before prepending wrapper_dir).
+    real_git = env.get("REAL_GIT") or shutil.which("git") or "/usr/bin/git"
+    # Ensure it's not pointing at our own wrapper
+    try:
+        if Path(real_git).resolve() == wrapper_path.resolve():
+            real_git = "/usr/bin/git"
+    except (OSError, ValueError):
+        pass
+    env["REAL_GIT"] = real_git
     env["PATH"] = f"{wrapper_dir}:{env.get('PATH', '')}"
     return env
 
@@ -850,7 +879,15 @@ def check_prompt_size(prompt_text: str, model: str, label: str) -> str:
     return result
 
 
-ALLOWED_UNTRACKED_PREFIXES = ("doc/refactoring_reports/", "output/")
+ALLOWED_UNTRACKED_PREFIXES = (
+    "doc/refactoring_reports/",
+    "output/",
+    # Source directories created by refactoring prompts
+    "simulation/",
+    "metrics/",
+    "agents/household/",
+    "tests/",
+)
 
 
 def is_allowed_untracked(repo: Path, path: Path) -> bool:
@@ -1143,9 +1180,7 @@ def run_single_prompt(
         return success or cfg.dry_run
 
     finally:
-        # Always clean up regardless of success
-        if success and not cfg.dry_run:
-            cleanup_illegal_files(cfg.repo_root, cfg.report_dir)
+        # Clean up temp artifacts (debug scripts, output/) regardless of outcome
         cleanup_temp_artifacts(cfg.repo_root)
         git_save_snapshot(cfg.repo_root, cfg.report_dir, f"{name}_{stamp}_after")
 
@@ -1266,6 +1301,10 @@ def run_batch(cfg: BatchConfig) -> int:
             ok = run_single_prompt(cfg, prompt, env)
             if ok:
                 commit_changes(cfg.repo_root, name, cfg.dry_run)
+                # Clean up illegal untracked files AFTER committing
+                # so that legitimate new source files are already committed.
+                if not cfg.dry_run:
+                    cleanup_illegal_files(cfg.repo_root, cfg.report_dir)
                 mark_completed(cfg.report_dir, name)
                 log.info("COMPLETED: %s", name)
             else:
