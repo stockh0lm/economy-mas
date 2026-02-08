@@ -17,6 +17,7 @@ for path in (PROJECT_ROOT, AGENTS_DIR):
         if path_str not in sys.path:
             sys.path.insert(0, path_str)
 
+
 def pytest_runtest_setup(item):
     """Reset class-level mutable state before each test.
 
@@ -41,6 +42,20 @@ def pytest_runtest_setup(item):
     if household_module is not None:
         household_module._DEFAULT_NP_RNG = None
 
+    # Reset consumption module's independent numpy RNG
+    consumption_module = sys.modules.get("agents.household.consumption")
+    if consumption_module is not None:
+        consumption_module._DEFAULT_NP_RNG = None
+
+    # Reset GlobalConfigCache singleton to prevent stale config across tests
+    config_cache_module = sys.modules.get("agents.config_cache")
+    if config_cache_module is not None:
+        config_cache_module.GlobalConfigCache._instance = None
+    config_cache_root = sys.modules.get("config_cache")
+    if config_cache_root is not None:
+        config_cache_root.GlobalConfigCache._instance = None
+
+
 @pytest.fixture(scope="session")
 def runner_metrics_dir():
     """Generate a minimal simulation run for integration tests.
@@ -59,5 +74,7 @@ def runner_metrics_dir():
         agents = run_simulation(cfg)
 
         # Verify metrics were generated
-        assert (tmppath / "global_metrics").exists() or (tmppath / "global_metrics_" in [f.name for f in tmppath.iterdir() if f.suffix == '.csv']), "Global metrics not generated"
+        assert (tmppath / "global_metrics").exists() or (
+            tmppath / "global_metrics_" in [f.name for f in tmppath.iterdir() if f.suffix == ".csv"]
+        ), "Global metrics not generated"
         yield tmppath

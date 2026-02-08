@@ -8,7 +8,7 @@
 # Die Validierung erfolgt über Pydantic beim Laden (siehe `config.load_simulation_config_from_yaml`).
 
 # Anzahl Simulationsschritte
-simulation_steps: 100
+simulation_steps: 1000
 
 # Zeitliche Granularität: tägliche Transaktionen, monatliche Policies.
 time:

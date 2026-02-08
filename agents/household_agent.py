@@ -32,6 +32,7 @@ from .household.demography import DemographyComponent, HouseholdFormationEvent
 
 _DEFAULT_NP_RNG = None
 
+
 def _get_default_np_rng():
     global _DEFAULT_NP_RNG
     if _DEFAULT_NP_RNG is None:
@@ -42,9 +43,11 @@ def _get_default_np_rng():
             _DEFAULT_NP_RNG = np.random.default_rng()
     return _DEFAULT_NP_RNG
 
+
 if TYPE_CHECKING:
     from .retailer_agent import RetailerAgent
     from .savings_bank_agent import SavingsBank
+
 
 class _RNG(Protocol):
     """Minimal RNG protocol used for deterministic unit tests.
@@ -57,6 +60,7 @@ class _RNG(Protocol):
 
     def choice(self, seq: Sequence[object]) -> object:  # pragma: no cover - protocol
         ...
+
 
 class Household(BaseAgent):
     def __init__(
@@ -148,6 +152,10 @@ class Household(BaseAgent):
     def consumption_history(self):
         """Backwards-compatible consumption_history property."""
         return self.consumption_component.consumption_history
+
+    @consumption_history.setter
+    def consumption_history(self, value):
+        self.consumption_component.consumption_history = value
 
     # --- Balance-sheet vocabulary ---
     @property
@@ -380,7 +388,11 @@ class Household(BaseAgent):
     ) -> None:
         """Delegate to savings component."""
         return self.savings_component.handle_finances(
-            current_step, clock=clock, savings_bank=savings_bank, stage=stage, is_month_end=is_month_end
+            current_step,
+            clock=clock,
+            savings_bank=savings_bank,
+            stage=stage,
+            is_month_end=is_month_end,
         )
 
     def handle_consumption(

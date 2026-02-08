@@ -182,6 +182,9 @@ class GlobalConfigCache:
 
     def __init__(self, config: SimulationConfig | None = None):
         if self._initialized:
+            if config is not None:
+                self._config = config
+                self._cache.clear()
             return
 
         self._config = config
