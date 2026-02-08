@@ -488,6 +488,11 @@ class SimulationEngine:
         else:
             self.np_rng = np.random.default_rng()
 
+        # Re-inject the seeded RNG into household modules so batch_consume
+        # and other numpy-based code uses the deterministic generator.
+        household_module._DEFAULT_NP_RNG = self.np_rng
+        consumption_module._DEFAULT_NP_RNG = self.np_rng
+
         self.agents_dict = initialize_agents(self.config)
         self.households: list[Household] = self.agents_dict["households"]
         self.companies: list[Company] = self.agents_dict["companies"]
@@ -640,6 +645,10 @@ class SimulationEngine:
                     employer = companies_by_id.get(str(employer_id))
                     if employer is not None and h in getattr(employer, "employees", []):
                         employer.employees = [e for e in employer.employees if e is not h]
+                log(
+                    f"death: household {h.unique_id} age_days={age_days} at step={step}",
+                    level="INFO",
+                )
 
                 replacement = Household(
                     unique_id=f"{self.config.HOUSEHOLD_ID_PREFIX}{self.next_household_idx}",
@@ -655,6 +664,10 @@ class SimulationEngine:
                 self.labor_market.register_worker(replacement)
                 alive_households.append(replacement)
                 births_this_step += 1
+                log(
+                    f"birth: household {replacement.unique_id} (replacement for {h.unique_id}) at step={step}",
+                    level="INFO",
+                )
                 continue
             alive_households.append(h)
 
@@ -764,6 +777,10 @@ class SimulationEngine:
                             self.companies.append(new_company)
                             self.collector.register_company(new_company)
                             company_births_this_step += 1
+                            log(
+                                f"founding: company {new_company.unique_id} founded by {founder.unique_id} capital={transferred:.2f} at step={step}",
+                                level="INFO",
+                            )
 
         merge_base = float(getattr(self.config.company, "merger_rate_annual", 0.0) or 0.0)
         distress = float(getattr(self.config.company, "merger_distress_threshold", 0.0) or 0.0)
@@ -816,6 +833,10 @@ class SimulationEngine:
                             )
                             self.companies = [c for c in self.companies if c is not target]
                             company_deaths_this_step += 1
+                            log(
+                                f"merger: target={target.unique_id} absorbed_by={acquirer.unique_id} at step={step}",
+                                level="INFO",
+                            )
 
         # 1) Firms: post labor demand
         alive_companies: list[Company] = []
@@ -849,11 +870,19 @@ class SimulationEngine:
                 company_births_this_step += 1
                 result.unique_id = f"{self.config.COMPANY_ID_PREFIX}{self.next_company_idx}"
                 self.next_company_idx += 1
+                log(
+                    f"growth: company split parent={c.unique_id} child={result.unique_id} at step={step}",
+                    level="INFO",
+                )
                 new_companies.append(result)
                 self.collector.register_company(result)
                 alive_companies.append(c)
             elif result in ("DEAD", "LIQUIDATED"):
                 company_deaths_this_step += 1
+                log(
+                    f"bankruptcy: company {c.unique_id} removed (status={result}) at step={step}",
+                    level="WARNING",
+                )
                 continue
             else:
                 alive_companies.append(c)
@@ -894,6 +923,8 @@ class SimulationEngine:
                 clock=self.clock,
                 savings_bank=h_savings_bank,
                 retailers=h_retailers,
+                py_rng=random,
+                rng=self.np_rng,
             )
             alive_households.extend(region_households)
             for maybe_new in region_newborns:

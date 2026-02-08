@@ -1,6 +1,6 @@
 """Base types and constants for the metrics package."""
 
-from typing import Any, Dict, Protocol, TypeVar, Union
+from typing import Any, Dict, Protocol, TypedDict, TypeVar, Union
 
 # Type aliases
 TimeStep = int
@@ -9,7 +9,7 @@ MetricDict = Dict[str, Any]
 TimeSeriesDict = Dict[TimeStep, MetricDict]
 
 # Constants
-MIN_GLOBAL_METRICS_POINTS = 5
+MIN_GLOBAL_METRICS_POINTS = 10
 
 
 class EconomicAgent(Protocol):
@@ -32,8 +32,8 @@ class TypeDefinitions:
     EconomicAgent = EconomicAgent
 
 
-class MetricConfig(Protocol):
-    """Protocol for metric configuration dictionary entries"""
+class MetricConfig(TypedDict):
+    """Configuration for a single tracked metric."""
 
     enabled: bool
     display_name: str

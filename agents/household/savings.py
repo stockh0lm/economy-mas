@@ -136,6 +136,7 @@ def handle_finances(
     savings_bank: SavingsBank,
     stage: str,
     is_month_end: bool | None = None,
+    clock=None,
 ) -> None:
     """Finance pipeline: repayments + month-end saving."""
     if stage == "pre":
@@ -143,8 +144,10 @@ def handle_finances(
         return
 
     if stage == "post":
-        # Default: if caller uses stage="post", it implies month-end saving
-        if is_month_end is None or is_month_end:
+        month_end = is_month_end
+        if month_end is None:
+            month_end = clock.is_month_end(current_step) if clock is not None else False
+        if month_end:
             save(household, savings_bank)
         return
 
@@ -179,11 +182,8 @@ class SavingsComponent:
 
     @property
     def savings_balance(self) -> float:
-        """Balance of savings deposits at the SavingsBank."""
-        sb = getattr(self._household, "_savings_bank_ref", None)
-        if sb is None:
-            return 0.0
-        return float(sb.savings_accounts.get(self._household.unique_id, 0.0))
+        """Local cash savings buffer (not bank deposits)."""
+        return float(self._household.local_savings)
 
     def save(self, savings_bank: SavingsBank | None) -> float:
         return save(self._household, savings_bank)
@@ -209,4 +209,5 @@ class SavingsComponent:
             savings_bank,
             stage,
             is_month_end=is_month_end,
+            clock=clock,
         )

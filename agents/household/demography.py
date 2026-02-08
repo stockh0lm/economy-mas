@@ -429,13 +429,11 @@ class DemographyComponent:
         if not hasattr(household, "_fertility_p_daily_cache"):
             household._fertility_p_daily_cache = {}
         if not hasattr(household, "_fertility_cache_bin_size"):
-            household._fertility_cache_bin_size = float(
-                getattr(household.config.household, "fertility_cache_bin_size", 100.0)
+            household._fertility_cache_bin_size = max(
+                10.0, 0.05 * float(household.config.household.savings_growth_trigger)
             )
         if not hasattr(household, "_fertility_cache_max_size"):
-            household._fertility_cache_max_size = int(
-                getattr(household.config.household, "fertility_cache_max_size", 1000)
-            )
+            household._fertility_cache_max_size = 4096
 
     def split_household(self, *, savings_bank: SavingsBank) -> Household | None:
         return split_household(self._household, savings_bank=savings_bank)

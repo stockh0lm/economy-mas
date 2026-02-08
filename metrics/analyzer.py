@@ -145,6 +145,10 @@ def _check_critical_thresholds(collector, metrics):
 def aggregate_metrics(collector, step):
     """Aggregate metrics across agent types for a given time step."""
     result: dict = {
+        "household": {},
+        "company": {},
+        "bank": {},
+        "state": {},
         "market": {},
         "global": collector.global_metrics.get(step, {}),
     }

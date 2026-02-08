@@ -29,11 +29,11 @@ from metrics import (
 )
 
 # Aliases for backward compatibility
-calculate_gini_coefficient = None  # Placeholder - would need implementation
+from metrics.calculator import _calculate_gini_coefficient as calculate_gini_coefficient
+from metrics.calculator import LaborMarketMetricsSource, FinancialMarketMetricsSource
+from metrics.analyzer import EconomicCycleSnapshot
+
 detect_economic_cycles = analyze_economic_cycles  # Alias for backward compatibility
-EconomicCycleSnapshot = dict  # Placeholder type
-FinancialMarketMetricsSource = object  # Placeholder
-LaborMarketMetricsSource = object  # Placeholder
 
 __all__ = [
     "MetricsCollector",

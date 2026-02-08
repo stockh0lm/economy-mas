@@ -79,7 +79,7 @@ __all__ = [
     "TypeDefinitions",
 ]
 
-metrics_collector = None
+metrics_collector = MetricsCollector()
 
 
 def get_metrics_collector():

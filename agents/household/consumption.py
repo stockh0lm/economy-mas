@@ -40,19 +40,11 @@ _DEFAULT_NP_RNG = None
 
 
 def _get_default_np_rng():
-    global _DEFAULT_NP_RNG
-    if _DEFAULT_NP_RNG is None:
-        try:
-            import os
+    # Delegate to the canonical RNG in household_agent to ensure a single
+    # seeded generator is shared across all household numpy operations.
+    from agents.household_agent import _get_default_np_rng as _canonical_get
 
-            env_seed = os.getenv("SIM_SEED")
-            if env_seed is not None and env_seed != "":
-                _DEFAULT_NP_RNG = np.random.default_rng(int(env_seed))
-                return _DEFAULT_NP_RNG
-        except ImportError:
-            pass
-        _DEFAULT_NP_RNG = np.random.default_rng()
-    return _DEFAULT_NP_RNG
+    return _canonical_get()
 
 
 @dataclass(frozen=True, slots=True)
@@ -261,7 +253,7 @@ class ConsumptionComponent:
         self._household = household
         self._consumption: float = 0.0
         window = int(household.config.clearing.sight_allowance_window_days)
-        self._consumption_history: deque[float] = deque(maxlen=max(1, window))
+        self._consumption_history: deque[float] = deque(maxlen=max(0, window))
 
     # --- properties delegated from Household ---
 

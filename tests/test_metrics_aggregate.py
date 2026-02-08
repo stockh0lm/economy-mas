@@ -33,7 +33,9 @@ def test_aggregate_metrics_skips_missing_steps() -> None:
     }
 
     result = collector.aggregate_metrics(step=0)
-    assert "household" not in result
+    # All category keys must always be present (original contract).
+    # When no data exists for the step, the value is an empty dict.
+    assert result["household"] == {}
 
 
 def test_aggregate_metrics_applies_bank_sum_and_state_passthrough() -> None:
