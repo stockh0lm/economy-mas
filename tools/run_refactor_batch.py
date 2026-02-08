@@ -38,7 +38,7 @@ DEFAULT_PROGRESS_TAIL_LINES = 20
 DEFAULT_PROGRESS_CHECK_INTERVAL = 900
 DEFAULT_PROGRESS_STUCK_THRESHOLD = 2
 MIN_STAGNATION_ITERATIONS = 2
-DEFAULT_NO_OUTPUT_TIMEOUT = 300
+DEFAULT_NO_OUTPUT_TIMEOUT = 1200
 
 
 def get_opencode_config() -> dict:
@@ -227,8 +227,13 @@ def run_command_monitored(
                 last_log_size = 0
 
         stderr_file = log_file.with_suffix(log_file.suffix + ".stderr")
-        with log_file.open("w", encoding="utf-8") as handle:
-            with stderr_file.open("w", encoding="utf-8") as err_handle:
+        mode = "w" if attempt == 1 else "a"
+        with log_file.open(mode, encoding="utf-8") as handle:
+            with stderr_file.open(mode, encoding="utf-8") as err_handle:
+                if attempt > 1:
+                    handle.write(f"\n--- ATTEMPT {attempt} ---\n")
+                    err_handle.write(f"\n--- ATTEMPT {attempt} ---\n")
+
                 stdin_handle = None
                 if stdin_file:
                     try:
@@ -1018,10 +1023,8 @@ def run_prompt(
                         report_dir,
                         f"Implementer run failed for {base_name}; skipping to reviewer.",
                     )
-                    write_text(
-                        impl_log,
-                        f"{TESTS_FAIL_TOKEN}\n",
-                    )
+                    with impl_log.open("a", encoding="utf-8") as f:
+                        f.write(f"\n{TESTS_FAIL_TOKEN}\n")
 
             if not dry_run:
                 impl_text = impl_log.read_text(encoding="utf-8", errors="ignore")
