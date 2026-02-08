@@ -1,1329 +1,1403 @@
 #!/usr/bin/env python3
-"""Batch runner for refactoring prompts with dual-model review.
+"""Batch runner for autonomous refactoring with local LLM models.
 
-Runs each prompt with an implementer model and reviewer model until reviewer
-signs off or max iterations are reached. Captures logs and git diffs.
+Runs a set of prompt files through an implementer/reviewer cycle using
+cline (default) or opencode as the LLM middleware. Designed to run
+unattended overnight against local models via LiteLLM.
+
+Usage:
+    python tools/run_refactor_batch.py                          # all prompts
+    python tools/run_refactor_batch.py --prompt-index 2         # single prompt
+    python tools/run_refactor_batch.py --dry-run                # no LLM calls
+    python tools/run_refactor_batch.py --backend opencode       # use opencode
 """
 
 from __future__ import annotations
 
-import json
 import argparse
+import json
+import logging
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
-from pathlib import Path
-import re
-import signal
 import uuid
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Literal
 
-try:
-    import logger
-except ModuleNotFoundError:
-    repo_root = Path(__file__).resolve().parents[1]
-    sys.path.insert(0, str(repo_root))
-    import logger
+# ---------------------------------------------------------------------------
+# Logging setup - standalone, no external dependencies
+# ---------------------------------------------------------------------------
+
+LOG_FORMAT = "%(asctime)s [%(levelname)s] %(message)s"
+LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+log = logging.getLogger("refactor_batch")
 
 
-REVIEW_PASS_TOKEN = "REVIEW_PASS"
-REVIEW_FAIL_TOKEN = "REVIEW_FAIL"
-TESTS_PASS_TOKEN = "TESTS_PASS"
-TESTS_FAIL_TOKEN = "TESTS_FAIL"
+def setup_logging(report_dir: Path, verbose: bool = False) -> None:
+    """Configure dual logging: stderr + file."""
+    level = logging.DEBUG if verbose else logging.INFO
+    log.setLevel(level)
+    log.handlers.clear()
 
-DEFAULT_MONITOR_INTERVAL = 900
-DEFAULT_STUCK_TIMEOUT = 7200
-DEFAULT_PROGRESS_TAIL_LINES = 20
-DEFAULT_PROGRESS_CHECK_INTERVAL = 900
-DEFAULT_PROGRESS_STUCK_THRESHOLD = 2
-MIN_STAGNATION_ITERATIONS = 2
-DEFAULT_NO_OUTPUT_TIMEOUT = 1200
+    # Console handler (stderr so stdout stays clean for piping)
+    console = logging.StreamHandler(sys.stderr)
+    console.setLevel(level)
+    console.setFormatter(logging.Formatter(LOG_FORMAT, datefmt=LOG_DATE_FORMAT))
+    log.addHandler(console)
+
+    # File handler
+    report_dir.mkdir(parents=True, exist_ok=True)
+    fh = logging.FileHandler(report_dir / "batch_orchestrator.log", mode="a", encoding="utf-8")
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(logging.Formatter(LOG_FORMAT, datefmt=LOG_DATE_FORMAT))
+    log.addHandler(fh)
+
+
+# ---------------------------------------------------------------------------
+# Tokens for inter-model communication
+# ---------------------------------------------------------------------------
+
+REVIEW_PASS = "REVIEW_PASS"
+REVIEW_FAIL = "REVIEW_FAIL"
+TESTS_PASS = "TESTS_PASS"
+TESTS_FAIL = "TESTS_FAIL"
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+# Model short-name aliases
+MODEL_ALIASES: dict[str, str] = {
+    "devstral": "devstral-2-123b-instruct-2512",
+    "glm-4.7": "glm-4.7-awq",
+    "gemini-free": "google/gemini-2.0-flash-lite-preview-02-05:free",
+}
+
+# Default prompt file ordering (looked up in prompt_dir)
+DEFAULT_PROMPTS = [
+    "01_golden_test_fix.md",
+    "02_golden_test_suite.md",
+    "03_plot_metrics_tests.md",
+    "04_extract_simulation_engine.md",
+    "05_refactor_metrics.md",
+    "06_extract_household_components.md",
+    "07_increase_test_coverage.md",
+    "08_performance_optimization.md",
+    "09_documentation_types.md",
+    "10_comprehensive_regression.md",
+]
+
+# Approximate context limits (tokens) for known models.
+# Used for prompt-size validation before sending to the backend.
+MODEL_CONTEXT_LIMITS: dict[str, int] = {
+    "devstral-2-123b-instruct-2512": 262_144,
+    "glm-4.7-awq": 128_000,
+}
+
+# Conservative chars-per-token ratio for estimation.
+CHARS_PER_TOKEN = 4
+
+
+@dataclass
+class BatchConfig:
+    """All runtime configuration in one place."""
+
+    repo_root: Path = field(default_factory=lambda: Path.cwd())
+    prompt_dir: Path = field(default_factory=lambda: Path.cwd() / "doc" / "refactoring_prompts")
+    report_dir: Path = field(default_factory=lambda: Path.cwd() / "doc" / "refactoring_reports")
+    backend: Literal["cline", "opencode"] = "cline"
+    model_impl: str = "devstral"
+    model_review: str = "glm-4.7"
+    max_iters: int = 5
+    retry_max: int = 2
+    retry_sleep: int = 5
+    dry_run: bool = False
+    allow_git: bool = False
+    verbose: bool = False
+    prompt_index: int = 0  # 0 = all
+    # Timeouts
+    command_timeout: int = 3600
+    stuck_timeout: int = 7200
+    no_output_timeout: int = 1200
+    monitor_interval: int = 900
+    kill_stale: bool = False
+
+
+# ---------------------------------------------------------------------------
+# Model resolution
+# ---------------------------------------------------------------------------
+
+
+def resolve_model(short_name: str, backend: str = "cline") -> str:
+    """Expand a short model name to its full ID.
+
+    For opencode, known LiteLLM models get the ``litellm-local/`` prefix.
+    For cline, the raw model ID is used (configured via ``cline auth``).
+    """
+    name = short_name.strip()
+    if not name:
+        return name
+    model_id = MODEL_ALIASES.get(name.lower(), name)
+    if backend == "opencode" and model_id in (
+        "devstral-2-123b-instruct-2512",
+        "glm-4.7-awq",
+    ):
+        return f"litellm-local/{model_id}"
+    return model_id
+
+
+# ---------------------------------------------------------------------------
+# Backend abstraction
+# ---------------------------------------------------------------------------
+
+
+def _find_binary(name: str, extra_paths: list[str] | None = None) -> str:
+    """Locate an executable by name, checking PATH and common install dirs."""
+    found = shutil.which(name)
+    if found:
+        return found
+    for p in extra_paths or []:
+        if Path(p).exists():
+            return p
+    raise FileNotFoundError(
+        f"{name!r} not found in PATH" + (f" or {extra_paths}" if extra_paths else "")
+    )
+
+
+def find_cline() -> str:
+    return _find_binary("cline")
+
+
+def find_opencode() -> str:
+    return _find_binary(
+        "opencode",
+        [
+            str(Path.home() / ".opencode" / "bin" / "opencode"),
+            str(Path.home() / ".local" / "bin" / "opencode"),
+        ],
+    )
+
+
+def build_impl_command(
+    cfg: BatchConfig,
+    prompt_path: Path,
+    model: str,
+    session_id: str,
+) -> tuple[list[str], Path | None]:
+    """Build the command list and optional stdin file for the implementer.
+
+    Returns (cmd, stdin_file) where stdin_file is set for cline (pipe mode).
+    """
+    resolved = resolve_model(model, cfg.backend)
+    if cfg.backend == "cline":
+        return (
+            [find_cline(), "-m", resolved, "--yolo", "-"],
+            prompt_path,
+        )
+    # opencode
+    return (
+        [
+            find_opencode(),
+            "run",
+            "Execute the attached prompt file end-to-end.",
+            "--model",
+            resolved,
+            "--file",
+            str(prompt_path),
+            "--title",
+            session_id,
+        ],
+        None,
+    )
+
+
+def build_review_command(
+    cfg: BatchConfig,
+    prompt_path: Path,
+    model: str,
+    session_id: str,
+) -> tuple[list[str], Path | None]:
+    """Build the command for the reviewer. Same structure as implementer."""
+    resolved = resolve_model(model, cfg.backend)
+    if cfg.backend == "cline":
+        return (
+            [find_cline(), "-m", resolved, "--yolo", "-"],
+            prompt_path,
+        )
+    return (
+        [
+            find_opencode(),
+            "run",
+            "Execute the attached prompt file end-to-end.",
+            "--model",
+            resolved,
+            "--file",
+            str(prompt_path),
+            "--title",
+            session_id,
+        ],
+        None,
+    )
+
+
+def build_preflight_command(
+    cfg: BatchConfig,
+    model: str,
+) -> tuple[list[str], Path | None]:
+    """Build a minimal 'Reply with OK' command for preflight checks."""
+    resolved = resolve_model(model, cfg.backend)
+    if cfg.backend == "cline":
+        return ([find_cline(), "-m", resolved, "--yolo", "Reply with OK."], None)
+    return (
+        [
+            find_opencode(),
+            "run",
+            "Reply with OK.",
+            "--model",
+            resolved,
+        ],
+        None,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Cline configuration helper
+# ---------------------------------------------------------------------------
 
 
 def get_opencode_config() -> dict:
-    config_path = Path.home() / ".config" / "opencode" / "config.json"
-    if config_path.exists():
-        try:
-            return json.loads(config_path.read_text())
-        except Exception:
-            pass
+    """Read the opencode config to extract LiteLLM backend settings."""
+    # Check both project-local and user-global config
+    candidates = [
+        Path.cwd() / "opencode.json",
+        Path.home() / ".config" / "opencode" / "config.json",
+    ]
+    for path in candidates:
+        if path.exists():
+            try:
+                return json.loads(path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError) as exc:
+                log.debug("Failed to read %s: %s", path, exc)
     return {}
 
 
-def configure_cline_from_opencode():
+def configure_cline_from_opencode() -> None:
+    """Auto-configure cline with the same LiteLLM backend as opencode."""
     config = get_opencode_config()
-    providers = config.get("provider", {})
-    litellm = providers.get("litellm-local", {})
+    litellm = config.get("provider", {}).get("litellm-local", {})
     options = litellm.get("options", {})
     base_url = options.get("baseURL")
-    headers = options.get("headers", {})
-    auth = headers.get("Authorization", "")
-    api_key = auth.replace("Bearer ", "").strip()
+    auth_header = options.get("headers", {}).get("Authorization", "")
+    api_key = auth_header.replace("Bearer ", "").strip()
 
-    if base_url and api_key:
-        # Get models and configure them. cline auth usually sets the current one.
-        # We also want to make sure OpenRouter free models are at least mentioned or configured if possible.
-        models = list(litellm.get("models", {}).keys())
-        if not models:
-            return
+    if not (base_url and api_key):
+        log.warning("No LiteLLM config found; cline may not connect to local models")
+        return
 
-        # Configure the primary backend
-        logger.log(f"Configuring Cline with LiteLLM backend: {base_url}", level="INFO")
-        subprocess.run([
-            "cline", "auth",
-            "--provider", "openai",
-            "--baseurl", base_url,
-            "--apikey", api_key,
-            "--modelid", models[0]
-        ], capture_output=True)
+    models = list(litellm.get("models", {}).keys())
+    if not models:
+        log.warning("No models defined in opencode config")
+        return
 
-        # Note: cline CLI doesn't easily support multiple pre-configured models/backends
-        # like the UI does, but we can switch via -m if the base URL/key remains correct.
-
-    # Check if we can add free models from OpenRouter (gemini-2.0-flash-lite-preview-02-05:free etc)
-    # This requires an OpenRouter key which might not be present.
-    # If the user has one in environment, we could try to use it.
-    or_key = os.environ.get("OPENROUTER_API_KEY")
-    if or_key:
-        logger.log("Found OPENROUTER_API_KEY, configuring Cline for OpenRouter free models", level="INFO")
-        subprocess.run([
-            "cline", "auth",
-            "--provider", "openrouter",
-            "--apikey", or_key,
-            "--modelid", "google/gemini-2.0-flash-lite-preview-02-05:free"
-        ], capture_output=True)
+    log.info("Configuring cline with LiteLLM backend: %s", base_url)
+    result = subprocess.run(
+        [
+            "cline",
+            "auth",
+            "--provider",
+            "openai",
+            "--baseurl",
+            base_url,
+            "--apikey",
+            api_key,
+            "--modelid",
+            models[0],
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        log.warning("cline auth failed: %s", result.stderr.strip())
+    else:
+        log.debug("cline auth succeeded for model %s", models[0])
 
 
-READONLY_GIT_WRAPPER = """#!/bin/sh
+# ---------------------------------------------------------------------------
+# Git helpers
+# ---------------------------------------------------------------------------
+
+READONLY_GIT_WRAPPER = """\
+#!/bin/sh
 set -eu
-
 cmd="${1:-}"
-if [ -z "$cmd" ]; then
-  exec "${REAL_GIT:-git}"
-fi
-
+[ -z "$cmd" ] && exec "${REAL_GIT:-git}"
 case "$cmd" in
   status|diff|log|show|grep|ls-files|rev-parse|describe|blame|cat-file|whatchanged)
-    exec "${REAL_GIT:-git}" "$@"
-    ;;
+    exec "${REAL_GIT:-git}" "$@" ;;
   *)
-    echo "git command blocked in opencode: $cmd" 1>&2
-    exit 2
-    ;;
+    echo "git write blocked by refactor batch: $cmd" >&2; exit 2 ;;
 esac
 """
 
 
-def resolve_model(model: str, backend: str = "opencode") -> str:
-    normalized = (model or "").strip()
-    if not normalized:
-        return normalized
-    lowered = normalized.lower()
-
-    # Common mappings for specific project models
-    if lowered == "devstral":
-        model_id = "devstral-2-123b-instruct-2512"
-    elif lowered == "glm-4.7":
-        model_id = "glm-4.7-awq"
-    elif lowered == "gemini-free":
-        # Free model candidate on OpenRouter
-        return "google/gemini-2.0-flash-lite-preview-02-05:free"
-    else:
-        model_id = normalized
-
-    if backend == "opencode":
-        # opencode expects provider prefix for LiteLLM Local
-        if model_id in ["devstral-2-123b-instruct-2512", "glm-4.7-awq"]:
-            return f"litellm-local/{model_id}"
-        return model_id
-
-    # For cline, we use the raw model ID as it should be configured with the base URL
-    return model_id
+def build_env(cfg: BatchConfig) -> dict[str, str]:
+    """Build environment dict, optionally with read-only git wrapper."""
+    env = os.environ.copy()
+    if cfg.allow_git:
+        return env
+    wrapper_dir = cfg.repo_root / "tools" / ".opencode"
+    wrapper_dir.mkdir(parents=True, exist_ok=True)
+    wrapper_path = wrapper_dir / "git"
+    tmp = wrapper_dir / f"git.{os.getpid()}.tmp"
+    tmp.write_text(READONLY_GIT_WRAPPER, encoding="utf-8")
+    tmp.chmod(0o755)
+    try:
+        tmp.replace(wrapper_path)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+    env["REAL_GIT"] = env.get("REAL_GIT") or shutil.which("git") or "git"
+    env["PATH"] = f"{wrapper_dir}:{env.get('PATH', '')}"
+    return env
 
 
-def maybe_add_title(cmd: list[str], title: str | None) -> list[str]:
-    if not title:
-        return cmd
-    return [*cmd, "--title", title]
+def git_run(repo: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
+    """Run a git command and return the result."""
+    return subprocess.run(
+        ["git", "-C", str(repo), *args],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
 
 
-def tail_lines(path: Path, max_lines: int = 200) -> str:
+def git_snapshot(repo: Path, max_diff_bytes: int = 50_000) -> str:
+    """Return a human-readable summary of git status + diff.
+
+    Truncates the diff to ``max_diff_bytes`` to prevent prompt overflow.
+    Excludes tooling/report paths from the diff.
+    """
+    status = git_run(repo, ["status", "--porcelain=v1"]).stdout.strip() or "(clean)"
+
+    # Only diff source-relevant files (exclude reports, output, tooling)
+    diff_result = git_run(
+        repo,
+        [
+            "diff",
+            "--",
+            ":(exclude)doc/refactoring_reports",
+            ":(exclude)output",
+            ":(exclude)package-lock.json",
+            ":(exclude)package.json",
+            ":(exclude)node_modules",
+        ],
+    )
+    diff = diff_result.stdout.strip() or "(no diff)"
+
+    if len(diff) > max_diff_bytes:
+        # Show stat summary instead of full diff when too large
+        stat_result = git_run(repo, ["diff", "--stat"])
+        stat = stat_result.stdout.strip()
+        truncated = diff[:max_diff_bytes]
+        # Cut at last complete line
+        last_nl = truncated.rfind("\n")
+        if last_nl > 0:
+            truncated = truncated[:last_nl]
+        diff = (
+            f"(diff truncated: {len(diff_result.stdout)} bytes > {max_diff_bytes} limit)\n\n"
+            f"Diff stat:\n{stat}\n\n"
+            f"Diff (first {max_diff_bytes} bytes):\n{truncated}\n"
+        )
+
+    return f"Current git status:\n{status}\n\nCurrent git diff:\n{diff}"
+
+
+def git_current_branch(repo: Path) -> str:
+    return git_run(repo, ["branch", "--show-current"]).stdout.strip() or "HEAD"
+
+
+def git_untracked(repo: Path) -> list[Path]:
+    result = git_run(repo, ["status", "--porcelain=v1"])
+    return [
+        repo / line[3:].strip()
+        for line in result.stdout.splitlines()
+        if line.startswith("?? ") and line[3:].strip()
+    ]
+
+
+def git_status_entries(repo: Path) -> list[tuple[str, str]]:
+    result = git_run(repo, ["status", "--porcelain=v1"])
+    return [(line[:2], line[3:]) for line in result.stdout.splitlines() if line]
+
+
+def git_save_snapshot(repo: Path, report_dir: Path, prefix: str) -> None:
+    """Save git status and diff to report files."""
+    report_dir.mkdir(parents=True, exist_ok=True)
+    status = git_run(repo, ["status", "--porcelain=v1"])
+    (report_dir / f"{prefix}_status.txt").write_text(status.stdout, encoding="utf-8")
+    diff = git_run(repo, ["diff"])
+    (report_dir / f"{prefix}_diff.patch").write_text(diff.stdout, encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# File helpers
+# ---------------------------------------------------------------------------
+
+
+def tail(path: Path, max_lines: int = 200, max_bytes: int = 20_000) -> str:
+    """Return the last ``max_lines`` of a file, capped at ``max_bytes``.
+
+    If the tail exceeds ``max_bytes``, lines are dropped from the front
+    until the result fits.  Set *max_bytes* to 0 to disable the byte limit.
+    """
     if not path.exists():
         return ""
-    lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
-    return "\n".join(lines[-max_lines:])
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    selected = lines[-max_lines:]
+
+    if max_bytes and max_bytes > 0:
+        total = sum(len(l) + 1 for l in selected)  # +1 for newline
+        while selected and total > max_bytes:
+            total -= len(selected[0]) + 1
+            selected.pop(0)
+
+    return "\n".join(selected)
 
 
-def log_has_token(log_file: Path, token: str) -> bool:
-    if not log_file.exists():
-        return False
-    text = log_file.read_text(encoding="utf-8", errors="ignore")
-    return token in text
-
-
-def write_text(path: Path, content: str) -> None:
+def write_file(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
 
 
-def write_orchestrator_log(report_dir: Path, message: str) -> None:
-    report_dir.mkdir(parents=True, exist_ok=True)
-    log_path = report_dir / "batch_orchestrator.log"
-    with log_path.open("a", encoding="utf-8") as handle:
-        handle.write(f"{message}\n")
-    logger.log(message, level="INFO")
+def has_token(path: Path, token: str) -> bool:
+    if not path.exists():
+        return False
+    return token in path.read_text(encoding="utf-8", errors="replace")
 
 
-def resolve_opencode_path() -> str:
-    candidates = [
-        shutil.which("opencode"),
-        str(Path.home() / ".opencode" / "bin" / "opencode"),
-        str(Path.home() / ".local" / "bin" / "opencode"),
-    ]
-    for path in candidates:
-        if path and Path(path).exists():
-            return path
-    raise SystemExit(
-        "opencode executable not found. Ensure it is in PATH or installed in ~/.opencode/bin."
-    )
+# ---------------------------------------------------------------------------
+# Process runner with monitoring
+# ---------------------------------------------------------------------------
 
 
-def run_command_monitored(
+@dataclass
+class RunResult:
+    """Outcome of a monitored process run."""
+
+    success: bool
+    exit_code: int | None = None
+    killed_reason: str | None = None  # "timeout", "stuck", "no_output", "progress_stuck"
+    duration: float = 0.0
+    permanent_error: bool = False  # True if retrying won't help (context overflow, etc.)
+
+
+# Patterns in stderr/stdout that indicate permanent (non-retryable) errors.
+_PERMANENT_ERROR_PATTERNS = [
+    "max_tokens must be at least",
+    "input tokens >",
+    "exceeds the model's maximum context length",
+    "context_length_exceeded",
+    "maximum context length",
+    "This model's maximum context length is",
+    "max_tokens",
+]
+
+# Patterns that indicate transient (retryable) errors.
+_TRANSIENT_ERROR_PATTERNS = [
+    "upstream connect error",
+    "502 Bad Gateway",
+    "503 Service Unavailable",
+    "504 Gateway Timeout",
+    "Connection refused",
+    "Connection reset",
+    "ECONNRESET",
+    "ETIMEDOUT",
+    "rate_limit",
+    "Rate limit",
+]
+
+
+def classify_error(stderr_text: str) -> str:
+    """Classify an error as 'permanent', 'transient', or 'unknown'.
+
+    Reads the stderr output and checks for known error patterns.
+    """
+    for pat in _PERMANENT_ERROR_PATTERNS:
+        if pat in stderr_text:
+            return "permanent"
+    for pat in _TRANSIENT_ERROR_PATTERNS:
+        if pat in stderr_text:
+            return "transient"
+    return "unknown"
+
+
+def run_monitored(
     cmd: list[str],
     log_file: Path,
-    retry_max: int,
-    retry_sleep: int,
-    timeout: int = 3600,
-    monitor_interval: int = DEFAULT_MONITOR_INTERVAL,
-    stuck_timeout: int = DEFAULT_STUCK_TIMEOUT,
-    heartbeat_file: Path | None = None,
-    progress_model: str | None = None,
-    progress_label: str | None = None,
-    progress_tail_lines: int = DEFAULT_PROGRESS_TAIL_LINES,
-    progress_check_interval: int = DEFAULT_PROGRESS_CHECK_INTERVAL,
-    progress_stuck_threshold: int = DEFAULT_PROGRESS_STUCK_THRESHOLD,
-    progress_check_enabled: bool = True,
+    *,
     env: dict[str, str] | None = None,
-    no_output_timeout: int = DEFAULT_NO_OUTPUT_TIMEOUT,
     stdin_file: Path | None = None,
-) -> bool:
-    attempt = 1
-    while attempt <= retry_max:
-        start_time = time.time()
+    timeout: int = 3600,
+    stuck_timeout: int = 7200,
+    no_output_timeout: int = 1200,
+    monitor_interval: int = 900,
+    retry_max: int = 1,
+    retry_sleep: int = 5,
+) -> RunResult:
+    """Run a command with monitoring for stuck/timeout conditions.
+
+    Writes stdout to log_file, stderr to log_file.stderr.
+    Retries on failure up to retry_max times.
+    """
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    stderr_file = log_file.with_name(log_file.name + ".stderr")
+    start = time.monotonic()
+
+    for attempt in range(1, retry_max + 1):
+        start = time.monotonic()
+        last_change = start
         last_heartbeat = 0.0
-        last_log_change = start_time
-        last_log_mtime = 0.0
-        last_log_size = 0
-        last_progress_check = 0.0
-        stuck_score = 0
-        if log_file.exists():
-            try:
-                stat = log_file.stat()
-                last_log_mtime = stat.st_mtime
-                last_log_size = stat.st_size
-            except OSError:
-                last_log_mtime = 0.0
-                last_log_size = 0
+        prev_size = 0
 
-        stderr_file = log_file.with_suffix(log_file.suffix + ".stderr")
         mode = "w" if attempt == 1 else "a"
-        with log_file.open(mode, encoding="utf-8") as handle:
-            with stderr_file.open(mode, encoding="utf-8") as err_handle:
+        stdin_handle = None
+
+        try:
+            with (
+                log_file.open(mode, encoding="utf-8") as out,
+                stderr_file.open(mode, encoding="utf-8") as err,
+            ):
                 if attempt > 1:
-                    handle.write(f"\n--- ATTEMPT {attempt} ---\n")
-                    err_handle.write(f"\n--- ATTEMPT {attempt} ---\n")
+                    out.write(f"\n--- ATTEMPT {attempt}/{retry_max} ---\n")
+                    log.info("Retry %d/%d for %s", attempt, retry_max, log_file.name)
 
-                stdin_handle = None
                 if stdin_file:
-                    try:
-                        stdin_handle = stdin_file.open("r", encoding="utf-8")
-                    except OSError:
-                        pass
+                    stdin_handle = stdin_file.open("r", encoding="utf-8")
 
+                log.debug("Starting: %s", " ".join(cmd[:4]) + "...")
                 proc = subprocess.Popen(
                     cmd,
-                    stdout=handle,
-                    stderr=err_handle,
+                    stdout=out,
+                    stderr=err,
                     stdin=stdin_handle,
                     env=env,
                     start_new_session=True,
                 )
-                while True:
-                    now = time.time()
-                    if log_file.exists():
-                        try:
-                            stat = log_file.stat()
-                            mtime = stat.st_mtime
-                            size = stat.st_size
-                        except OSError:
-                            mtime = last_log_mtime
-                            size = last_log_size
-                        if mtime > last_log_mtime:
-                            last_log_mtime = mtime
-                            last_log_change = now
-                        last_log_size = size
 
+                while True:
+                    now = time.monotonic()
+                    elapsed = now - start
+
+                    # Check log file growth
+                    try:
+                        cur_size = log_file.stat().st_size
+                    except OSError:
+                        cur_size = prev_size
+                    if cur_size > prev_size:
+                        last_change = now
+                        prev_size = cur_size
+
+                    # Heartbeat
                     if monitor_interval and now - last_heartbeat >= monitor_interval:
                         last_heartbeat = now
-                        message = (
-                            f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] heartbeat: "
-                            f"pid={proc.pid} elapsed={int(now - start_time)}s "
-                            f"log={log_file.name}\n"
+                        log.info(
+                            "HEARTBEAT pid=%d elapsed=%ds log=%s size=%d",
+                            proc.pid,
+                            int(elapsed),
+                            log_file.name,
+                            cur_size,
                         )
-                        if heartbeat_file is not None:
-                            heartbeat_file.parent.mkdir(parents=True, exist_ok=True)
-                            with heartbeat_file.open("a", encoding="utf-8") as heartbeat:
-                                heartbeat.write(message)
-                        else:
-                            logger.log(message.rstrip(), level="DEBUG")
 
-                    if (
-                        progress_check_enabled
-                        and progress_model
-                        and progress_label
-                        and progress_check_interval
-                        and now - last_progress_check >= progress_check_interval
-                    ):
-                        last_progress_check = now
-                        status = live_progress_check(
-                            log_file=log_file,
-                            report_dir=heartbeat_file.parent if heartbeat_file else log_file.parent,
-                            label=progress_label,
-                            model_review=progress_model,
-                            tail_lines_count=progress_tail_lines,
+                    # Timeout check
+                    if timeout and elapsed >= timeout:
+                        _kill(proc)
+                        return RunResult(False, None, "timeout", elapsed)
+
+                    # Stuck check (log unchanged for too long)
+                    if stuck_timeout and now - last_change >= stuck_timeout:
+                        _kill(proc)
+                        return RunResult(False, None, "stuck", elapsed)
+
+                    # No-output check
+                    if no_output_timeout and elapsed >= no_output_timeout and cur_size == 0:
+                        _kill(proc)
+                        return RunResult(False, None, "no_output", elapsed)
+
+                    # Process done?
+                    rc = proc.poll()
+                    if rc is not None:
+                        duration = time.monotonic() - start
+                        if rc == 0:
+                            return RunResult(True, rc, None, duration)
+
+                        # Read stderr to classify the failure
+                        try:
+                            stderr_text = stderr_file.name  # flush first
+                            err.flush()
+                            stderr_text = Path(stderr_file.name).read_text(
+                                encoding="utf-8", errors="replace"
+                            )
+                        except OSError:
+                            stderr_text = ""
+
+                        error_class = classify_error(stderr_text)
+                        log.warning(
+                            "Process exited with code %d after %.0fs (%s error): %s",
+                            rc,
+                            duration,
+                            error_class,
+                            log_file.name,
                         )
-                        if status == "STUCK":
-                            stuck_score += 1
-                        elif status == "PROGRESS":
-                            stuck_score = 0
-                        if stuck_score >= progress_stuck_threshold:
-                            proc.terminate()
-                            try:
-                                proc.wait(timeout=10)
-                            except subprocess.TimeoutExpired:
-                                proc.kill()
-                            with log_file.open("a", encoding="utf-8") as handle_append:
-                                handle_append.write(
-                                    f"\nrun stalled by progress check (attempt {attempt}/{retry_max})\n"
-                                )
-                            break
+                        if stderr_text.strip():
+                            # Log first 500 chars of stderr for diagnostics
+                            snippet = stderr_text.strip()[:500]
+                            log.warning("stderr: %s", snippet)
 
-                    if timeout and now - start_time >= timeout:
-                        proc.terminate()
-                        try:
-                            proc.wait(timeout=10)
-                        except subprocess.TimeoutExpired:
-                            proc.kill()
-                        with log_file.open("a", encoding="utf-8") as handle_append:
-                            handle_append.write(
-                                f"\nrun timed out after {timeout}s (attempt {attempt}/{retry_max})\n"
+                        if error_class == "permanent":
+                            return RunResult(
+                                False,
+                                rc,
+                                "permanent_error",
+                                duration,
+                                permanent_error=True,
                             )
-                        break
 
-                    if stuck_timeout and now - last_log_change >= stuck_timeout:
-                        proc.terminate()
-                        try:
-                            proc.wait(timeout=10)
-                        except subprocess.TimeoutExpired:
-                            proc.kill()
-                        with log_file.open("a", encoding="utf-8") as handle_append:
-                            handle_append.write(
-                                f"\nrun stalled for {stuck_timeout}s (attempt {attempt}/{retry_max})\n"
-                            )
-                        break
-
-                    if (
-                        no_output_timeout
-                        and now - start_time >= no_output_timeout
-                        and last_log_size == 0
-                    ):
-                        proc.terminate()
-                        try:
-                            proc.wait(timeout=10)
-                        except subprocess.TimeoutExpired:
-                            proc.kill()
-                        with log_file.open("a", encoding="utf-8") as handle_append:
-                            handle_append.write(
-                                f"\nrun produced no output for {no_output_timeout}s (attempt {attempt}/{retry_max})\n"
-                            )
-                        break
-
-                    return_code = proc.poll()
-                    if return_code is not None:
-                        if return_code == 0:
-                            return True
-                        logger.log(f"Process {cmd[0]} failed with return code {return_code}", level="ERROR")
-                        break
+                        break  # retry (transient or unknown)
 
                     time.sleep(5)
+        finally:
+            if stdin_handle:
+                stdin_handle.close()
 
-        with log_file.open("a", encoding="utf-8") as handle_append:
-            handle_append.write(f"\nrun failed (attempt {attempt}/{retry_max})\n")
-        attempt += 1
-        time.sleep(retry_sleep)
-    return False
+        if attempt < retry_max:
+            time.sleep(retry_sleep)
 
-
-def live_progress_check(
-    log_file: Path,
-    report_dir: Path,
-    label: str,
-    model_review: str,
-    tail_lines_count: int = DEFAULT_PROGRESS_TAIL_LINES,
-    unchanged_threshold: int = DEFAULT_PROGRESS_STUCK_THRESHOLD,
-) -> str:
-    log_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", label).strip("_")
-    meta_path = report_dir / f"{log_name}_progress_meta.txt"
-    count_path = report_dir / f"{log_name}_progress_count.txt"
-
-    log_tail = tail_lines(log_file, tail_lines_count)
-    if not log_tail.strip():
-        return "UNKNOWN"
-
-    prev_tail = ""
-    if meta_path.exists():
-        try:
-            prev_tail = meta_path.read_text(encoding="utf-8", errors="ignore")
-        except OSError:
-            prev_tail = ""
-
-    if log_tail == prev_tail:
-        prev_count = 0
-        if count_path.exists():
-            try:
-                prev_count = int(count_path.read_text(encoding="utf-8", errors="ignore") or "0")
-            except ValueError:
-                prev_count = 0
-        prev_count += 1
-        count_path.write_text(str(prev_count), encoding="utf-8")
-        if prev_count >= unchanged_threshold:
-            prompt = (
-                "Analyze the latest refactor log tail. "
-                "If it shows no progress or repeated failures, reply STUCK. "
-                "If it shows progress, reply PROGRESS. "
-                "Only output one of these tokens.\n\nLog tail:\n"
-            )
-            cmd = [
-                resolve_opencode_path(),
-                "run",
-                prompt + log_tail,
-                "--model",
-                resolve_model(model_review),
-            ]
-            log_path = report_dir / f"{log_name}_progress_check.log"
-            ok = run_command(cmd, log_path, retry_max=1, retry_sleep=2)
-            if not ok:
-                return "UNKNOWN"
-            response = log_path.read_text(encoding="utf-8", errors="ignore")
-            for line in reversed(response.splitlines()):
-                if line.strip().startswith("STUCK"):
-                    return "STUCK"
-                if line.strip().startswith("PROGRESS"):
-                    return "PROGRESS"
-            return "UNKNOWN"
-    else:
-        meta_path.write_text(log_tail, encoding="utf-8")
-        count_path.write_text("0", encoding="utf-8")
-        return "PROGRESS"
-
-    return "UNKNOWN"
+    return RunResult(False, None, "retries_exhausted", time.monotonic() - start)
 
 
-def run_command(
+def run_simple(
     cmd: list[str],
     log_file: Path,
-    retry_max: int,
-    retry_sleep: int,
-    timeout: int = 3600,
+    *,
     env: dict[str, str] | None = None,
+    timeout: int = 300,
 ) -> bool:
-    attempt = 1
-    while attempt <= retry_max:
-        with log_file.open("w", encoding="utf-8") as handle:
-            try:
-                proc = subprocess.run(
-                    cmd, stdout=handle, stderr=subprocess.STDOUT, timeout=timeout, env=env
-                )
-                if proc.returncode == 0:
-                    return True
-            except subprocess.TimeoutExpired:
-                with log_file.open("a", encoding="utf-8") as handle:
-                    handle.write(
-                        f"\nrun timed out after {timeout}s (attempt {attempt}/{retry_max})\n"
-                    )
-
-        with log_file.open("a", encoding="utf-8") as handle:
-            handle.write(f"\nrun failed (attempt {attempt}/{retry_max})\n")
-        attempt += 1
-        time.sleep(retry_sleep)
-    return False
-
-
-def build_opencode_env(repo_root: Path, allow_git: bool) -> dict[str, str]:
-    env = os.environ.copy()
-    if not allow_git:
-        wrapper_dir = repo_root / "tools" / ".opencode"
-        wrapper_dir.mkdir(parents=True, exist_ok=True)
-        wrapper_path = wrapper_dir / "git"
-        tmp_path = wrapper_dir / f"git.{os.getpid()}.tmp"
-        tmp_path.write_text(READONLY_GIT_WRAPPER, encoding="utf-8")
-        tmp_path.chmod(0o755)
-        try:
-            tmp_path.replace(wrapper_path)
-        except OSError:
-            tmp_path.unlink(missing_ok=True)
-        env["REAL_GIT"] = env.get("REAL_GIT", "git")
-        env["PATH"] = f"{wrapper_dir}:{env.get('PATH', '')}"
-    return env
-
-
-def git_capture(repo_root: Path, args: list[str], out_path: Path) -> None:
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    result = subprocess.run(["git", "-C", str(repo_root), *args], capture_output=True, text=True)
-    out_path.write_text(result.stdout, encoding="utf-8")
-
-
-def get_git_snapshot(repo_root: Path) -> str:
-    status = subprocess.run(
-        ["git", "-C", str(repo_root), "status", "--porcelain=v1"],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    diff = subprocess.run(
-        ["git", "-C", str(repo_root), "diff"],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    status_text = status.stdout.strip()
-    diff_text = diff.stdout.strip()
-    if not status_text:
-        status_text = "(clean)"
-    if not diff_text:
-        diff_text = "(no diff)"
-    return f"Current git status:\n{status_text}\n\nCurrent git diff:\n{diff_text}"
-
-
-def git_status_untracked(repo_root: Path) -> list[Path]:
-    result = subprocess.run(
-        ["git", "-C", str(repo_root), "status", "--porcelain=v1"],
-        capture_output=True,
-        text=True,
-    )
-    paths: list[Path] = []
-    for line in result.stdout.splitlines():
-        if line.startswith("?? "):
-            rel = line[3:].strip()
-            if rel:
-                paths.append(repo_root / rel)
-    return paths
-
-
-def is_allowed_untracked(repo_root: Path, path: Path) -> bool:
-    rel = path.relative_to(repo_root)
-    if (
-        rel.parts
-        and rel.parts[0] == "doc"
-        and len(rel.parts) > 1
-        and rel.parts[1] == "refactoring_reports"
-    ):
-        return True
-    if rel.parts and rel.parts[0] == "output":
-        return True
-    if path.parent == repo_root and path.name.startswith("debug_") and path.suffix == ".py":
-        return True
-    return False
-
-
-def classify_illegal_file(
-    file_path: Path,
-    model_review: str,
-    log_file: Path,
-    retry_max: int,
-    retry_sleep: int,
-    opencode_env: dict[str, str] | None,
-) -> str:
-    """Ask the reviewer model to classify an illegal file.
-
-    Returns: "KEEP", "DELETE", or "MOVE:<path>".
-    """
-    prompt = (
-        "Classify this file according to the project hierarchy. "
-        "If it should remain, reply KEEP. "
-        "If it should be removed, reply DELETE. "
-        "If it should be moved, reply MOVE:<relative/path>. "
-        "Only output one of these tokens."
-    )
-    cmd = [
-        "opencode",
-        "run",
-        prompt,
-        "--model",
-        resolve_model(model_review),
-        "--file",
-        str(file_path),
-    ]
-    ok = run_command(cmd, log_file, retry_max, retry_sleep, env=opencode_env)
-    if not ok:
-        return "DELETE"
-    text = log_file.read_text(encoding="utf-8", errors="ignore")
-    for line in reversed(text.splitlines()):
-        if line.startswith("KEEP"):
-            return "KEEP"
-        if line.startswith("DELETE"):
-            return "DELETE"
-        if line.startswith("MOVE:"):
-            return line.strip()
-    return "DELETE"
-
-
-def cleanup_illegal_files(
-    repo_root: Path,
-    report_dir: Path,
-    model_review: str,
-    retry_max: int,
-    retry_sleep: int,
-    llm_classify: bool,
-    opencode_env: dict[str, str] | None,
-) -> None:
-    illegal = []
-    for path in git_status_untracked(repo_root):
-        if not is_allowed_untracked(repo_root, path):
-            illegal.append(path)
-
-    if not illegal:
-        return
-
-    log_file = report_dir / "illegal_files.log"
-    with log_file.open("a", encoding="utf-8") as handle:
-        handle.write(f"\nIllegal files detected ({time.strftime('%Y-%m-%d %H:%M:%S')}):\n")
-        for path in illegal:
-            handle.write(f"- {path}\n")
-
-    for path in illegal:
-        action = "DELETE"
-        if llm_classify and path.exists() and path.is_file():
-            classify_log = report_dir / f"illegal_classify_{path.name}.log"
-            action = classify_illegal_file(
-                path, model_review, classify_log, retry_max, retry_sleep, opencode_env
+    """Run a command without monitoring. For quick tasks like preflight."""
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with log_file.open("w", encoding="utf-8") as out:
+            proc = subprocess.run(
+                cmd,
+                stdout=out,
+                stderr=subprocess.STDOUT,
+                timeout=timeout,
+                env=env,
+                check=False,
             )
-
-        if action.startswith("MOVE:"):
-            target = action.split(":", 1)[1].strip()
-            if target:
-                dest = repo_root / target
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                try:
-                    path.rename(dest)
-                except OSError:
-                    try:
-                        path.unlink()
-                    except OSError:
-                        pass
-            else:
-                try:
-                    path.unlink()
-                except OSError:
-                    pass
-        elif action == "KEEP":
-            continue
-        else:
-            try:
-                if path.is_dir():
-                    for sub in path.glob("**/*"):
-                        if sub.is_file():
-                            try:
-                                sub.unlink()
-                            except OSError:
-                                pass
-                    path.rmdir()
-                else:
-                    path.unlink()
-            except OSError:
-                pass
+            return proc.returncode == 0
+    except subprocess.TimeoutExpired:
+        log.warning("Command timed out after %ds: %s", timeout, cmd[0])
+        return False
+    except OSError as exc:
+        log.error("Failed to run %s: %s", cmd[0], exc)
+        return False
 
 
-def build_prompt(base_prompt: Path, extra: str | None, state: str | None = None) -> str:
-    base_text = base_prompt.read_text(encoding="utf-8")
-    if not extra and not state:
-        return base_text
-    sections: list[str] = []
-    if extra:
-        sections.append(extra)
-    if state:
-        sections.append(state)
-    return f"{base_text}\n\n---\n\n" + "\n\n---\n\n".join(sections) + "\n"
+def _kill(proc: subprocess.Popen) -> None:
+    """Terminate then kill a process."""
+    try:
+        proc.terminate()
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=5)
+    except OSError:
+        pass
 
 
-def list_opencode_processes() -> list[tuple[int, str]]:
-    result = subprocess.run(
-        ["ps", "-o", "pid=,args=", "-C", "opencode"],
-        capture_output=True,
-        text=True,
-    )
-    processes: list[tuple[int, str]] = []
-    for line in result.stdout.splitlines():
-        parts = line.strip().split(maxsplit=1)
-        if not parts:
-            continue
-        try:
-            pid = int(parts[0])
-        except ValueError:
-            continue
-        cmd = parts[1] if len(parts) > 1 else ""
-        processes.append((pid, cmd))
-    return processes
+# ---------------------------------------------------------------------------
+# Prompt building
+# ---------------------------------------------------------------------------
 
 
-def find_stale_opencode_pids(report_dir: Path) -> list[int]:
-    candidates = list_opencode_processes()
-    report_marker = str(report_dir)
-    pids: list[int] = []
-    for pid, cmd in candidates:
-        if "--file" in cmd and report_marker in cmd:
-            pids.append(pid)
-    return pids
+def build_impl_prompt(
+    base_prompt: Path,
+    iteration: int,
+    git_state: str,
+    prev_review_feedback: str | None = None,
+) -> str:
+    """Build the composite prompt for the implementer."""
+    parts = [base_prompt.read_text(encoding="utf-8")]
 
-
-def terminate_stale_opencode(report_dir: Path, kill: bool) -> None:
-    pids = find_stale_opencode_pids(report_dir)
-    if not pids:
-        return
-    write_orchestrator_log(
-        report_dir,
-        f"Found stale opencode runs for report_dir: {', '.join(map(str, pids))}",
-    )
-    if not kill:
-        return
-    for pid in pids:
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except OSError:
-            continue
-
-
-def preflight_backend(repo_root: Path, model: str, backend: str, report_dir: Path) -> None:
-    safe_model = resolve_model(model, backend).replace("/", "_")
-    log_file = report_dir / f"{backend}_preflight_{safe_model}.log"
-    title = f"preflight-{uuid.uuid4().hex}"
-
-    if backend == "opencode":
-        cmd = [
-            resolve_opencode_path(),
-            "run",
-            "Reply with OK.",
-            "--model",
-            resolve_model(model, backend),
-        ]
-        cmd = maybe_add_title(cmd, title)
-    else:
-        # cline backend
-        cmd = [
-            shutil.which("cline") or "cline",
-            "Reply with OK.",
-            "-m",
-            resolve_model(model, backend),
-            "--yolo"
-        ]
-
-    ok = run_command(
-        cmd,
-        log_file,
-        retry_max=1,
-        retry_sleep=0,
-        timeout=180,
-        env=build_opencode_env(repo_root, allow_git=True),
-    )
-    if not ok:
-        stderr_file = log_file.with_suffix(log_file.suffix + ".stderr")
-        error_tail = ""
-        if stderr_file.exists():
-            error_tail = tail_lines(stderr_file, 40)
-        raise RuntimeError(
-            f"{backend} preflight failed. "
-            f"Check logs under ~/.local/share/{backend}/log or {log_file}"
-            + (f"\n{error_tail}" if error_tail else "")
+    if iteration > 1 and prev_review_feedback:
+        parts.append(
+            "---\n\n"
+            "## Reviewer Feedback from Previous Iteration\n\n"
+            "Apply the following feedback and re-run verification:\n\n"
+            f"{prev_review_feedback}\n\n"
+            f"End your response with {TESTS_PASS} if all verification commands succeeded, "
+            f"or {TESTS_FAIL} if any failed."
         )
 
-
-def preflight_models(repo_root: Path, model_impl: str, model_review: str, backend: str, report_dir: Path) -> None:
-    preflight_backend(repo_root, model_impl, backend, report_dir)
-    if model_review != model_impl:
-        preflight_backend(repo_root, model_review, backend, report_dir)
+    parts.append(f"---\n\n## Current Repository State\n\n{git_state}")
+    return "\n\n".join(parts) + "\n"
 
 
-def prompt_has_pass(report_dir: Path, base_name: str) -> bool:
-    pattern = f"{base_name}_*_iter*_review.log"
-    logs = sorted(report_dir.glob(pattern))
-    if not logs:
+def build_review_prompt(
+    base_prompt: Path,
+    impl_log_tail: str,
+    git_state: str,
+) -> str:
+    """Build the composite prompt for the reviewer."""
+    parts = [base_prompt.read_text(encoding="utf-8")]
+    parts.append(
+        "---\n\n"
+        "## Reviewer Instructions\n\n"
+        "Review the implementation against the prompt requirements.\n\n"
+        f"- If all requirements are met and tests pass, end with: {REVIEW_PASS}\n"
+        f"- If issues remain, end with: {REVIEW_FAIL}\n"
+        "- When failing, provide concrete fixes for the implementer.\n"
+        f"- If the implementer reported {TESTS_FAIL}, you must end with {REVIEW_FAIL}.\n"
+    )
+    if impl_log_tail:
+        parts.append(f"## Implementer Log (tail)\n\n```\n{impl_log_tail}\n```")
+    parts.append(f"## Current Repository State\n\n{git_state}")
+    return "\n\n".join(parts) + "\n"
+
+
+# ---------------------------------------------------------------------------
+# Prompt size validation
+# ---------------------------------------------------------------------------
+
+
+def estimate_tokens(text: str) -> int:
+    """Rough token estimate: 1 token ~ 4 characters."""
+    return len(text) // CHARS_PER_TOKEN
+
+
+def check_prompt_size(prompt_text: str, model: str, label: str) -> str:
+    """Validate prompt size against the model context limit.
+
+    If the prompt is too large, the git diff section is truncated to fit.
+    Returns the (possibly truncated) prompt text.
+    Logs a warning when truncation happens.
+    """
+    model_id = MODEL_ALIASES.get(model.lower(), model)
+    limit = MODEL_CONTEXT_LIMITS.get(model_id)
+    if not limit:
+        return prompt_text
+
+    # Reserve 10% of context for output tokens + overhead
+    max_input_tokens = int(limit * 0.90)
+    est = estimate_tokens(prompt_text)
+
+    if est <= max_input_tokens:
+        log.debug(
+            "Prompt size OK for %s: ~%d tokens (limit %d) [%s]",
+            model,
+            est,
+            max_input_tokens,
+            label,
+        )
+        return prompt_text
+
+    overshoot = est - max_input_tokens
+    overshoot_chars = overshoot * CHARS_PER_TOKEN
+    log.warning(
+        "Prompt too large for %s: ~%d tokens > %d limit (overshoot ~%d chars) [%s]",
+        model,
+        est,
+        max_input_tokens,
+        overshoot_chars,
+        label,
+    )
+
+    # Try to shrink the "Current git diff" section
+    diff_marker = "Current git diff:"
+    idx = prompt_text.rfind(diff_marker)
+    if idx < 0:
+        log.warning("Cannot find diff section to truncate for %s [%s]", model, label)
+        return prompt_text
+
+    prefix = prompt_text[: idx + len(diff_marker)]
+    diff_body = prompt_text[idx + len(diff_marker) :]
+
+    # Cut diff body to fit
+    allowed = len(diff_body) - overshoot_chars - 200  # 200 chars safety margin
+    if allowed < 200:
+        truncated_diff = "\n(diff removed: prompt too large for model context)\n"
+    else:
+        truncated_diff = diff_body[:allowed]
+        last_nl = truncated_diff.rfind("\n")
+        if last_nl > 0:
+            truncated_diff = truncated_diff[:last_nl]
+        truncated_diff += f"\n\n(diff truncated to fit {model} context limit)\n"
+
+    result = prefix + truncated_diff
+    new_est = estimate_tokens(result)
+    log.info(
+        "Truncated prompt: ~%d -> ~%d tokens for %s [%s]",
+        est,
+        new_est,
+        model,
+        label,
+    )
+    return result
+
+
+ALLOWED_UNTRACKED_PREFIXES = ("doc/refactoring_reports/", "output/")
+
+
+def is_allowed_untracked(repo: Path, path: Path) -> bool:
+    try:
+        rel = str(path.relative_to(repo))
+    except ValueError:
         return False
-    for log_path in reversed(logs):
-        try:
-            text = log_path.read_text(encoding="utf-8", errors="ignore")
-        except OSError:
-            continue
-        if REVIEW_PASS_TOKEN in text:
-            return True
+    if any(rel.startswith(p) for p in ALLOWED_UNTRACKED_PREFIXES):
+        return True
+    if path.parent == repo and path.name.startswith("debug_") and path.suffix == ".py":
+        return True
     return False
 
 
-def load_completed_prompts(report_dir: Path) -> set[str]:
+def cleanup_illegal_files(repo: Path, report_dir: Path) -> int:
+    """Remove untracked files that don't belong. Returns count removed."""
+    illegal = [p for p in git_untracked(repo) if not is_allowed_untracked(repo, p)]
+    if not illegal:
+        return 0
+
+    log.info("Found %d illegal untracked files", len(illegal))
+    log_path = report_dir / "illegal_files.log"
+    with log_path.open("a", encoding="utf-8") as f:
+        f.write(f"\n--- {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n")
+        for p in illegal:
+            f.write(f"  DELETE: {p}\n")
+
+    removed = 0
+    for p in illegal:
+        try:
+            if p.is_dir():
+                shutil.rmtree(p, ignore_errors=True)
+            else:
+                p.unlink()
+            removed += 1
+        except OSError as exc:
+            log.warning("Could not remove %s: %s", p, exc)
+    return removed
+
+
+def cleanup_temp_artifacts(repo: Path) -> None:
+    """Remove debug scripts and output artifacts."""
+    for f in repo.glob("debug_*.py"):
+        try:
+            f.unlink()
+        except OSError:
+            pass
+    output = repo / "output"
+    if output.exists():
+        shutil.rmtree(output, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Completed prompts tracking
+# ---------------------------------------------------------------------------
+
+
+def load_completed(report_dir: Path) -> set[str]:
     marker = report_dir / "completed_prompts.txt"
     if not marker.exists():
         return set()
     try:
-        lines = marker.read_text(encoding="utf-8", errors="ignore").splitlines()
+        return {
+            line.strip() for line in marker.read_text(encoding="utf-8").splitlines() if line.strip()
+        }
     except OSError:
         return set()
-    completed = set()
-    for line in lines:
-        name = line.strip()
-        if name:
-            completed.add(name)
-    return completed
 
 
-def mark_prompt_completed(report_dir: Path, prompt_name: str) -> None:
+def mark_completed(report_dir: Path, name: str) -> None:
     report_dir.mkdir(parents=True, exist_ok=True)
     marker = report_dir / "completed_prompts.txt"
-    completed = load_completed_prompts(report_dir)
-    if prompt_name in completed:
-        return
-    with marker.open("a", encoding="utf-8") as handle:
-        handle.write(f"{prompt_name}\n")
+    completed = load_completed(report_dir)
+    if name not in completed:
+        with marker.open("a", encoding="utf-8") as f:
+            f.write(f"{name}\n")
 
 
-def git_status_entries(repo_root: Path) -> list[tuple[str, str]]:
-    result = subprocess.run(
-        ["git", "-C", str(repo_root), "status", "--porcelain=v1"],
-        capture_output=True,
-        text=True,
-    )
-    entries: list[tuple[str, str]] = []
-    for line in result.stdout.splitlines():
-        if not line:
-            continue
-        status = line[:2]
-        path = line[3:]
-        entries.append((status, path))
-    return entries
+# ---------------------------------------------------------------------------
+# Stale process management
+# ---------------------------------------------------------------------------
 
 
-def commit_prompt_changes(
-    repo_root: Path,
-    prompt_name: str,
-    dry_run: bool,
-    report_dir: Path,
-) -> None:
-    if dry_run:
-        return
-    entries = git_status_entries(repo_root)
-    if not entries:
-        raise RuntimeError(f"No changes to commit for {prompt_name}")
-
-    tracked: list[str] = []
-    for status, path in entries:
-        if path.startswith("doc/refactoring_reports"):
-            continue
-        if path.startswith("output/"):
-            continue
-        if status == "??":
-            tracked.append(path)
-        else:
-            tracked.append(path)
-
-    if not tracked:
-        raise RuntimeError(f"No eligible changes to commit for {prompt_name}")
-
-    subprocess.run(["git", "-C", str(repo_root), "add", "--", *tracked], check=False)
-    message = f"refactor({prompt_name}): apply prompt changes"
-    result = subprocess.run(
-        [
-            "git",
-            "-C",
-            str(repo_root),
-            "commit",
-            "-m",
-            message,
-        ]
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"Git commit failed for {prompt_name}")
-
-
-def check_stagnation(
-    report_dir: Path,
-    base_name: str,
-    run_stamp: str,
-    current_iter: int,
-    model_review: str,
-    tail_max_lines: int = DEFAULT_PROGRESS_TAIL_LINES * 2,
-    opencode_env: dict[str, str] | None = None,
-) -> bool:
-    """Analyze logs to detect if the refactoring is stuck in a loop.
-
-    Returns True if stagnation is detected.
-    """
-    if current_iter < MIN_STAGNATION_ITERATIONS:
-        return False
-
-    # Collect the last two iterations of logs
-    logs = []
-    for i in range(current_iter - 1, current_iter + 1):
-        impl_log = report_dir / f"{base_name}_{run_stamp}_iter{i}_impl.log"
-        review_log = report_dir / f"{base_name}_{run_stamp}_iter{i}_review.log"
-        if impl_log.exists():
-            logs.append(
-                f"--- Iteration {i} Implementer ---\n{tail_lines(impl_log, tail_max_lines)}"
-            )
-        if review_log.exists():
-            logs.append(f"--- Iteration {i} Reviewer ---\n{tail_lines(review_log, tail_max_lines)}")
-
-    log_context = "\n".join(logs)
-    prompt = (
-        "Analyze these refactoring logs. Are the models repeating the same errors, "
-        "reverting changes made in previous iterations, or showing no logical progress? "
-        "If they are stuck in a loop or deadlock, reply STAGNATED. "
-        "If they are still making different attempts or moving forward, reply PROGRESS. "
-        "Only output one of these tokens."
-    )
-
-    log_file = report_dir / f"{base_name}_{run_stamp}_stagnation_check.log"
-    cmd = [
-        resolve_opencode_path(),
-        "run",
-        prompt,
-        "--model",
-        resolve_model(model_review),
-    ]
-
-    # We pass the log context via stdin if opencode supports it, or we just rely on the LLM's
-    # memory if we use a session. For now, let's append the context to the prompt.
-    full_prompt = f"{prompt}\n\nLog context:\n{log_context}"
-    cmd[2] = full_prompt
-
-    # Short timeout for stagnation check
-    ok = run_command(cmd, log_file, retry_max=1, retry_sleep=2, timeout=300, env=opencode_env)
-    if not ok:
-        return False  # Assume progress if check fails
-
-    text = log_file.read_text(encoding="utf-8", errors="ignore")
-    return "STAGNATED" in text
-
-
-def run_prompt(
-    repo_root: Path,
-    prompt: Path,
-    report_dir: Path,
-    model_impl: str,
-    model_review: str,
-    max_iters: int,
-    retry_max: int,
-    retry_sleep: int,
-    dry_run: bool,
-    llm_classify: bool,
-    monitor_interval: int,
-    stuck_timeout: int,
-    progress_tail_lines: int,
-    progress_check_interval: int,
-    progress_stuck_threshold: int,
-    progress_check_enabled: bool,
-    no_output_timeout: int,
-    opencode_env: dict[str, str] | None,
-    backend: str,
-    impl_title: str | None,
-    review_title: str | None,
-) -> None:
-    base_name = prompt.stem
-    run_stamp = time.strftime("%Y%m%d_%H%M%S")
-    success = False
-
-    git_capture(
-        repo_root, ["status", "--porcelain=v1"], report_dir / f"{base_name}_{run_stamp}_status.txt"
-    )
-    git_capture(repo_root, ["diff"], report_dir / f"{base_name}_{run_stamp}_diff_before.patch")
-
+def kill_stale_processes(name: str = "opencode") -> int:
+    """Find and kill orphaned processes. Returns count killed."""
     try:
-        for iteration in range(1, max_iters + 1):
-            iter_stamp = f"{run_stamp}_iter{iteration}"
-            # ... existing iteration logic ...
-            impl_prompt_path = report_dir / f"{base_name}_{iter_stamp}_impl_prompt.md"
-            review_prompt_path = report_dir / f"{base_name}_{iter_stamp}_review_prompt.md"
-            impl_log = report_dir / f"{base_name}_{iter_stamp}_impl.log"
-            review_log = report_dir / f"{base_name}_{iter_stamp}_review.log"
+        result = subprocess.run(
+            ["pgrep", "-f", name],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return 0
+    killed = 0
+    for line in result.stdout.splitlines():
+        try:
+            pid = int(line.strip())
+            if pid == os.getpid():
+                continue
+            os.kill(pid, signal.SIGTERM)
+            killed += 1
+            log.info("Terminated stale %s process: %d", name, pid)
+        except (ValueError, OSError):
+            continue
+    return killed
 
-            impl_extra = None
+
+# ---------------------------------------------------------------------------
+# Preflight checks
+# ---------------------------------------------------------------------------
+
+
+def preflight(cfg: BatchConfig, env: dict[str, str]) -> None:
+    """Verify that both models respond before starting the batch."""
+    for label, model in [("implementer", cfg.model_impl), ("reviewer", cfg.model_review)]:
+        safe = resolve_model(model, cfg.backend).replace("/", "_")
+        log_file = cfg.report_dir / f"{cfg.backend}_preflight_{safe}.log"
+        cmd, stdin_file = build_preflight_command(cfg, model)
+
+        log.info("Preflight check: %s model=%s backend=%s", label, model, cfg.backend)
+        ok = run_simple(cmd, log_file, env=env, timeout=180)
+        if not ok:
+            err_text = tail(log_file, 20)
+            raise RuntimeError(
+                f"Preflight failed for {label} ({model}) via {cfg.backend}.\n"
+                f"Log: {log_file}\n{err_text}"
+            )
+        log.info("Preflight OK: %s", label)
+
+
+# ---------------------------------------------------------------------------
+# Single prompt execution
+# ---------------------------------------------------------------------------
+
+
+def run_single_prompt(
+    cfg: BatchConfig,
+    prompt: Path,
+    env: dict[str, str],
+) -> bool:
+    """Execute one prompt through the implement/review cycle.
+
+    Returns True on success (REVIEW_PASS received).
+    Raises RuntimeError on unrecoverable failure.
+    """
+    name = prompt.stem
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    session = uuid.uuid4().hex[:12]
+
+    # Snapshot before
+    git_save_snapshot(cfg.repo_root, cfg.report_dir, f"{name}_{stamp}_before")
+
+    success = False
+    try:
+        for iteration in range(1, cfg.max_iters + 1):
+            tag = f"{name}_{stamp}_iter{iteration}"
+            log.info(
+                "=== %s iteration %d/%d ===",
+                name,
+                iteration,
+                cfg.max_iters,
+            )
+
+            # --- Implementer phase ---
+            prev_feedback = None
             if iteration > 1:
-                prev_log = report_dir / f"{base_name}_{run_stamp}_iter{iteration - 1}_review.log"
-                prev_tail = tail_lines(prev_log)
-                if prev_tail:
-                    impl_extra = (
-                        "Implementer instructions:\n"
-                        "- Apply reviewer feedback from the last iteration.\n"
-                        "- Re-run required verification commands.\n"
-                        "- Summarize changes and remaining risks.\n"
-                        f"- End your response with {TESTS_PASS_TOKEN} if all required verification commands succeeded.\n"
-                        f"- End your response with {TESTS_FAIL_TOKEN} if any required verification command failed.\n\n"
-                        "Reviewer feedback (tail):\n"
-                        f"{prev_tail}\n"
-                    )
+                prev_review = cfg.report_dir / f"{name}_{stamp}_iter{iteration - 1}_review.log"
+                prev_feedback = tail(prev_review)
 
-            state_context = get_git_snapshot(repo_root)
+            state = git_snapshot(cfg.repo_root)
             if iteration > 1:
-                state_context = f"Current state for iteration {iteration}:\n{state_context}"
-            write_text(impl_prompt_path, build_prompt(prompt, impl_extra, state_context))
+                state = f"State for iteration {iteration}:\n{state}"
 
-            if dry_run:
-                write_text(impl_log, "DRY_RUN: implementer skipped\n")
+            impl_prompt_text = build_impl_prompt(prompt, iteration, state, prev_feedback)
+            impl_prompt_text = check_prompt_size(
+                impl_prompt_text, cfg.model_impl, f"{name} impl iter{iteration}"
+            )
+            impl_prompt_file = cfg.report_dir / f"{tag}_impl_prompt.md"
+            write_file(impl_prompt_file, impl_prompt_text)
+
+            impl_log = cfg.report_dir / f"{tag}_impl.log"
+
+            if cfg.dry_run:
+                write_file(impl_log, f"DRY_RUN: implementer skipped (iter {iteration})\n")
             else:
-                if backend == "opencode":
-                    cmd_impl = [
-                        resolve_opencode_path(),
-                        "run",
-                        "Execute the attached prompt file end-to-end.",
-                        "--model",
-                        resolve_model(model_impl, backend),
-                        "--file",
-                        str(impl_prompt_path),
-                    ]
-                    cmd_impl = maybe_add_title(cmd_impl, impl_title)
-                    stdin_file = None
-                else:
-                    cmd_impl = [
-                        shutil.which("cline") or "cline",
-                        "-m",
-                        resolve_model(model_impl, backend),
-                        "--yolo",
-                        "-"
-                    ]
-                    stdin_file = impl_prompt_path
-
-                ok = run_command_monitored(
-                    cmd_impl,
-                    impl_log,
-                    retry_max,
-                    retry_sleep,
-                    monitor_interval=monitor_interval,
-                    stuck_timeout=stuck_timeout,
-                    heartbeat_file=report_dir / "batch_run_console.log",
-                    progress_model=model_review,
-                    progress_label=f"{base_name}_iter{iteration}_impl",
-                    progress_tail_lines=progress_tail_lines,
-                    progress_check_interval=progress_check_interval,
-                    progress_stuck_threshold=progress_stuck_threshold,
-                    progress_check_enabled=progress_check_enabled,
-                    env=opencode_env,
-                    no_output_timeout=no_output_timeout,
-                    stdin_file=stdin_file,
+                cmd, stdin = build_impl_command(
+                    cfg,
+                    impl_prompt_file,
+                    cfg.model_impl,
+                    f"{name}-impl-{session}",
                 )
-                if not ok:
-                    write_orchestrator_log(
-                        report_dir,
-                        f"Implementer run failed for {base_name}; skipping to reviewer.",
+                result = run_monitored(
+                    cmd,
+                    impl_log,
+                    env=env,
+                    stdin_file=stdin,
+                    timeout=cfg.command_timeout,
+                    stuck_timeout=cfg.stuck_timeout,
+                    no_output_timeout=cfg.no_output_timeout,
+                    monitor_interval=cfg.monitor_interval,
+                    retry_max=cfg.retry_max,
+                    retry_sleep=cfg.retry_sleep,
+                )
+                if not result.success:
+                    if result.permanent_error:
+                        raise RuntimeError(
+                            f"Implementer hit permanent error for {name} iter {iteration}: "
+                            f"{result.killed_reason} (prompt too large for model context?)"
+                        )
+                    log.warning(
+                        "Implementer failed (%s, %.0fs); proceeding to reviewer",
+                        result.killed_reason or f"exit={result.exit_code}",
+                        result.duration,
                     )
                     with impl_log.open("a", encoding="utf-8") as f:
-                        f.write(f"\n{TESTS_FAIL_TOKEN}\n")
+                        f.write(f"\n{TESTS_FAIL}\n")
 
-            if not dry_run:
-                impl_text = impl_log.read_text(encoding="utf-8", errors="ignore")
-                # We no longer raise RuntimeError here for test failures.
-                # Instead, we let the Reviewer analyze the log and decide to fail the iteration,
-                # which allows the Implementer to fix the issue in the next iteration.
-                if TESTS_FAIL_TOKEN in impl_text:
-                    logger.log(
-                        f"Note: Implementer reported explicit {TESTS_FAIL_TOKEN} for {base_name}",
-                        level="WARNING",
-                    )
-                elif TESTS_PASS_TOKEN not in impl_text:
-                    success_regex = re.compile(r"\b\d+\s+passed\b", re.IGNORECASE)
-                    if not success_regex.search(impl_text):
-                        logger.log(
-                            f"Note: Implementer logs do not indicate test success for {base_name}",
-                            level="WARNING",
-                        )
+                # Log test status
+                if not cfg.dry_run:
+                    impl_text = impl_log.read_text(encoding="utf-8", errors="replace")
+                    if TESTS_FAIL in impl_text:
+                        log.warning("Implementer reported %s", TESTS_FAIL)
+                    elif TESTS_PASS not in impl_text:
+                        log.warning("Implementer did not report test status")
 
-            review_extra = (
-                "Reviewer instructions:\n"
-                "- Review the diff and changes against the prompt requirements.\n"
-                f"- If all requirements are met and tests pass, end your response with: {REVIEW_PASS_TOKEN}\n"
-                f"- If issues remain, end your response with: {REVIEW_FAIL_TOKEN}\n"
-                "- When failing, provide concrete fixes or a patch description for the implementer.\n"
-                "- If implementer reported TESTS_FAIL or did not report TESTS_PASS, you must end with REVIEW_FAIL.\n\n"
+            # --- Reviewer phase ---
+            impl_tail = tail(impl_log)
+            review_prompt_text = build_review_prompt(prompt, impl_tail, state)
+            review_prompt_text = check_prompt_size(
+                review_prompt_text, cfg.model_review, f"{name} review iter{iteration}"
             )
-            impl_tail = tail_lines(impl_log)
-            if impl_tail:
-                review_extra += f"Implementer log (tail):\n{impl_tail}\n"
+            review_prompt_file = cfg.report_dir / f"{tag}_review_prompt.md"
+            write_file(review_prompt_file, review_prompt_text)
 
-            write_text(review_prompt_path, build_prompt(prompt, review_extra, state_context))
+            review_log = cfg.report_dir / f"{tag}_review.log"
 
-            if dry_run:
-                write_text(review_log, "DRY_RUN: reviewer skipped\n")
-            else:
-                if backend == "opencode":
-                    cmd_review = [
-                        resolve_opencode_path(),
-                        "run",
-                        "Execute the attached prompt file end-to-end.",
-                        "--model",
-                        resolve_model(model_review, backend),
-                        "--file",
-                        str(review_prompt_path),
-                    ]
-                    cmd_review = maybe_add_title(cmd_review, review_title)
-                    stdin_file = None
-                else:
-                    cmd_review = [
-                        shutil.which("cline") or "cline",
-                        "-m",
-                        resolve_model(model_review, backend),
-                        "--yolo",
-                        "-"
-                    ]
-                    stdin_file = review_prompt_path
+            if cfg.dry_run:
+                write_file(review_log, f"DRY_RUN: reviewer skipped (iter {iteration})\n")
+                break  # dry-run does one iteration
 
-                ok = run_command_monitored(
-                    cmd_review,
-                    review_log,
-                    retry_max,
-                    retry_sleep,
-                    monitor_interval=monitor_interval,
-                    stuck_timeout=stuck_timeout,
-                    heartbeat_file=report_dir / "batch_run_console.log",
-                    progress_model=model_review,
-                    progress_label=f"{base_name}_iter{iteration}_review",
-                    progress_tail_lines=progress_tail_lines,
-                    progress_check_interval=progress_check_interval,
-                    progress_stuck_threshold=progress_stuck_threshold,
-                    progress_check_enabled=progress_check_enabled,
-                    env=opencode_env,
-                    no_output_timeout=no_output_timeout,
-                    stdin_file=stdin_file,
+            cmd, stdin = build_review_command(
+                cfg,
+                review_prompt_file,
+                cfg.model_review,
+                f"{name}-review-{session}",
+            )
+            result = run_monitored(
+                cmd,
+                review_log,
+                env=env,
+                stdin_file=stdin,
+                timeout=cfg.command_timeout,
+                stuck_timeout=cfg.stuck_timeout,
+                no_output_timeout=cfg.no_output_timeout,
+                monitor_interval=cfg.monitor_interval,
+                retry_max=cfg.retry_max,
+                retry_sleep=cfg.retry_sleep,
+            )
+
+            if not result.success and not has_token(review_log, REVIEW_PASS):
+                if result.permanent_error:
+                    raise RuntimeError(
+                        f"Reviewer hit permanent error for {name} iter {iteration}: "
+                        f"{result.killed_reason} (prompt too large for model context?)"
+                    )
+                log.error(
+                    "Reviewer process failed (%s) for %s iter %d",
+                    result.killed_reason or f"exit={result.exit_code}",
+                    name,
+                    iteration,
                 )
-                if not ok and not log_has_token(review_log, REVIEW_PASS_TOKEN):
-                    raise RuntimeError(f"Reviewer run failed for {base_name}")
+                raise RuntimeError(f"Reviewer process failed for {name}")
 
-            if dry_run:
-                break
-
-            review_text = review_log.read_text(encoding="utf-8", errors="ignore")
-            if REVIEW_PASS_TOKEN in review_text:
+            # Check reviewer verdict
+            if has_token(review_log, REVIEW_PASS):
+                log.info("REVIEW_PASS received for %s at iteration %d", name, iteration)
                 success = True
                 break
 
-            # Check for stagnation before continuing to next iteration
-            if check_stagnation(
-                report_dir=report_dir,
-                base_name=base_name,
-                run_stamp=run_stamp,
-                current_iter=iteration,
-                model_review=model_review,
-                opencode_env=opencode_env,
-            ):
-                raise RuntimeError(f"Stagnation detected for {base_name} at iteration {iteration}")
+            if iteration == cfg.max_iters:
+                log.error("Max iterations reached for %s without REVIEW_PASS", name)
+                raise RuntimeError(f"Max iterations ({cfg.max_iters}) reached for {name}")
 
-            if iteration == max_iters:
-                raise RuntimeError(f"Max iterations reached for {base_name}")
+            log.info("REVIEW_FAIL for %s iter %d; continuing to next iteration", name, iteration)
 
-        if not dry_run and not success:
-            raise RuntimeError(f"Review did not pass for {base_name}")
+        if not cfg.dry_run and not success:
+            raise RuntimeError(f"Prompt {name} did not receive REVIEW_PASS")
+
+        return success or cfg.dry_run
 
     finally:
-        # Enforce filesystem hygiene and cleanup illegal files.
-        if success and not dry_run:
-            cleanup_illegal_files(
-                repo_root=repo_root,
-                report_dir=report_dir,
-                model_review=model_review,
-                retry_max=retry_max,
-                retry_sleep=retry_sleep,
-                llm_classify=llm_classify,
-                opencode_env=opencode_env,
+        # Always clean up regardless of success
+        if success and not cfg.dry_run:
+            cleanup_illegal_files(cfg.repo_root, cfg.report_dir)
+        cleanup_temp_artifacts(cfg.repo_root)
+        git_save_snapshot(cfg.repo_root, cfg.report_dir, f"{name}_{stamp}_after")
+
+
+# ---------------------------------------------------------------------------
+# Git commit for successful prompt
+# ---------------------------------------------------------------------------
+
+
+def commit_changes(repo: Path, prompt_name: str, dry_run: bool) -> None:
+    """Stage and commit changes from a successful prompt."""
+    if dry_run:
+        return
+    entries = git_status_entries(repo)
+    if not entries:
+        log.warning("No changes to commit for %s", prompt_name)
+        return
+
+    # Stage everything except report/output dirs
+    to_stage = [
+        path
+        for status, path in entries
+        if not path.startswith("doc/refactoring_reports") and not path.startswith("output/")
+    ]
+    if not to_stage:
+        log.warning("No eligible changes to commit for %s", prompt_name)
+        return
+
+    git_run(repo, ["add", "--", *to_stage])
+    result = git_run(repo, ["commit", "-m", f"refactor({prompt_name}): apply prompt changes"])
+    if result.returncode != 0:
+        log.error("Git commit failed for %s: %s", prompt_name, result.stderr.strip())
+        raise RuntimeError(f"Git commit failed for {prompt_name}")
+    log.info("Committed changes for %s", prompt_name)
+
+
+# ---------------------------------------------------------------------------
+# Main orchestrator
+# ---------------------------------------------------------------------------
+
+
+def discover_prompts(cfg: BatchConfig) -> list[Path]:
+    """Find prompt files to execute."""
+    if cfg.prompt_index:
+        if not (1 <= cfg.prompt_index <= len(DEFAULT_PROMPTS)):
+            raise SystemExit(
+                f"--prompt-index must be 1..{len(DEFAULT_PROMPTS)}, got {cfg.prompt_index}"
             )
+        return [cfg.prompt_dir / DEFAULT_PROMPTS[cfg.prompt_index - 1]]
 
-        # Cleanup debug scripts and output artifacts after prompt completion.
-        for debug_file in repo_root.glob("debug_*.py"):
-            try:
-                debug_file.unlink()
-            except OSError:
-                pass
-
-        output_dir = repo_root / "output"
-        if output_dir.exists():
-            for child in output_dir.iterdir():
-                if child.is_dir():
-                    for sub in child.glob("**/*"):
-                        if sub.is_file():
-                            try:
-                                sub.unlink()
-                            except OSError:
-                                pass
-                    try:
-                        child.rmdir()
-                    except OSError:
-                        pass
-                elif child.is_file():
-                    try:
-                        child.unlink()
-                    except OSError:
-                        pass
-
-        git_capture(repo_root, ["diff"], report_dir / f"{base_name}_{run_stamp}_diff_after.patch")
-        git_capture(
-            repo_root,
-            ["status", "--porcelain=v1"],
-            report_dir / f"{base_name}_{run_stamp}_status_after.txt",
-        )
+    # All prompts in order
+    prompts = []
+    for name in DEFAULT_PROMPTS:
+        p = cfg.prompt_dir / name
+        if p.exists():
+            prompts.append(p)
+        else:
+            log.warning("Prompt file not found, skipping: %s", p)
+    return prompts
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model-impl", default="devstral")
-    parser.add_argument("--model-review", default="glm-4.7")
-    parser.add_argument("--max-iters", type=int, default=5)
-    parser.add_argument("--retry-max", type=int, default=2)
-    parser.add_argument("--retry-sleep", type=int, default=5)
-    parser.add_argument("--prompt-index", type=int, default=0)
-    parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--no-llm-classify", action="store_true")
-    parser.add_argument("--no-progress-check", action="store_true")
-    parser.add_argument("--monitor-interval", type=int, default=DEFAULT_MONITOR_INTERVAL)
-    parser.add_argument("--stuck-timeout", type=int, default=DEFAULT_STUCK_TIMEOUT)
-    parser.add_argument("--progress-tail-lines", type=int, default=DEFAULT_PROGRESS_TAIL_LINES)
+def run_batch(cfg: BatchConfig) -> int:
+    """Main entry point. Returns 0 on success, 1 on failure."""
+    setup_logging(cfg.report_dir, cfg.verbose)
+
+    log.info("=" * 60)
+    log.info("Refactor batch starting")
+    log.info("  backend:    %s", cfg.backend)
+    log.info("  impl model: %s", cfg.model_impl)
+    log.info("  review model: %s", cfg.model_review)
+    log.info("  max iters:  %d", cfg.max_iters)
+    log.info("  repo root:  %s", cfg.repo_root)
+    log.info("  prompt dir: %s", cfg.prompt_dir)
+    log.info("  dry run:    %s", cfg.dry_run)
+    log.info("=" * 60)
+
+    # Configure cline backend if needed
+    if cfg.backend == "cline":
+        configure_cline_from_opencode()
+
+    env = build_env(cfg)
+    prompts = discover_prompts(cfg)
+    if not prompts:
+        log.error("No prompt files found")
+        return 1
+
+    # Record starting branch
+    start_branch = git_current_branch(cfg.repo_root)
+    completed = load_completed(cfg.report_dir)
+
+    # Preflight
+    try:
+        preflight(cfg, env)
+    except RuntimeError as exc:
+        log.error("Preflight failed: %s", exc)
+        return 1
+
+    # Process prompts sequentially
+    for i, prompt in enumerate(prompts, 1):
+        name = prompt.stem
+
+        if name in completed:
+            log.info("Skipping already completed: %s", name)
+            continue
+
+        # Branch safety check
+        current = git_current_branch(cfg.repo_root)
+        if current != start_branch:
+            log.error(
+                "Branch changed: expected %s, got %s. Aborting.",
+                start_branch,
+                current,
+            )
+            return 1
+
+        log.info("--- [%d/%d] Running prompt: %s ---", i, len(prompts), name)
+        try:
+            ok = run_single_prompt(cfg, prompt, env)
+            if ok:
+                commit_changes(cfg.repo_root, name, cfg.dry_run)
+                mark_completed(cfg.report_dir, name)
+                log.info("COMPLETED: %s", name)
+            else:
+                log.error("FAILED: %s", name)
+                return 1
+        except RuntimeError as exc:
+            log.error("FAILED: %s -- %s", name, exc)
+            log.error("Aborting batch: prompts are sequential. Fix the issue before re-running.")
+            return 1
+        except KeyboardInterrupt:
+            log.warning("Interrupted by user")
+            return 130
+
+    log.info("All prompts completed successfully")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+
+def parse_args(argv: list[str] | None = None) -> BatchConfig:
+    parser = argparse.ArgumentParser(
+        description="Autonomous batch refactoring with local LLM models",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""\
+Examples:
+  %(prog)s                              Run all prompts with defaults (cline + devstral)
+  %(prog)s --prompt-index 3             Run only prompt 03
+  %(prog)s --backend opencode           Use opencode instead of cline
+  %(prog)s --dry-run                    Skip LLM calls, test orchestration
+  %(prog)s --model-impl devstral --model-review glm-4.7
+  %(prog)s --verbose                    Show debug output
+""",
+    )
+
+    # Basic options
     parser.add_argument(
-        "--progress-check-interval",
-        type=int,
-        default=DEFAULT_PROGRESS_CHECK_INTERVAL,
+        "--backend",
+        choices=["cline", "opencode"],
+        default="cline",
+        help="LLM middleware to use (default: cline)",
     )
     parser.add_argument(
-        "--progress-stuck-threshold",
+        "--model-impl", default="devstral", help="Implementer model (default: devstral)"
+    )
+    parser.add_argument(
+        "--model-review", default="glm-4.7", help="Reviewer model (default: glm-4.7)"
+    )
+    parser.add_argument(
+        "--prompt-index", type=int, default=0, help="Run single prompt (1-10), 0=all"
+    )
+    parser.add_argument(
+        "--max-iters", type=int, default=5, help="Max implement/review cycles (default: 5)"
+    )
+    parser.add_argument("--dry-run", action="store_true", help="Skip LLM calls")
+    parser.add_argument("--verbose", "-v", action="store_true", help="Debug logging")
+
+    # Retry / timeout
+    parser.add_argument("--retry-max", type=int, default=2, help="Retries per command (default: 2)")
+    parser.add_argument(
+        "--retry-sleep", type=int, default=5, help="Seconds between retries (default: 5)"
+    )
+    parser.add_argument(
+        "--command-timeout",
         type=int,
-        default=DEFAULT_PROGRESS_STUCK_THRESHOLD,
+        default=3600,
+        help="Per-command timeout in seconds (default: 3600)",
+    )
+    parser.add_argument(
+        "--stuck-timeout",
+        type=int,
+        default=7200,
+        help="Kill if log unchanged for N seconds (default: 7200)",
     )
     parser.add_argument(
         "--no-output-timeout",
         type=int,
-        default=DEFAULT_NO_OUTPUT_TIMEOUT,
+        default=1200,
+        help="Kill if zero output after N seconds (default: 1200)",
     )
     parser.add_argument(
-        "--kill-stale-opencode",
-        action="store_true",
-        help="Terminate stale opencode runs targeting report_dir",
+        "--monitor-interval",
+        type=int,
+        default=900,
+        help="Heartbeat interval in seconds (default: 900)",
     )
-    parser.add_argument(
-        "--allow-git",
-        action="store_true",
-        help="Allow opencode to run full git commands (default: read-only)",
-    )
-    parser.add_argument(
-        "--backend",
-        choices=["opencode", "cline"],
-        default="opencode",
-        help="Backend to use for LLM communication",
-    )
-    args = parser.parse_args()
 
+    # Git
+    parser.add_argument(
+        "--allow-git", action="store_true", help="Allow LLM full git access (default: read-only)"
+    )
+
+    # Housekeeping
+    parser.add_argument(
+        "--kill-stale", action="store_true", help="Kill orphaned LLM processes before starting"
+    )
+
+    args = parser.parse_args(argv)
+
+    # Resolve paths relative to repo root
     repo_root = Path(__file__).resolve().parents[1]
-    prompt_dir = repo_root / "doc" / "refactoring_prompts"
-    report_dir = repo_root / "doc" / "refactoring_reports"
 
-    # Configure cline if needed
-    if args.backend == "cline":
-        configure_cline_from_opencode()
-
-    prompts = [
-        prompt_dir / "01_golden_test_fix.md",
-        prompt_dir / "02_golden_test_suite.md",
-        prompt_dir / "03_plot_metrics_tests.md",
-        prompt_dir / "04_extract_simulation_engine.md",
-        prompt_dir / "05_refactor_metrics.md",
-        prompt_dir / "06_extract_household_components.md",
-        prompt_dir / "07_increase_test_coverage.md",
-        prompt_dir / "08_performance_optimization.md",
-        prompt_dir / "09_documentation_types.md",
-        prompt_dir / "10_comprehensive_regression.md",
-    ]
-
-    if args.prompt_index:
-        if not (1 <= args.prompt_index <= len(prompts)):
-            raise SystemExit("prompt-index out of range")
-        prompts = [prompts[args.prompt_index - 1]]
-
-    model_impl = resolve_model(args.model_impl, backend=args.backend)
-    model_review = resolve_model(args.model_review, backend=args.backend)
-    opencode_env = build_opencode_env(repo_root, allow_git=args.allow_git)
-    expected_branch = (
-        subprocess.run(
-            ["git", "-C", str(repo_root), "branch", "--show-current"],
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-        or "HEAD"
+    return BatchConfig(
+        repo_root=repo_root,
+        prompt_dir=repo_root / "doc" / "refactoring_prompts",
+        report_dir=repo_root / "doc" / "refactoring_reports",
+        backend=args.backend,
+        model_impl=args.model_impl,
+        model_review=args.model_review,
+        max_iters=args.max_iters,
+        retry_max=args.retry_max,
+        retry_sleep=args.retry_sleep,
+        dry_run=args.dry_run,
+        allow_git=args.allow_git,
+        verbose=args.verbose,
+        prompt_index=args.prompt_index,
+        command_timeout=args.command_timeout,
+        stuck_timeout=args.stuck_timeout,
+        no_output_timeout=args.no_output_timeout,
+        monitor_interval=args.monitor_interval,
+        kill_stale=args.kill_stale,
     )
 
-    completed_prompts = load_completed_prompts(report_dir)
 
-    for prompt in prompts:
-        if not prompt.exists():
-            logger.log(f"Skipping missing prompt file: {prompt}", level="WARNING")
-            continue
-
-        logger.log(f"--- Running prompt: {prompt.name} ---", level="INFO")
-        try:
-            preflight_models(repo_root, model_impl, model_review, args.backend, report_dir)
-            terminate_stale_opencode(report_dir, args.kill_stale_opencode)
-            current_branch = (
-                subprocess.run(
-                    ["git", "-C", str(repo_root), "branch", "--show-current"],
-                    capture_output=True,
-                    text=True,
-                ).stdout.strip()
-                or "HEAD"
-            )
-            if current_branch != expected_branch:
-                raise RuntimeError(
-                    f"Branch changed during run: expected {expected_branch}, got {current_branch}"
-                )
-            session_seed = uuid.uuid4().hex
-            impl_title = f"{prompt.stem}-impl-{session_seed}"
-            review_title = f"{prompt.stem}-review-{session_seed}"
-            run_prompt(
-                repo_root=repo_root,
-                prompt=prompt,
-                report_dir=report_dir,
-                model_impl=model_impl,
-                model_review=model_review,
-                max_iters=args.max_iters,
-                retry_max=args.retry_max,
-                retry_sleep=args.retry_sleep,
-                dry_run=args.dry_run,
-                llm_classify=not args.no_llm_classify,
-                monitor_interval=args.monitor_interval,
-                stuck_timeout=args.stuck_timeout,
-                progress_tail_lines=args.progress_tail_lines,
-                progress_check_interval=args.progress_check_interval,
-                progress_stuck_threshold=args.progress_stuck_threshold,
-                progress_check_enabled=not args.no_progress_check,
-                no_output_timeout=args.no_output_timeout,
-                opencode_env=opencode_env,
-                backend=args.backend,
-                impl_title=impl_title,
-                review_title=review_title,
-            )
-            if prompt_has_pass(report_dir, prompt.stem):
-                commit_prompt_changes(repo_root, prompt.stem, args.dry_run, report_dir)
-                mark_prompt_completed(report_dir, prompt.stem)
-            logger.log(f"✅ Finished prompt: {prompt.name}", level="INFO")
-        except Exception as e:
-            logger.log(f"❌ Failed prompt: {prompt.name} with error: {e}", level="ERROR")
-            logger.log(
-                "\nAborting: Prompts are sequential and build on each other. Resolve the issue before continuing.",
-                level="ERROR",
-            )
-            return 1
-
-    return 0
+def main(argv: list[str] | None = None) -> int:
+    cfg = parse_args(argv)
+    if cfg.kill_stale:
+        kill_stale_processes("opencode")
+        kill_stale_processes("cline")
+    return run_batch(cfg)
 
 
 if __name__ == "__main__":

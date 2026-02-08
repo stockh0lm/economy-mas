@@ -4,8 +4,9 @@ Resets class-level mutable state between test runs to ensure test isolation.
 """
 
 import sys
-import sys
 from pathlib import Path
+import tempfile
+import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 AGENTS_DIR = PROJECT_ROOT / "agents"
@@ -15,18 +16,6 @@ for path in (PROJECT_ROOT, AGENTS_DIR):
         path_str = str(path)
         if path_str not in sys.path:
             sys.path.insert(0, path_str)
-
-
-def pytest_runtest_setup(item):
-    """Reset class-level mutable state before each test."""
-    company_module = sys.modules.get("agents.company_agent")
-    if company_module is not None:
-        company_module.Company._lineage_counters.clear()
-
-    household_module = sys.modules.get("agents.household_agent")
-    if household_module is not None:
-        household_module._DEFAULT_NP_RNG = None
-
 
 def pytest_runtest_setup(item):
     """Reset class-level mutable state before each test.
@@ -51,3 +40,24 @@ def pytest_runtest_setup(item):
     household_module = sys.modules.get("agents.household_agent")
     if household_module is not None:
         household_module._DEFAULT_NP_RNG = None
+
+@pytest.fixture(scope="session")
+def runner_metrics_dir():
+    """Generate a minimal simulation run for integration tests.
+    This fixture runs once per test session to avoid regenerating metrics on every test.
+    """
+    from main import run_simulation
+    from config import SimulationConfig
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmppath = Path(tmpdir) / "metrics"
+        tmppath.mkdir(parents=True)
+        cfg = SimulationConfig(simulation_steps=30)
+        cfg.log_file = str(tmppath / "simulation.log")
+        cfg.metrics_export_path = str(tmppath)
+        agents = run_simulation(cfg)
+
+        # Verify metrics were generated
+        assert (tmppath / "global_metrics").exists() or (tmppath / "global_metrics_" in [f.name for f in tmppath.iterdir() if f.suffix == '.csv']), "Global metrics not generated"
+        yield tmppath

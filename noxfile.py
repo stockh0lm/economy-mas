@@ -11,7 +11,7 @@ nox.options.reuse_existing_virtualenvs = True
 VENV_BIN_PATH = os.path.join(os.getcwd(), ".venv", "bin")
 
 PYTHON_VERSION = "3.12"
-TARGETS = ["agents", "metrics.py", "main.py", "config.py", "logger.py"]
+TARGETS = ["agents", "metrics.py", "main.py", "config.py", "logger.py", "simulation/"]
 EXCLUDES = ["build", ".nox", "__pycache__", "*.egg-info", "output", "results", "tests/__pycache__"]
 RADON_ARGS = ["cc", "-s", "-a", "-o", "SCORE"]
 DEV_DEPS = [
@@ -62,6 +62,27 @@ def test_golden(session: nox.Session) -> None:
     session.run(
         os.path.join(VENV_BIN_PATH, "pytest"), "tests/test_golden_run_comprehensive.py", "-xvs"
     )
+
+
+@nox.session(python=PYTHON_VERSION)
+def test_plots(session: nox.Session) -> None:
+    """Run plot metrics integration tests."""
+    session.run(
+        os.path.join(VENV_BIN_PATH, "pytest"),
+        "tests/test_plot_metrics.py",
+        "-xvs",
+    )
+    session.run(
+        os.path.join(VENV_BIN_PATH, "pytest"),
+        "tests/test_plot_metrics_integration.py",
+        "-xvs",
+    )
+
+
+@nox.session(python=PYTHON_VERSION)
+def test_engine(session: nox.Session) -> None:
+    """Run simulation engine tests."""
+    session.run(os.path.join(VENV_BIN_PATH, "pytest"), "tests/test_simulation_engine.py", "-xvs")
 
 
 @nox.session(python=PYTHON_VERSION)
