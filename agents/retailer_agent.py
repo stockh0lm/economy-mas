@@ -13,6 +13,7 @@ account, a Kontokorrent balance, and a reserve account for write-downs.
 from __future__ import annotations
 
 import random
+from collections import deque
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -152,6 +153,30 @@ class RetailerAgent(BaseAgent):
         # Explicit money-destruction tracking (reset each step by main loop)
         self.repaid_total: float = 0.0
         self.inventory_write_down_extinguished_total: float = 0.0
+
+        # --- Dynamic pricing: sales velocity tracking ---
+        # Book ref: "Kaufleute sollen und müssen auf Nachfrageänderungen
+        # mit Preisänderungen reagieren können" (line 2082).
+        _sales_window = self.config.retailer.price_markup_sales_window_days
+        self._daily_sales_units: deque[float] = deque(maxlen=_sales_window)
+        self._step_sales_units: float = 0.0  # accumulated within a single step
+
+        # --- Demand-driven ordering: sales value tracking ---
+        # Book ref: "Kaufleute [sorgen] durch ihre Warenbestellungen für eine
+        # bedarfsgerechte Ausrichtung der Produktion" (line 2463).
+        _restock_window = self.config.retailer.restock_sales_window_days
+        self._daily_sales_values: deque[float] = deque(maxlen=_restock_window)
+        self._step_sales_value: float = 0.0  # accumulated within a single step
+
+        # --- Insolvency tracking ---
+        # Book ref: "Unternehmen, die wiederholt hohen Wertberichtigungsbedarf
+        # verursachen, müssen... in eine geordnete Insolvenz geführt werden"
+        # (line 2018).
+        # Unlike per-step flow metrics (sales_total, purchases_total, write_downs_total)
+        # which are reset each step by the engine, these are cumulative lifetime counters.
+        self._cumulative_purchases: float = 0.0
+        self._cumulative_write_downs: float = 0.0
+        self._lifetime_steps: int = 0
 
     # --- Convenience adapters (compatibility with legacy code/tests) ---
     @property
@@ -334,10 +359,104 @@ class RetailerAgent(BaseAgent):
             return float(self.last_unit_cost)
         return float(self.inventory_value / max(self.inventory_units, 1e-9))
 
+    def _avg_daily_sales_units(self) -> float:
+        """Average daily sales units over the rolling window."""
+        if not self._daily_sales_units:
+            return 0.0
+        return sum(self._daily_sales_units) / len(self._daily_sales_units)
+
+    def flush_daily_sales(self) -> None:
+        """Commit step sales to the rolling history.
+
+        Must be called once per step after all sell_to_household() calls.
+        """
+        self._daily_sales_units.append(self._step_sales_units)
+        self._step_sales_units = 0.0
+        # Also flush sales value for demand-driven ordering
+        self._daily_sales_values.append(self._step_sales_value)
+        self._step_sales_value = 0.0
+
+    def _dynamic_markup(self) -> float:
+        """Compute dynamic markup based on inventory turnover velocity.
+
+        Book ref: "Kaufleute sollen und müssen auf Nachfrageänderungen
+        mit Preisänderungen reagieren können. Auch ein zu großes Angebot
+        an Waren... kann Preissenkungen sinnvoll machen." (line 2082)
+
+        Returns the effective markup rate (between price_markup_min and price_markup_max).
+        """
+        min_markup = self.config.retailer.price_markup_min
+        max_markup = self.config.retailer.price_markup_max
+        window = self.config.retailer.price_markup_sales_window_days
+
+        # Need a full window of data before we can adjust
+        if len(self._daily_sales_units) < window:
+            return self.config.retailer.price_markup  # fallback to static markup
+
+        avg_sales = self._avg_daily_sales_units()
+        if avg_sales <= 0:
+            # No sales → maximum discount to move goods
+            return min_markup
+
+        if self.inventory_units <= 0:
+            # No inventory → scarcity premium
+            return max_markup
+
+        # Days of inventory remaining at current sales velocity
+        days_of_stock = self.inventory_units / avg_sales
+        target_days = self.target_inventory_value / max(avg_sales * self._avg_unit_cost(), 1e-9)
+        if target_days <= 0:
+            target_days = 10.0
+
+        # ratio > 1 = overstocked → lower markup; ratio < 1 = understocked → higher markup
+        stock_ratio = days_of_stock / target_days
+
+        if stock_ratio >= 2.0:
+            return min_markup
+        elif stock_ratio <= 0.3:
+            return max_markup
+        else:
+            # Linear interpolation: ratio 0.3→max_markup, ratio 2.0→min_markup
+            t = (stock_ratio - 0.3) / (2.0 - 0.3)
+            return max_markup + t * (min_markup - max_markup)
+
+    def _effective_target_inventory_value(self) -> float:
+        """Compute dynamic target inventory value based on recent sales velocity.
+
+        Book ref: "Der Einzelhandel soll als Vermittler zwischen Produktion und
+        Konsumtion fungieren. Er soll dafür sorgen, dass bedarfsgerecht
+        produziert wird."
+
+        During ramp-up (window not yet full), falls back to the static
+        target_inventory_value. Once enough history is available, the target
+        adapts to actual demand: avg_daily_sales_value * restock_target_stock_days.
+
+        Returns:
+            Effective target inventory value (always >= restock_min_target_value).
+        """
+        window = self.config.retailer.restock_sales_window_days
+        min_target = self.config.retailer.restock_min_target_value
+
+        # Not enough history yet — use static target (with floor)
+        if len(self._daily_sales_values) < window:
+            return max(min_target, self.target_inventory_value)
+
+        total_sales_value = sum(self._daily_sales_values)
+        if total_sales_value <= 0:
+            # No sales at all → use floor to keep ordering something
+            return min_target
+
+        avg_daily_sales_value = total_sales_value / len(self._daily_sales_values)
+        target_days = self.config.retailer.restock_target_stock_days
+        effective_target = avg_daily_sales_value * target_days
+
+        return max(min_target, effective_target)
+
     def unit_sale_price(self) -> float:
         cost = self._avg_unit_cost()
         self.last_unit_cost = cost
-        self.last_unit_price = cost * (1 + self.config.retailer.price_markup)
+        markup = self._dynamic_markup()
+        self.last_unit_price = cost * (1 + markup)
         return self.last_unit_price
 
     # --- Warengeld primitives ---
@@ -348,16 +467,27 @@ class RetailerAgent(BaseAgent):
 
         Money creation happens inside `bank.finance_goods_purchase`.
 
+        Book ref: "Kaufleute [sorgen] durch ihre Warenbestellungen für eine
+        bedarfsgerechte Ausrichtung der Produktion" (line 2463).
+
+        The retailer acts as an intelligent mediator between production and
+        consumption by:
+        1. Using demand-driven target inventory (based on actual sales velocity)
+        2. Selecting the cheapest supplier (competitive price pressure)
+
         Returns the financed purchase value.
         """
         if not companies:
             return 0.0
 
-        reorder_point = self.config.retailer.reorder_point_ratio * self.target_inventory_value
+        # Use demand-driven effective target instead of static target_inventory_value
+        effective_target = self._effective_target_inventory_value()
+
+        reorder_point = self.config.retailer.reorder_point_ratio * effective_target
         if self.inventory_value >= reorder_point:
             return 0.0
 
-        desired_value = max(0.0, self.target_inventory_value - self.inventory_value)
+        desired_value = max(0.0, effective_target - self.inventory_value)
         if desired_value <= 0:
             return 0.0
 
@@ -380,7 +510,16 @@ class RetailerAgent(BaseAgent):
         if order_budget <= 1e-9:
             return 0.0
 
-        producer = random.choice(companies)
+        # Price-aware supplier selection: choose the cheapest producer.
+        # Book ref: "Freier Wettbewerb [muss] dafür sorgen, dass die Preise
+        # auf die Herstellungskosten sinken" (line 1620).
+        # By always ordering from the cheapest supplier, the retailer
+        # transmits competitive price pressure upstream to producers.
+        # When prices are equal (common in homogeneous markets), we break
+        # ties randomly to avoid deterministically starving some producers.
+        best_price = min(c.get_unit_price() for c in companies)
+        cheapest = [c for c in companies if c.get_unit_price() <= best_price * 1.001]
+        producer = random.choice(cheapest)
 
         # Translate desired value into desired quantity at producer's unit price.
         unit_price = producer.get_unit_price()
@@ -459,6 +598,10 @@ class RetailerAgent(BaseAgent):
         self.cogs_total += float(cost_value)
         self.sight_balance += sale_value
         self.sales_total += sale_value
+        # Track units sold for dynamic pricing
+        self._step_sales_units += qty
+        # Track sales value for demand-driven ordering
+        self._step_sales_value += sale_value
 
         gross_profit = max(0.0, sale_value - cost_value)
 
@@ -520,6 +663,8 @@ class RetailerAgent(BaseAgent):
         self.cogs_total += float(cost_value)
         self.sight_balance += sale_value
         self.sales_total += sale_value
+        # Track sales value for demand-driven ordering (State purchases = real demand)
+        self._step_sales_value += sale_value
 
         gross_profit = max(0.0, sale_value - cost_value)
         reserve_add = gross_profit * self.config.retailer.write_down_reserve_share
@@ -632,13 +777,60 @@ class RetailerAgent(BaseAgent):
         """End-of-day settlements.
 
         This is where the *extinguishing* side of the Warengeld cycle primarily happens.
+        Also finalizes daily sales tracking for dynamic pricing and accumulates
+        lifetime counters for insolvency tracking.
         """
+        # Flush daily sales units into rolling history for markup computation
+        self.flush_daily_sales()
+
+        # Accumulate lifetime counters for insolvency check
+        self._cumulative_purchases += self.purchases_total
+        self._cumulative_write_downs += self.write_downs_total
+        self._lifetime_steps += 1
+
         repaid = self.auto_repay_kontokorrent(bank)
         destroyed = self.apply_inventory_write_downs(current_step=int(current_step or 0), bank=bank)
         # Spec 4.1: enforce inventory-backed CC limits (additional destruction).
         bank.enforce_inventory_backing(self)
 
         return {"repaid": float(repaid), "inventory_write_down": float(destroyed)}
+
+    def check_insolvency(self) -> bool:
+        """Check if retailer should be declared insolvent.
+
+        Book ref: "Unternehmen, die wiederholt hohen Wertberichtigungsbedarf
+        verursachen, müssen... in eine geordnete Insolvenz geführt werden"
+        (line 2018).
+
+        A retailer is insolvent when cumulative write-downs exceed a threshold
+        ratio of cumulative purchases, indicating chronic inability to sell
+        goods before they lose value.
+
+        Returns:
+            True if the retailer is insolvent and should be removed.
+        """
+        grace = self.config.retailer.insolvency_grace_steps
+        if self._lifetime_steps < grace:
+            return False
+
+        min_purchases = self.config.retailer.insolvency_min_purchase_history
+        if self._cumulative_purchases < min_purchases:
+            return False
+
+        threshold = self.config.retailer.insolvency_write_down_ratio_threshold
+        write_down_ratio = self._cumulative_write_downs / max(1e-9, self._cumulative_purchases)
+
+        if write_down_ratio >= threshold:
+            log(
+                f"Retailer {self.unique_id} declared insolvent: "
+                f"write-down ratio {write_down_ratio:.2%} >= threshold {threshold:.2%} "
+                f"(cumulative purchases={self._cumulative_purchases:.2f}, "
+                f"write-downs={self._cumulative_write_downs:.2f}).",
+                level="WARNING",
+            )
+            return True
+
+        return False
 
     def step(
         self,

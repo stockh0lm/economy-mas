@@ -119,7 +119,7 @@ def _resolve_config_from_args_or_env() -> SimulationConfig:
         return load_config("config.yaml")
 
     # default: empty config (model defaults)
-    return SimulationConfig()
+    return SimulationConfig()  # type: ignore[call-arg]
 
 
 # ---------------------------
@@ -135,6 +135,7 @@ from agents.labor_market import LaborMarket
 from agents.retailer_agent import RetailerAgent
 from agents.savings_bank_agent import SavingsBank
 from agents.state_agent import State
+
 
 def create_households(config: SimulationConfig) -> list[Household]:
     """Create households with a realistic initial age distribution.
@@ -188,6 +189,7 @@ def create_households(config: SimulationConfig) -> list[Household]:
         households.append(hh)
     return households
 
+
 def create_companies(config: SimulationConfig) -> list[Company]:
     if config.population.num_companies is not None:
         count = int(config.population.num_companies)
@@ -211,6 +213,7 @@ def create_companies(config: SimulationConfig) -> list[Company]:
             )
         )
     return companies
+
 
 def create_retailers(config: SimulationConfig) -> list[RetailerAgent]:
     # explicit list wins if present and population not specified
@@ -257,6 +260,7 @@ def create_retailers(config: SimulationConfig) -> list[RetailerAgent]:
         for i in range(default_count)
     ]
 
+
 @dataclass
 class SimulationAgents:
     households: list[Household]
@@ -268,6 +272,7 @@ class SimulationAgents:
     clearing: ClearingAgent
     labor_market: LaborMarket
     environmental_agency: EnvironmentalAgency
+
 
 def initialize_agents(config: SimulationConfig) -> dict[str, Any]:
     """Create agent instances.

@@ -112,6 +112,28 @@ class WarengeldBank(BaseAgent):
         if hasattr(retailer, "cc_limit"):
             retailer.cc_limit = limit
 
+    def deregister_retailer(self, retailer: Any) -> float:
+        """Remove a retailer from the bank's books (insolvency / exit).
+
+        Any outstanding CC balance is written off as a loss.
+
+        Returns:
+            The amount of CC exposure written off.
+        """
+        retailer_id = str(retailer.unique_id)
+        outstanding = float(self.credit_lines.pop(retailer_id, 0.0))
+        self.cc_limits.pop(retailer_id, None)
+
+        if outstanding > 0:
+            self.cc_write_downs_total += outstanding
+            log(
+                f"WarengeldBank {self.unique_id}: deregistered retailer {retailer_id}, "
+                f"wrote off CC exposure={outstanding:.2f}.",
+                level="WARNING",
+            )
+
+        return outstanding
+
     def recompute_cc_limits(
         self, retailers: Iterable[Any], *, current_step: int
     ) -> dict[str, float]:
@@ -323,6 +345,15 @@ class WarengeldBank(BaseAgent):
 
         excess = max(0.0, sight - allowance)
         repay_amount = min(excess, abs(cc_balance))
+
+        # --- Throttle: only repay a fraction of excess per step ---
+        # Without throttling, every sales transaction triggers immediate full
+        # CC repayment, creating a structural deflationary bias (Failure 3).
+        # The repayment fraction is configurable; 0.3 means "repay 30 % of
+        # excess per step", letting money circulate longer.
+        fraction = float(self.config.retailer.cc_repayment_fraction)
+        repay_amount *= fraction
+
         if repay_amount <= 0:
             return 0.0
 
@@ -551,7 +582,9 @@ class WarengeldBank(BaseAgent):
             log(f"WarengeldBank: inventory coverage issues: {issues}", level="WARNING")
         return issues
 
-    def step(self, current_step: int, merchants: Iterable[Any] | None = None) -> None:  # type: ignore[override]
+    def step(
+        self, current_step: int, merchants: Iterable[Any] | None = None, **kwargs: Any
+    ) -> None:
         """Bank step hook used by tests.
 
         Runs inventory checks and fee collection using modern methods.
@@ -562,6 +595,64 @@ class WarengeldBank(BaseAgent):
             return
         _ = self.check_inventories(merchants, current_step=current_step)
         self.charge_account_fees(merchants)
+
+    def recirculate_fee_income(self, households: Iterable[Any]) -> float:
+        """Recirculate accumulated fee income back into the economy.
+
+        In the Warengeld model, banks finance themselves via fees (not interest).
+        These fees are the bank's revenue for operating costs — wages to bank
+        employees, rent, IT systems, etc.  If they are not spent, they become
+        a permanent money drain (see Failure 2 in systemic diagnosis).
+
+        This method models the bank's operating expenditures as transfers to
+        households, representing bank employee wages.  A configurable fraction
+        ``fee_recirculation_rate`` (default 80 %) of the bank's sight balance is
+        distributed equally among all households in the bank's region.
+
+        Book ref: "Die Bank lebt nicht von Zinsen, sondern von Gebühren" —
+        but fees *are* bank revenue and must flow back into circulation to
+        avoid deflation.
+
+        Returns:
+            Total amount recirculated.
+        """
+        rate = float(self.config.bank.fee_recirculation_rate)
+        if rate <= 0 or self.sight_balance <= 0:
+            return 0.0
+
+        hh_list = list(households)
+        if not hh_list:
+            return 0.0
+
+        pool = self.sight_balance * rate
+        if pool <= 0:
+            return 0.0
+
+        per_hh = pool / len(hh_list)
+        total_distributed = 0.0
+
+        for hh in hh_list:
+            if hasattr(hh, "receive_income"):
+                hh.receive_income(per_hh)
+            elif hasattr(hh, "sight_balance"):
+                hh.sight_balance = float(getattr(hh, "sight_balance")) + per_hh
+            elif hasattr(hh, "balance"):
+                hh.balance = float(getattr(hh, "balance")) + per_hh
+            else:
+                continue
+            total_distributed += per_hh
+
+        self.sight_balance -= total_distributed
+
+        if total_distributed > 0:
+            log(
+                f"WarengeldBank {self.unique_id}: recirculated {total_distributed:.2f} "
+                f"fee income to {len(hh_list)} households ({per_hh:.4f} each). "
+                f"Remaining bank balance: {self.sight_balance:.2f}.",
+                level="INFO",
+            )
+
+        return float(total_distributed)
 
     # --- Derived metrics ---
     @property

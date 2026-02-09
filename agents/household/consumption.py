@@ -14,7 +14,7 @@ from __future__ import annotations
 from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, cast
 
 import numpy as np
 
@@ -117,7 +117,7 @@ def build_consumption_plan(
         return ConsumptionPlan(budget=0.0, retailer=None)
 
     # Keep selection deterministic for tests by allowing an injected RNG.
-    retailer = rng.choice(retailers)
+    retailer = cast("RetailerAgent", rng.choice(retailers))
     return ConsumptionPlan(budget=float(budget), retailer=retailer)
 
 

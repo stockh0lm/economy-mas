@@ -139,6 +139,19 @@ class Household(BaseAgent):
         self.investments: float = 0.0
         self.assets: float = 0.0
 
+        # Growth/lifecycle state (initialised here for static type checking;
+        # DemographyComponent.__init__ also guards with hasattr for robustness).
+        self.growth_phase: bool = False
+        self.growth_counter: int = 0
+        self.growth_threshold: int = int(getattr(self.config.household, "growth_threshold", 12))
+
+        # Fertility cache (performance optimisation; see demography.py).
+        self._fertility_p_daily_cache: dict[tuple[int, int, int], float] = {}
+        self._fertility_cache_bin_size: float = max(
+            10.0, 0.05 * float(self.config.household.savings_growth_trigger)
+        )
+        self._fertility_cache_max_size: int = 4096
+
     @property
     def consumption(self) -> float:
         """Backwards-compatible consumption property."""

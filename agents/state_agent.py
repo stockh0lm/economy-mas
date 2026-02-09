@@ -1,6 +1,6 @@
 # state_agent.py
 from collections.abc import Sequence
-from typing import Protocol, TypeAlias, cast
+from typing import Any, Protocol, TypeAlias, cast
 
 from config import CONFIG_MODEL, SimulationConfig
 from logger import log
@@ -10,15 +10,15 @@ from .labor_market import LaborMarket
 
 
 class TaxableAgent(Protocol):
-    """Protocol defining agents that can be taxed by the state"""
+    """Protocol defining agents that can be taxed by the state."""
 
     unique_id: str
     balance: float
-    land_area: float = 0.0
-    environment_impact: float = 0.0
+    land_area: float
+    environmental_impact: float
 
 
-AgentCollection: TypeAlias = Sequence[TaxableAgent | BaseAgent]
+AgentCollection: TypeAlias = Sequence[Any]
 
 
 class State(BaseAgent):
@@ -198,9 +198,9 @@ class State(BaseAgent):
 
     def spend_budgets(
         self,
-        households: Sequence[TaxableAgent],
-        companies: Sequence[TaxableAgent],
-        retailers: Sequence[TaxableAgent],
+        households: Sequence[Any],
+        companies: Sequence[Any],
+        retailers: Sequence[Any],
     ) -> None:
         """Recirculate state budgets back into the economy.
 
@@ -281,7 +281,7 @@ class State(BaseAgent):
             level="DEBUG",
         )
 
-    def step(self, agents: AgentCollection) -> None:
+    def step(self, agents: AgentCollection, **kwargs: Any) -> None:  # type: ignore[override]
         """
         Execute one simulation step for the state agent.
 
@@ -292,6 +292,12 @@ class State(BaseAgent):
 
         Args:
             agents: Collection of agents under state jurisdiction
+
+        Note:
+            The first positional parameter is ``agents`` (not ``current_step``)
+            because the State step is purely driven by the agent population,
+            not by the simulation clock.  The ``# type: ignore[override]``
+            is retained because of this intentional signature deviation.
         """
         log(f"State {self.unique_id} starting step", level="INFO")
 

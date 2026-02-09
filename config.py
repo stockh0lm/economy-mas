@@ -237,6 +237,17 @@ class CompanyConfig(BaseConfigModel):
     growth_threshold: PositiveInt = 5
     growth_investment_factor: float = Field(0.1, ge=0)
     bankruptcy_threshold: float = -100.0
+
+    # --- Enhanced insolvency: sustained inability to pay wages ---
+    # Book ref: "Sinken die Preise unter die Herstellungskosten, müssen
+    # Betriebe Konkurs anmelden" (line 1462).
+    # A company that cannot pay full wages for consecutive steps is
+    # economically non-viable and should exit.
+    bankruptcy_underpay_steps: PositiveInt = Field(
+        30,
+        description="Consecutive steps of underpaying wages (pay_ratio < 1.0) "
+        "before the company is declared bankrupt.",
+    )
     split_ratio: float = Field(0.5, ge=0, le=1)
     liquidity_buffer_ratio: float = Field(0.2, ge=0)
     min_working_capital_buffer: float = Field(0.0, ge=0)
@@ -317,6 +328,102 @@ class CompanyConfig(BaseConfigModel):
         description="Capacity multiplier applied to target capacity when merged into acquirer",
     )
 
+    # --- Demand-responsive production (Bedarfsgerechte Produktion) ---
+    # Book ref: "Kaufleute [sorgen] durch ihre Warenbestellungen für eine
+    # bedarfsgerechte Ausrichtung der Produktion" (line 2463).
+    # Companies track recent sales and adjust production volume accordingly.
+    production_sales_window_days: PositiveInt = Field(
+        30,
+        description="Rolling window (in steps/days) over which recent sales are averaged",
+    )
+    production_target_stock_days: float = Field(
+        10.0,
+        ge=1.0,
+        description="Target inventory = avg_daily_sales * this factor. "
+        "Companies try to hold this many days of stock.",
+    )
+    production_min_utilization: float = Field(
+        0.1,
+        ge=0,
+        le=1,
+        description="Minimum production rate as fraction of capacity, "
+        "even when inventory exceeds target (prevents full shutdown)",
+    )
+    production_ramp_sensitivity: float = Field(
+        2.0,
+        ge=0.1,
+        description="How aggressively production scales with inventory gap. "
+        "1.0 = linear, >1 = more responsive to shortages",
+    )
+
+    # --- Producer inventory depreciation & holding costs ---
+    # Book ref: "Nahrungsmittel verderben durch zu lange Lagerung.
+    # Industriegüter können durch Modeänderungen oder technologische
+    # Entwicklungen einen 'moralischen' Wertverlust erfahren" (line 1474).
+    inventory_depreciation_rate: float = Field(
+        0.002,
+        ge=0,
+        le=1,
+        description="Per-step depreciation rate of finished_goods_units "
+        "(fraction of units lost per step due to spoilage/obsolescence)",
+    )
+    inventory_holding_cost_per_unit: float = Field(
+        0.01,
+        ge=0,
+        description="Per-unit-per-step storage/holding cost deducted from sight_balance. "
+        "Creates financial pressure when unsold inventory accumulates.",
+    )
+
+    # --- Profit distribution (Gewinnausschüttung) ---
+    # In the Warengeld cooperative model, workers ARE the company.  Surplus
+    # retained earnings must flow back to employees to close the monetary
+    # circular flow.  Without this mechanism, companies become a permanent
+    # money sink: they receive far more from restocking revenue than they
+    # pay out in wages, trapping purchasing power and starving the economy.
+    # Book ref: Companies in the Warengeld system are productive cooperatives;
+    # there is no absentee ownership extracting dividends.  Surplus goes to
+    # the people who created it — the workers.
+    profit_distribution_enabled: bool = True
+    profit_distribution_fraction: float = Field(
+        0.5,
+        ge=0,
+        le=1,
+        description="Fraction of excess balance (above profit_retention_buffer) "
+        "distributed to employees per step as profit-sharing.",
+    )
+    profit_retention_buffer: float = Field(
+        50.0,
+        ge=0,
+        description="Minimum sight_balance the company retains before distributing "
+        "profits.  Acts as working capital / rainy-day reserve.",
+    )
+
+    # --- Wholesale price responsiveness ---
+    # Book ref: "Freier Wettbewerb [muss] dafür sorgen, dass die Preise
+    # auf die Herstellungskosten sinken" (line 1620).
+    # "Sinken die Preise unter die Herstellungskosten, müssen Betriebe
+    # Konkurs anmelden" (line 1462).
+    price_inventory_floor: float = Field(
+        0.7,
+        ge=0.1,
+        le=1.0,
+        description="Minimum price multiplier when inventory is extremely high "
+        "(price can drop to 70% of base cost).",
+    )
+    price_inventory_ceiling: float = Field(
+        1.3,
+        ge=1.0,
+        le=3.0,
+        description="Maximum price multiplier when inventory is depleted "
+        "(scarcity premium, up to 130% of base cost).",
+    )
+    price_inventory_sensitivity: float = Field(
+        1.0,
+        ge=0.1,
+        description="How responsive price is to inventory ratio. "
+        "Higher = sharper price drops/rises near target.",
+    )
+
 
 class RetailerConfig(BaseConfigModel):
     # Kontokorrent-Kreditrahmen (zinsenfrei) wird bei Initialisierung gesetzt; Anpassung ist politisch/vertraglich geregelt.
@@ -343,6 +450,80 @@ class RetailerConfig(BaseConfigModel):
     write_down_reserve_share: float = Field(0.05, ge=0, le=1)
     # Automatische Tilgung: ab welchem Überschuss wird Kontokorrent zurückgeführt?
     auto_repay: bool = True
+    # Throttle: fraction of excess sight balance above working_capital_buffer
+    # that is repaid per step.  A value of 1.0 means "repay all excess" (old
+    # behaviour), 0.3 means "repay 30 % of excess per step".  Lower values
+    # let money circulate longer, reducing the structural deflationary bias
+    # caused by immediate full repayment after every sales transaction.
+    # See Failure 3 in systemic diagnosis.
+    cc_repayment_fraction: float = Field(0.3, ge=0, le=1)
+
+    # --- Dynamic retail pricing ---
+    # Book ref: "Kaufleute sollen und müssen auf Nachfrageänderungen
+    # mit Preisänderungen reagieren können. Auch ein zu großes Angebot
+    # an Waren... kann Preissenkungen sinnvoll machen." (line 2082)
+    price_markup_min: float = Field(
+        0.05,
+        ge=0,
+        description="Minimum retail markup (5%) when goods are slow-moving.",
+    )
+    price_markup_max: float = Field(
+        0.35,
+        ge=0,
+        description="Maximum retail markup (35%) when goods sell quickly.",
+    )
+    price_markup_sales_window_days: PositiveInt = Field(
+        30,
+        description="Rolling window for tracking daily sales units to compute turnover.",
+    )
+
+    # --- Retailer insolvency ---
+    # Book ref: "Unternehmen, die wiederholt hohen Wertberichtigungsbedarf
+    # verursachen, müssen... in eine geordnete Insolvenz geführt werden"
+    # (line 2018).
+    # Retailers whose cumulative write-downs exceed a threshold relative to
+    # cumulative purchases are chronically loss-making and must exit.
+    insolvency_write_down_ratio_threshold: float = Field(
+        0.5,
+        ge=0,
+        le=1.0,
+        description="If cumulative write-downs / cumulative purchases exceeds this "
+        "ratio, the retailer is declared insolvent.",
+    )
+    insolvency_min_purchase_history: float = Field(
+        100.0,
+        ge=0,
+        description="Minimum cumulative purchases before insolvency check activates "
+        "(avoids false positives during ramp-up).",
+    )
+    insolvency_grace_steps: PositiveInt = Field(
+        60,
+        description="Number of simulation steps before insolvency checks begin "
+        "(startup grace period).",
+    )
+
+    # --- Demand-driven ordering (Retailer as mediator) ---
+    # Book ref: "Kaufleute [sorgen] durch ihre Warenbestellungen für eine
+    # bedarfsgerechte Ausrichtung der Produktion" (line 2463).
+    # "Der Einzelhandel soll als Vermittler zwischen Produktion und
+    # Konsumtion fungieren. Er soll dafür sorgen, dass bedarfsgerecht
+    # produziert wird."
+    restock_target_stock_days: float = Field(
+        14.0,
+        ge=1.0,
+        description="Target: hold this many days of inventory at current sales velocity. "
+        "The effective target_inventory_value = avg_daily_sales_value * this factor.",
+    )
+    restock_sales_window_days: PositiveInt = Field(
+        30,
+        description="Rolling window for averaging daily sales value to estimate demand.",
+    )
+    restock_min_target_value: float = Field(
+        50.0,
+        ge=0,
+        description="Floor for effective target_inventory_value during ramp-up "
+        "(prevents zero ordering when no sales history exists).",
+    )
 
 
 class BankConfig(BaseConfigModel):
@@ -366,6 +547,14 @@ class BankConfig(BaseConfigModel):
     credit_inflation_sensitivity: float = Field(0.7, ge=0)
     credit_interest_rate: float = 0.0
     initial_liquidity: float = Field(1000.0, ge=0)
+    # Fee recirculation: fraction of accumulated fee income that the bank
+    # pays out as "operating expenses" (wages to bank employees, etc.) each
+    # month.  Without recirculation, fee income becomes a permanent money
+    # sink — see Failure 2 in the systemic diagnosis.
+    # Book ref: "Banken finanzieren sich nicht über Zinsen, sondern über
+    # Gebühren" — but those fees *are* the bank's income and must be spent
+    # back into the economy to keep money circulating.
+    fee_recirculation_rate: float = Field(0.8, ge=0, le=1)
 
 
 class SavingsBankConfig(BaseConfigModel):

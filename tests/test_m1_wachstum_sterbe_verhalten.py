@@ -32,7 +32,11 @@ def test_wachstums_sterbe_verhalten(monkeypatch, tmp_path):
     cfg.household.consumption_rate_growth = 0.1
 
     # Disable split-growth births to isolate the fertility mechanism.
-    cfg.household.savings_growth_trigger = 1e9
+    # Note: savings_growth_trigger also feeds into the fertility wealth factor
+    # denominator, so 1e9 would suppress births (~21% chance of 0 in 30 steps).
+    # Use 1e5: large enough to prevent any split-growth but keeps the wealth
+    # factor at its 0.25 floor only for very poor households.
+    cfg.household.savings_growth_trigger = 1e5
     cfg.household.sight_growth_trigger = 1e9
     cfg.household.growth_threshold = 999
 
@@ -43,7 +47,7 @@ def test_wachstums_sterbe_verhalten(monkeypatch, tmp_path):
     cfg.household.initial_age_mode_years = 28
     cfg.household.initial_age_max_years = 40
 
-    cfg.household.fertility_base_annual = 4.0
+    cfg.household.fertility_base_annual = 20.0
     cfg.household.birth_endowment_share = 0.15
 
     # Keep company demography quiet in run A.
@@ -102,5 +106,7 @@ def test_wachstums_sterbe_verhalten(monkeypatch, tmp_path):
     company_deaths_b = _sum_global(collector_b, "company_deaths")
 
     assert deaths_b > 0, "Household deaths should occur when mortality_base_annual is high"
-    assert company_births_b > 0, "Company splits should occur when investment_threshold=0 and growth_threshold=1"
+    assert company_births_b > 0, (
+        "Company splits should occur when investment_threshold=0 and growth_threshold=1"
+    )
     assert company_deaths_b > 0, "Company mergers should remove at least one company"

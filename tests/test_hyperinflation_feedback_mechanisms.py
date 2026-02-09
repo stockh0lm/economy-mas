@@ -17,13 +17,21 @@ def test_hyperinflation_fix() -> None:
     collector = MetricsCollector(config=cfg)
 
     class _Agent:
-        def __init__(self, sight_balance: float, income: float = 0.0, consumption_history: list[float] | None = None):
+        def __init__(
+            self,
+            sight_balance: float,
+            income: float = 0.0,
+            consumption_history: list[float] | None = None,
+        ):
             self.sight_balance = float(sight_balance)
             self.income = float(income)
             self.consumption_history = list(consumption_history or [])
 
     # Hoher Geldüberhang (wird über Sight-Decay abgebaut).
-    agents = [_Agent(4000.0, income=100.0, consumption_history=[50.0] * 30), _Agent(1362.89, income=50.0, consumption_history=[20.0] * 30)]
+    agents = [
+        _Agent(4000.0, income=100.0, consumption_history=[50.0] * 30),
+        _Agent(1362.89, income=50.0, consumption_history=[20.0] * 30),
+    ]
 
     gdp = 1857.97
 
@@ -64,8 +72,14 @@ def test_warengeld_feedback_mechanismen() -> None:
     bank.credit_lines[retailer.unique_id] = 100.0
 
     repaid = bank.auto_repay_cc_from_sight(retailer)
-    assert repaid == pytest.approx(100.0)
-    assert retailer.cc_balance == pytest.approx(0.0)
+    # With cc_repayment_fraction (default 0.3), only a fraction of excess
+    # is repaid per step.  Verify partial repayment works correctly.
+    fraction = cfg.retailer.cc_repayment_fraction
+    assert repaid == pytest.approx(100.0 * fraction)
+    # After enough iterations, the full CC should be repaid.
+    while retailer.cc_balance < -0.01:
+        bank.auto_repay_cc_from_sight(retailer)
+    assert retailer.cc_balance >= -0.01
     # Retailer hält mindestens den Allowance-Puffer.
     assert retailer.sight_balance >= retailer.sight_allowance - 1e-9
 

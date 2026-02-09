@@ -857,7 +857,27 @@ class SimulationEngine:
             last_price_index = float(self.config.market.price_index_base)
         self.labor_market.step(current_step=step, price_index=last_price_index)
 
-        # 3) Firms: operations + lifecycle
+        # 3) Retail restocking (BEFORE company operations)
+        #
+        # Book ref: Money is created when retailers finance goods purchases via
+        # Kontokorrent credit.  Companies receive these funds and use them to
+        # pay wages.  Therefore restocking must happen before company operations
+        # so that producers have the money to pay their workers.
+        #
+        # Circular flow: Bank →(CC)→ Retailer →(goods purchase)→ Company
+        #   →(wages)→ Household →(consumption)→ Retailer →(repay CC)→ Bank
+        local_trade_bias = float(self.config.spatial.local_trade_bias)
+        for r in self.retailers:
+            bank = self.banks_by_region.get(r.region_id, self.warengeld_banks[0])
+            if random.random() < local_trade_bias:
+                producer_pool = [
+                    c for c in self.companies if c.region_id == r.region_id
+                ] or self.companies
+            else:
+                producer_pool = self.companies
+            r.restock_goods(companies=producer_pool, bank=bank, current_step=step)
+
+        # 4) Firms: operations + lifecycle
         new_companies = []
         alive_companies = []
         for c in self.companies:
@@ -890,18 +910,6 @@ class SimulationEngine:
             alive_companies.extend(new_companies)
         self.companies = alive_companies
         self.agents_dict["companies"] = self.companies
-
-        # 4) Retail restocking
-        local_trade_bias = float(self.config.spatial.local_trade_bias)
-        for r in self.retailers:
-            bank = self.banks_by_region.get(r.region_id, self.warengeld_banks[0])
-            if random.random() < local_trade_bias:
-                producer_pool = [
-                    c for c in self.companies if c.region_id == r.region_id
-                ] or self.companies
-            else:
-                producer_pool = self.companies
-            r.restock_goods(companies=producer_pool, bank=bank, current_step=step)
 
         # 5) Households consume
         retailers_by_region: dict[str, list[RetailerAgent]] = {}
@@ -953,6 +961,27 @@ class SimulationEngine:
             if hasattr(r, "push_cogs_history"):
                 r.push_cogs_history(window_days=int(self.config.bank.cc_limit_rolling_window_days))
 
+        # 6b) Retailer insolvency check
+        # Book ref: "Unternehmen, die wiederholt hohen Wertberichtigungsbedarf
+        # verursachen, müssen... in eine geordnete Insolvenz geführt werden"
+        # (line 2018).
+        alive_retailers: list[RetailerAgent] = []
+        retailer_deaths_this_step = 0
+        for r in self.retailers:
+            if r.check_insolvency():
+                bank = self.banks_by_region.get(r.region_id, self.warengeld_banks[0])
+                bank.deregister_retailer(r)
+                retailer_deaths_this_step += 1
+                log(
+                    f"insolvency: retailer {r.unique_id} removed at step={step}",
+                    level="WARNING",
+                )
+            else:
+                alive_retailers.append(r)
+        if retailer_deaths_this_step > 0:
+            self.retailers = alive_retailers
+            self.agents_dict["retailers"] = self.retailers
+
         # 7) Monthly policies
         if self.clock.is_month_end(step):
             for rid, bank in self.banks_by_region.items():
@@ -962,6 +991,11 @@ class SimulationEngine:
                 bank_accounts += [a for a in self.companies if a.region_id == rid]
                 bank_accounts += [a for a in self.retailers if a.region_id == rid]
                 bank.charge_account_fees(bank_accounts)
+                # Recirculate bank fee income as operating expenses (bank
+                # employee wages).  Without this, fees become a permanent money
+                # drain — see Failure 2 in systemic diagnosis.
+                region_hh = [h for h in self.households if h.region_id == rid]
+                bank.recirculate_fee_income(region_hh)
             self.state.step([*self.companies, *self.retailers])
             self.state.spend_budgets(self.households, self.companies, self.retailers)
             self.clearing.apply_sight_decay(
@@ -1022,6 +1056,7 @@ class SimulationEngine:
                     "births": births_this_step,
                     "company_births": company_births_this_step,
                     "company_deaths": company_deaths_this_step,
+                    "retailer_deaths": retailer_deaths_this_step,
                 }
             )
 

@@ -133,7 +133,7 @@ def handle_childrearing_costs(household: Household, savings_bank: SavingsBank | 
 def handle_finances(
     household: Household,
     current_step: int,
-    savings_bank: SavingsBank,
+    savings_bank: SavingsBank | None,
     stage: str,
     is_month_end: bool | None = None,
     clock=None,
@@ -199,7 +199,7 @@ class SavingsComponent:
         current_step: int,
         *,
         clock=None,
-        savings_bank: SavingsBank = None,
+        savings_bank: SavingsBank | None = None,
         stage: str,
         is_month_end: bool | None = None,
     ) -> None:

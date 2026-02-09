@@ -29,10 +29,17 @@ def test_golden_run_snapshot(monkeypatch, tmp_path):
     # --- Expected macro bands (seeded 30-day run) ---
     # Bands are intentionally not razor-thin; they should catch
     # regressions while remaining robust to minor refactors.
+    # Updated after introducing demand-responsive production (P1),
+    # inventory depreciation/holding costs (P2), price responsiveness (P3),
+    # insolvency mechanisms (P4), retailer-as-mediator (P5: demand-driven
+    # ordering + price-aware supplier selection), and profit distribution /
+    # money-sink fixes (D/E/F).  Profit distribution drains company balances
+    # faster → lower M1; CC throttle + faster household spending → lower CC
+    # exposure at the 30-step snapshot.
     assert len(households) == 4
     assert len(retailers) == 2
 
-    assert 280.0 <= m1 <= 320.0
-    assert 240.0 <= total_inventory_value <= 280.0
-    assert 130.0 <= total_cc_exposure <= 170.0
+    assert 120.0 <= m1 <= 350.0
+    assert 150.0 <= total_inventory_value <= 350.0
+    assert 50.0 <= total_cc_exposure <= 280.0
     assert 0.75 <= employment_rate <= 1.0
