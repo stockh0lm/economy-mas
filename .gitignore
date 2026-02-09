@@ -1,60 +1,58 @@
-/output/*
+# ── Build & Distribution ──────────────────────────────────────────────
+build/
+dist/
+*.egg-info/
+*.egg
+
+# ── Python bytecode / runtime ─────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# ── Virtual environments ──────────────────────────────────────────────
+.venv/
+venv/
+env/
+.env
+
+# ── Tool caches ───────────────────────────────────────────────────────
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.nox/
+.benchmarks/
+
+# ── Test & coverage artifacts ─────────────────────────────────────────
+.coverage
+.coverage.*
+htmlcov/
+
+# ── IDE / editor ──────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.#*
+\#*\#
+.DS_Store
+
+# ── Simulation output (generated at runtime) ─────────────────────────
+/output/
+
+# ── Project-specific ignores ─────────────────────────────────────────
 /doc/V*.txt
 /doc/refactoring_reports/
 /tools/.opencode/
 
-# Python temporäre Dateien
-*.pyc
-__pycache__/
-*.pyo
-*.pyd
-.Python
-env/
-venv/*
-.venv/*
-.env
-*~
-
-# IDE/Editor temporäre Dateien
-.idea/*
-.vscode/*
-*.swp
-*.swo
-.DS_Store
-
-# Makefile Backup/Temp
-.#*
+# ── Temporary / backup files ─────────────────────────────────────────
 *.bak
 *.tmp
-*.swp
-\#*\#
-
-# Test artifacts and temporary files
-*.log
-test_*.txt
-test_*.json
-test_*.log
-test_*.sh
-test_*.md
-cline_*.txt
-cline_*.log
-
-# Debugging scripts
-analyze_encoding.py
-clean_and_decode.py
-decode_task.py
-save_decoded_binary.py
-
-# Binary artifacts
 *.bin
-encoded_task.txt
+*.log
 
-# Test coverage
-.coverage
-.coverage.*
-htmlcov/
-test_coverage_analysis.md
-
-# Node.js
+# ── Node.js (opencode SDK, not part of Python project) ───────────────
 node_modules/
 package-lock.json

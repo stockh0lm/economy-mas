@@ -7,51 +7,48 @@ name = "wirtschaftssimulation"
 version = "0.1.0"
 description = "Multiagenten-Simulation des Geldsystems nach Kenawi"
 requires-python = ">=3.11"
-dependencies = ["pydantic>=2.7.4", "PyYAML>=6.0.2", "numpy>=1.24"]
-
-[tool.setuptools]
-py-modules = ["main", "config", "metrics", "logger"]
-
-[tool.setuptools.packages.find]
-include = ["agents"]
+dependencies = [
+    "pydantic>=2.7.4",
+    "PyYAML>=6.0.2",
+    "numpy>=1.24",
+    "pandas>=2.0.0",
+    "matplotlib>=3.7.0",
+]
 
 [project.optional-dependencies]
 dev = [
-    "nox",
-    "pytest",
-    "mypy",
-    "ruff",
-    "black",
-    "isort",
-    "vulture",
-    "radon",
-    "matplotlib",
+    "nox>=2025.11",
+    "pytest>=9.0",
+    "mypy>=1.19",
+    "ruff>=0.14",
+    "black>=25.11",
+    "isort>=7.0",
+    "vulture>=2.14",
+    "radon>=6.0",
+    "lizard>=1.19",
 ]
 
-[tool.black]
-line-length = 100
-target-version = ["py312"]
+[tool.setuptools]
+py-modules = ["main", "config", "config_cache", "logger", "metrics", "sim_clock", "warengeld_accounting"]
 
-[tool.isort]
-profile = "black"
-line_length = 100
-known_first_party = ["agents"]
-combine_as_imports = true
+[tool.setuptools.packages.find]
+include = ["agents", "agents.*", "metrics", "simulation", "scripts", "tools"]
+
+# ── Ruff ──────────────────────────────────────────────────────────────
 
 [tool.ruff]
 line-length = 100
 target-version = "py312"
 exclude = [
-  ".venv",
-  ".nox",
-  "build",
-  "__pycache__",
+    ".venv",
+    ".nox",
+    "build",
+    "__pycache__",
 ]
+
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "C90", "PL", "UP"]
-ignore = [
-    "E501",
-]
+ignore = ["E501"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 15
@@ -64,6 +61,12 @@ max-statements = 1000
 "agents/company_agent.py" = ["C901", "PLR0912"]
 "metrics.py" = ["C901", "PLR0912"]
 
+[tool.ruff.lint.isort]
+known-first-party = ["agents", "metrics", "simulation", "scripts"]
+combine-as-imports = true
+
+# ── Mypy ──────────────────────────────────────────────────────────────
+
 [tool.mypy]
 python_version = "3.12"
 pretty = true
@@ -75,8 +78,11 @@ warn_unused_ignores = true
 ignore_missing_imports = true
 exclude = ["^build/"]
 
-[mypy-logger]
+[[tool.mypy.overrides]]
+module = "logger"
 ignore_errors = true
+
+# ── Pytest ────────────────────────────────────────────────────────────
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

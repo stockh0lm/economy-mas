@@ -3,9 +3,15 @@
 **/.venv/
 **/.ruff_cache/
 **/.pytest_cache/
+**/.mypy_cache/
+**/.benchmarks/
+**/*.egg-info/
 
 # Build / Output
 **/output/
+**/build/
+**/dist/
+**/htmlcov/
 
 # Virtual envs / tooling
 **/.nox/
@@ -13,3 +19,7 @@
 # VCS / IDE
 **/.git/
 **/.idea/
+**/.vscode/
+
+# Node.js
+**/node_modules/
