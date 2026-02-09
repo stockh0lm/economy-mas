@@ -2,7 +2,7 @@
 
 import json
 import time
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Literal
 
 from logger import log
 
@@ -16,7 +16,7 @@ class SimulationLogger:
     Provides structured logging with context and performance tracking.
     """
 
-    def __init__(self, component_name: str, agent_id: Optional[str] = None):
+    def __init__(self, component_name: str, agent_id: str | None = None):
         """
         Initialize simulation logger.
 
@@ -43,27 +43,27 @@ class SimulationLogger:
 
         return " ".join(parts)
 
-    def debug(self, message: str, data: Optional[Dict] = None) -> None:
+    def debug(self, message: str, data: dict | None = None) -> None:
         """Log debug message."""
         self._log("DEBUG", message, data)
 
-    def info(self, message: str, data: Optional[Dict] = None) -> None:
+    def info(self, message: str, data: dict | None = None) -> None:
         """Log info message."""
         self._log("INFO", message, data)
 
-    def warning(self, message: str, data: Optional[Dict] = None) -> None:
+    def warning(self, message: str, data: dict | None = None) -> None:
         """Log warning message."""
         self._log("WARNING", message, data)
 
-    def error(self, message: str, data: Optional[Dict] = None) -> None:
+    def error(self, message: str, data: dict | None = None) -> None:
         """Log error message."""
         self._log("ERROR", message, data)
 
-    def critical(self, message: str, data: Optional[Dict] = None) -> None:
+    def critical(self, message: str, data: dict | None = None) -> None:
         """Log critical message."""
         self._log("CRITICAL", message, data)
 
-    def _log(self, level: LogLevel, message: str, data: Optional[Dict] = None) -> None:
+    def _log(self, level: LogLevel, message: str, data: dict | None = None) -> None:
         """Internal logging method."""
         formatted_message = self._format_message(message, level)
         log(formatted_message, level=level)
@@ -76,9 +76,9 @@ class SimulationLogger:
                 data_str = json.dumps(data)
                 log(f"DATA: {data_str}", level=level)
             except Exception:
-                log(f"DATA: (unserializable data)", level=level)
+                log("DATA: (unserializable data)", level=level)
 
-    def log_event(self, event_type: str, data: Dict[str, Any]) -> None:
+    def log_event(self, event_type: str, data: dict[str, Any]) -> None:
         """
         Log a structured event with timestamp and context.
 
@@ -101,7 +101,7 @@ class SimulationLogger:
         self.info(log_message, event_data)
 
     def log_performance(
-        self, operation: str, duration: float, details: Optional[Dict] = None
+        self, operation: str, duration: float, details: dict | None = None
     ) -> None:
         """
         Log performance metrics.
@@ -123,7 +123,7 @@ class SimulationLogger:
 
         self.debug(f"PERF: {operation} took {duration:.4f}s", perf_data)
 
-    def get_log_stats(self) -> Dict[str, Any]:
+    def get_log_stats(self) -> dict[str, Any]:
         """Get logging statistics."""
         return {
             "component": self.component_name,
@@ -150,7 +150,7 @@ class AgentLogger(SimulationLogger):
         self.agent_type = agent_type
 
     def log_state_change(
-        self, old_state: str, new_state: str, reason: Optional[str] = None
+        self, old_state: str, new_state: str, reason: str | None = None
     ) -> None:
         """
         Log agent state change.
@@ -192,7 +192,7 @@ class SystemLogger(SimulationLogger):
         """
         super().__init__(system_name)
 
-    def log_system_metric(self, metric_name: str, value: Any, unit: Optional[str] = None) -> None:
+    def log_system_metric(self, metric_name: str, value: Any, unit: str | None = None) -> None:
         """
         Log system metric.
 

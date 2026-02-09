@@ -282,3 +282,90 @@ Damit du das System testen kannst, solltest du in jedem Tick mindestens tracken:
 * **Ungleichheit**: Gini auf Sicht- und Sparguthaben
 * **Bankenstabilität**: Reservequote, Audit-Findings, Wertberichtigungen
 * **Vollbeschäftigung/Output**: wenn Arbeitsmarkt modelliert ist
+
+---
+
+## 6) Warenklemme-Fixes und Verhaltenanpassungen
+
+### 6.1 Problem der Warenklemme
+
+Die ursprüngliche Implementierung hatte ein Problem, das als "Warenklemme" bezeichnet wurde: Ein Deadlock-Situation, bei der der Warenkreislauf zum Stillstand kam, weil Händler nicht genug Kreditspielraum hatten, um neue Waren zu bestellen, aber gleichzeitig nicht genug Lagerbestand, um Verkäufe zu tätigen und Kredite zurückzuzahlen.
+
+### 6.2 Verhaltenanpassungen zur Lösung
+
+#### 6.2.1 Makroökonomische Kreditsteuerung
+
+Um die Warenklemme zu verhindern, wurde eine makroökonomische Kreditsteuerung eingeführt:
+
+* **Dynamische Kreditlimits**: Die WarengeldBank passt nun die Kreditvergabe basierend auf makroökonomischen Signalen an:
+  * `base_credit_reserve_ratio`: Grundreservequote (standardmäßig 10%)
+  * `credit_unemployment_sensitivity`: Empfindlichkeit gegenüber Arbeitslosigkeit (0.4)
+  * `credit_inflation_sensitivity`: Empfindlichkeit gegenüber Inflation (0.6)
+
+* **Algorithmische Anpassung**:
+  ```python
+  def _allowed_credit_ratio(self) -> float:
+      unemployment_gap = max(0.0, self.macro_unemployment - self.target_unemployment_rate)
+      inflation_gap = max(0.0, self.macro_inflation - self.target_inflation_rate)
+      ratio = self.base_credit_reserve_ratio
+      ratio += self.credit_unemployment_sensitivity * unemployment_gap
+      ratio += self.credit_inflation_sensitivity * inflation_gap
+      return max(0.01, ratio)
+  ```
+
+* **Effekt**: Bei hoher Arbeitslosigkeit oder Inflation wird die Kreditvergabe eingeschränkt, um Überhitzung zu verhindern. Bei stabilen Bedingungen bleibt ausreichend Kreditspielraum für den Warenfluss.
+
+#### 6.2.2 Erzwungene Rückzahlungen bei Inventurproblemen
+
+Das ursprüngliche System loggte nur Warnungen, wenn die Inventardeckung unzureichend war. Die Fixes führen nun **erzwungene Rückzahlungen** ein:
+
+* **Automatische Deckungsprüfung**: Wenn `inventory_value < inventory_coverage_threshold * credit`, wird der Überschusskredit automatisch zurückverlangt.
+* **Rückzahlung aus Guthaben**: Der Händler muss den Überschuss aus seinem `balance` zurückzahlen, falls verfügbar.
+* **Protokollierung und Transparenz**: Jede erzwungene Rückzahlung wird detailliert protokolliert.
+
+* **Algorithmische Implementierung**:
+  ```python
+  if credit > min_covered_credit:
+      excess_credit = credit - min_covered_credit
+      if hasattr(merchant, "balance"):
+          merchant_balance = getattr(merchant, "balance")
+          repayment_from_balance = min(excess_credit, merchant_balance)
+          setattr(merchant, "balance", merchant_balance - repayment_from_balance)
+          repaid = self.process_repayment(merchant, repayment_from_balance)
+  ```
+
+#### 6.2.3 Robustere Inventurprüfung
+
+Die Inventurprüfung wurde verbessert, um Edge-Cases besser zu handhaben:
+
+* **Fehlende Inventarattribute**: Warnungen statt Debug-Meldungen, wenn Händler kein Inventar haben
+* **Sicherere Division**: Schutz vor Division durch Null durch `coverage_denominator = max(self.inventory_coverage_threshold, 1e-6)`
+* **Detaillierte Protokollierung**: Klare Unterscheidung zwischen ausreichender und unzureichender Inventardeckung
+
+#### 6.2.4 Integration makroökonomischer Signale
+
+Die Banken erhalten nun regelmäßig makroökonomische Daten:
+
+* **Unemployment Rate**: Wird vom Arbeitsmarkt berechnet und an die Bank übermittelt
+* **Inflation Rate**: Wird aus globalen Metriken abgeleitet
+* **Dynamische Anpassung**: Die Bank passt ihre Kreditpolitik kontinuierlich an die aktuelle Wirtschaftslage an
+
+#### 6.2.5 Arbeitsmarkt-Anpassungen
+
+Der Arbeitsmarkt wurde ebenfalls angepasst, um die Warenklemme zu verhindern:
+
+* **Dynamische Lohnanpassung**: Löhne werden basierend auf Arbeitslosigkeit und Preisindex angepasst
+* **Wage Unemployment Sensitivity** (0.6): Wie stark Löhne auf Arbeitslosigkeit reagieren
+* **Wage Price Index Sensitivity** (0.4): Wie stark Löhne auf Inflation reagieren
+* **Minimum Wage Floor**: Schutz vor zu starken Lohnkürzungen
+
+### 6.3 Effekte der Anpassungen
+
+Die kombinierten Anpassungen lösen die Warenklemme durch:
+
+1. **Verhinderung von Kredit-Deadlocks**: Dynamische Kreditlimits verhindern, dass Händler in Situationen geraten, in denen sie weder bestellen noch verkaufen können.
+2. **Automatische Korrekturmechanismen**: Erzwungene Rückzahlungen stellen sicher, dass die Inventardeckung immer gewährleistet ist.
+3. **Makroökonomische Stabilisierung**: Die Kopplung von Kreditvergabe an makroökonomische Indikatoren verhindert Überhitzung und Absatzstockungen.
+4. **Robustere Fehlerbehandlung**: Bessere Behandlung von Edge-Cases verhindert Systemabstürze und unerwartetes Verhalten.
+
+Diese Anpassungen stellen sicher, dass der Warenkreislauf auch unter schwierigen makroökonomischen Bedingungen funktioniert und die Geldmenge angemessen an die Warenwertmenge gekoppelt bleibt.

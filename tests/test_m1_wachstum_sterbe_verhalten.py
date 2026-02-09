@@ -1,4 +1,3 @@
-import os
 
 from config import SimulationConfig
 from main import run_simulation

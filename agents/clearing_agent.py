@@ -13,8 +13,9 @@ invariants* aligned: money creation occurs only at retailer goods purchases; mon
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any
 
 from config import CONFIG_MODEL, SimulationConfig
 from logger import log

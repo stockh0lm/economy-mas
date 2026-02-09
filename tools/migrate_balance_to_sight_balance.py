@@ -6,15 +6,12 @@ This tool systematically updates Python source code to use the standardized
 'sight_balance' naming convention instead of the legacy 'balance' name.
 """
 
-import ast
-import sys
 import argparse
+import ast
 from pathlib import Path
-from typing import Set, List, Tuple, Optional
-import tokenize
-from io import BytesIO
 
 from logger import log
+
 
 class BalanceToSightBalanceTransformer(ast.NodeTransformer):
     """AST transformer that renames 'balance' references to 'sight_balance'."""
@@ -132,10 +129,10 @@ class StringLiteralUpdater:
 
         return result
 
-def migrate_file(file_path: Path, dry_run: bool = False) -> Tuple[bool, str]:
+def migrate_file(file_path: Path, dry_run: bool = False) -> tuple[bool, str]:
     """Migrate a single Python file from balance to sight_balance."""
     try:
-        with open(file_path, 'r', encoding='utf-8') as f:
+        with open(file_path, encoding='utf-8') as f:
             source_code = f.read()
 
         # Parse the AST
@@ -166,12 +163,12 @@ def migrate_file(file_path: Path, dry_run: bool = False) -> Tuple[bool, str]:
     except Exception as e:
         return False, f"Error: {str(e)}"
 
-def scan_file_for_balance_references(file_path: Path) -> List[Tuple[int, str]]:
+def scan_file_for_balance_references(file_path: Path) -> list[tuple[int, str]]:
     """Scan a file for 'balance' references and return line numbers."""
     references = []
 
     try:
-        with open(file_path, 'r', encoding='utf-8') as f:
+        with open(file_path, encoding='utf-8') as f:
             for line_num, line in enumerate(f, 1):
                 if 'balance' in line.lower() and 'sight_balance' not in line:
                     # Skip comments and docstrings

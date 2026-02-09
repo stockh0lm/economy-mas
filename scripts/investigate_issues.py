@@ -12,11 +12,11 @@ Usage:
     python scripts/investigate_issues.py
 """
 
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-from pathlib import Path
 import logging
+from pathlib import Path
+
+import matplotlib.pyplot as plt
+import pandas as pd
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -196,10 +196,10 @@ def analyze_spawning_mechanics():
 
     # Read relevant source files
     try:
-        with open('agents/household_agent.py', 'r') as f:
+        with open('agents/household_agent.py') as f:
             household_code = f.read()
 
-        with open('agents/company_agent.py', 'r') as f:
+        with open('agents/company_agent.py') as f:
             company_code = f.read()
 
         # Look for spawning/dying methods
@@ -246,7 +246,7 @@ def analyze_simulation_log():
     pattern_counts = {}
     for pattern in patterns_to_search:
         count = 0
-        with open(log_path, 'r') as f:
+        with open(log_path) as f:
             for line in f:
                 if pattern.lower() in line.lower():
                     count += 1
@@ -255,7 +255,7 @@ def analyze_simulation_log():
 
     # Look for specific issues around turn 30000
     logger.info("\nSearching for issues around turn 30000...")
-    with open(log_path, 'r') as f:
+    with open(log_path) as f:
         for line in f:
             if '30000' in line or ('2999' in line and '3000' in line):
                 logger.info(f"Line around 30000: {line.strip()}")

@@ -146,9 +146,9 @@ class State(BaseAgent):
             if agent_taxes > 0:
                 # Prefer sight_balance (Warengeld) if available, else fall back to balance.
                 if hasattr(taxable_agent, "sight_balance"):
-                    available = float(max(0.0, getattr(taxable_agent, "sight_balance")))
+                    available = float(max(0.0, taxable_agent.sight_balance))
                     paid = min(float(agent_taxes), available)
-                    setattr(taxable_agent, "sight_balance", available - paid)
+                    taxable_agent.sight_balance = available - paid
                 else:
                     available = float(max(0.0, taxable_agent.balance))
                     paid = min(float(agent_taxes), available)
@@ -220,9 +220,9 @@ class State(BaseAgent):
             per_h = float(self.social_budget) / float(len(households))
             for h in households:
                 if hasattr(h, "sight_balance"):
-                    h.sight_balance = float(getattr(h, "sight_balance")) + per_h
+                    h.sight_balance = float(h.sight_balance) + per_h
                 else:
-                    h.balance = float(getattr(h, "balance")) + per_h
+                    h.balance = float(h.balance) + per_h
             self.social_budget = 0.0
 
         # Infrastructure procurement (State buys goods from retailers)
@@ -238,18 +238,18 @@ class State(BaseAgent):
                     if paid <= 0:
                         continue
                     if hasattr(r, "sight_balance"):
-                        r.sight_balance = float(getattr(r, "sight_balance")) + paid
+                        r.sight_balance = float(r.sight_balance) + paid
                     else:
-                        r.balance = float(getattr(r, "balance")) + paid
+                        r.balance = float(r.balance) + paid
 
         # Environmental spending
         if self.environment_budget > 0 and retailers:
             per_r = float(self.environment_budget) / float(len(retailers))
             for r in retailers:
                 if hasattr(r, "sight_balance"):
-                    r.sight_balance = float(getattr(r, "sight_balance")) + per_r
+                    r.sight_balance = float(r.sight_balance) + per_r
                 else:
-                    r.balance = float(getattr(r, "balance")) + per_r
+                    r.balance = float(r.balance) + per_r
             self.environment_budget = 0.0
 
         log(

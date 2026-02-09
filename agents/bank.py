@@ -17,8 +17,9 @@ Referenz: doc/issues.md Abschnitt 4 → „Legacy-Muster vollständig bereinigen
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any
 
 from agents.base_agent import BaseAgent
 from config import CONFIG_MODEL, SimulationConfig
@@ -511,13 +512,13 @@ class WarengeldBank(BaseAgent):
         for acc in accounts_list:
             # Best-effort retrieval of a sight balance-like field.
             if hasattr(acc, "sight_balance"):
-                bal = float(getattr(acc, "sight_balance"))
+                bal = float(acc.sight_balance)
                 setter = lambda v, _acc=acc: setattr(_acc, "sight_balance", v)
             elif hasattr(acc, "checking_account"):
-                bal = float(getattr(acc, "checking_account"))
+                bal = float(acc.checking_account)
                 setter = lambda v, _acc=acc: setattr(_acc, "checking_account", v)
             elif hasattr(acc, "balance"):
-                bal = float(getattr(acc, "balance"))
+                bal = float(acc.balance)
                 setter = lambda v, _acc=acc: setattr(_acc, "balance", v)
             else:
                 continue
@@ -635,9 +636,9 @@ class WarengeldBank(BaseAgent):
             if hasattr(hh, "receive_income"):
                 hh.receive_income(per_hh)
             elif hasattr(hh, "sight_balance"):
-                hh.sight_balance = float(getattr(hh, "sight_balance")) + per_hh
+                hh.sight_balance = float(hh.sight_balance) + per_hh
             elif hasattr(hh, "balance"):
-                hh.balance = float(getattr(hh, "balance")) + per_hh
+                hh.balance = float(hh.balance) + per_hh
             else:
                 continue
             total_distributed += per_hh

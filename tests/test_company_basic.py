@@ -1,9 +1,9 @@
 import math
+
 import pytest
 
 from agents.company_agent import Company
 from agents.household_agent import Household
-from config import CONFIG_MODEL
 
 
 def make_employee(uid: str) -> Household:

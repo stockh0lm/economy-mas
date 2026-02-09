@@ -10,8 +10,8 @@ For each step, we instrument the key phases:
 We print balances BEFORE and AFTER each phase to show exact money flows.
 """
 
-import sys
 import os
+import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -77,7 +77,7 @@ def main():
     print("=" * 140)
 
     # Initial state
-    print(f"\n--- INITIAL STATE (before any step) ---")
+    print("\n--- INITIAL STATE (before any step) ---")
     snapshot(engine, "INITIAL")
     print(f"  Employed HH: {count_employed(engine)}")
 
@@ -92,9 +92,9 @@ def main():
     # plus monkey-patch key methods to trace them.
 
     # Monkey-patch approach: wrap key methods to log flows
+    from agents.bank import WarengeldBank
     from agents.company_agent import Company
     from agents.retailer_agent import RetailerAgent
-    from agents.bank import WarengeldBank
 
     original_pay_wages = Company.pay_wages
     total_wages_paid = [0.0]
@@ -164,7 +164,7 @@ def main():
         )
 
         # Per-company balance detail (first 5)
-        print(f"  Company balances (first 5): ", end="")
+        print("  Company balances (first 5): ", end="")
         for c in engine.companies[:5]:
             emps = len(c.employees)
             print(
@@ -174,7 +174,7 @@ def main():
         print()
 
         # Per-retailer balance detail
-        print(f"  Retailer balances: ", end="")
+        print("  Retailer balances: ", end="")
         for r in engine.retailers:
             print(
                 f"{r.unique_id}(sight={r.sight_balance:.2f},cc={r.cc_balance:.2f},"

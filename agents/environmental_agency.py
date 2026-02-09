@@ -69,7 +69,7 @@ class EnvironmentalAgency(BaseAgent):
         self.penalty_factor: float = self.config.environmental.penalty_factor_env_audit
 
         # Recycling company attachment
-        self.recycling_company: "RecyclingCompany | None" = None
+        self.recycling_company: RecyclingCompany | None = None
 
     def attach_recycling_company(self, recycler: "RecyclingCompany") -> None:
         """Link the environmental agency to a recycling company for waste processing."""
@@ -116,7 +116,7 @@ class EnvironmentalAgency(BaseAgent):
                 billing_agent = cast(BillingAgent, agent)
                 if hasattr(billing_agent, "sight_balance"):
                     billing_agent.sight_balance = (
-                        float(getattr(billing_agent, "sight_balance")) - tax
+                        float(billing_agent.sight_balance) - tax
                     )
                 else:
                     billing_agent.balance -= tax
@@ -176,7 +176,7 @@ class EnvironmentalAgency(BaseAgent):
                 billing_company = cast(BillingAgent, company)
                 if hasattr(billing_company, "sight_balance"):
                     billing_company.sight_balance = (
-                        float(getattr(billing_company, "sight_balance")) - penalty
+                        float(billing_company.sight_balance) - penalty
                     )
                 else:
                     billing_company.balance -= penalty

@@ -44,9 +44,9 @@ def test_company_hiring_works_round_robin(tmp_path):
     cfg = SimulationConfig(simulation_steps=1)
     cfg.metrics_export_path = str(tmp_path / "metrics")
     cfg.log_file = str(tmp_path / "simulation.log")
-    from agents.labor_market import LaborMarket
     from agents.company_agent import Company
     from agents.household_agent import Household
+    from agents.labor_market import LaborMarket
 
     lm = LaborMarket(unique_id="lm", config=cfg)
 

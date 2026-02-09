@@ -176,7 +176,7 @@ class HouseholdConfig(BaseConfigModel):
     child_rearing_cost: float = Field(200.0, ge=0)
 
     # New: household saving behavior
-    savings_rate: float = Field(0.0, ge=0, le=1)
+    savings_rate: float = Field(0.2, ge=0, le=1)
     transaction_buffer: float = Field(5.0, ge=0)
 
     # --- Demography (age-dependent mortality) ---
@@ -892,7 +892,6 @@ def load_simulation_config_from_yaml(path: str) -> SimulationConfig:
         raise TypeError(msg)
 
     # Let schema validation errors propagate as-is (tests assert this).
-    from pydantic import ValidationError as PydanticValidationError  # type: ignore
 
     try:
         from pydantic_core import ValidationError as CoreValidationError  # type: ignore

@@ -1,9 +1,10 @@
 """Comprehensive test suite for apply_sight_decay function."""
 
-from metrics import apply_sight_decay
-from agents.household_agent import Household
 from agents.company_agent import Company
+from agents.household_agent import Household
 from config import SimulationConfig
+from metrics import apply_sight_decay
+
 
 def test_apply_sight_decay_basic_scenario():
     """Test basic sight decay functionality."""

@@ -24,7 +24,6 @@ from pathlib import Path
 
 from logger import log
 
-
 WANTED = [
     "time_step",
     "employment_rate",

@@ -4,8 +4,9 @@ Resets class-level mutable state between test runs to ensure test isolation.
 """
 
 import sys
-from pathlib import Path
 import tempfile
+from pathlib import Path
+
 import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -26,7 +27,6 @@ def pytest_runtest_setup(item):
     """
     # Reset Company._lineage_counters to prevent pollution from test_m5
     # which forces company splits and modifies this global counter.
-    import importlib
 
     company_module = sys.modules.get("agents.company_agent")
     if company_module is not None:
@@ -51,9 +51,6 @@ def pytest_runtest_setup(item):
     config_cache_module = sys.modules.get("agents.config_cache")
     if config_cache_module is not None:
         config_cache_module.GlobalConfigCache._instance = None
-    config_cache_root = sys.modules.get("config_cache")
-    if config_cache_root is not None:
-        config_cache_root.GlobalConfigCache._instance = None
 
 
 @pytest.fixture(scope="session")
@@ -61,9 +58,8 @@ def runner_metrics_dir():
     """Generate a minimal simulation run for integration tests.
     This fixture runs once per test session to avoid regenerating metrics on every test.
     """
-    from main import run_simulation
     from config import SimulationConfig
-    import tempfile
+    from main import run_simulation
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmppath = Path(tmpdir) / "metrics"

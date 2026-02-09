@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from main import initialize_agents, load_config, run_simulation
 from config import SimulationConfig
+from main import initialize_agents, load_config, run_simulation
 
 
 def test_financial_market_abgeschaltet(tmp_path: Path) -> None:

@@ -1,10 +1,11 @@
 """Comprehensive test suite for State.spend_budgets method."""
 
-from agents.state_agent import State
-from agents.household_agent import Household
 from agents.company_agent import Company
+from agents.household_agent import Household
 from agents.retailer_agent import RetailerAgent
+from agents.state_agent import State
 from config import SimulationConfig
+
 
 def test_spend_budgets_basic_scenario():
     """Test basic budget spending with all budget types."""

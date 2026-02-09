@@ -3,28 +3,29 @@
 import csv
 import tempfile
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pandas as pd
 import pytest
 
 from scripts.plot_metrics import (
-    load_csv_rows,
-    try_float,
-    extract_series,
     aggregate_company_metrics,
     count_agents_per_step,
     detect_latest_run_id,
+    extract_series,
+    load_csv_rows,
     parse_args,
+    plot_company_health,
+    plot_company_population,
     plot_global_output,
-    plot_monetary_system,
+    plot_household_population,
     plot_labor_market,
+    plot_monetary_system,
     plot_prices_and_wages,
     plot_state_budgets,
-    plot_company_health,
-    plot_household_population,
-    plot_company_population,
+    try_float,
 )
+
 
 @pytest.fixture
 def sample_csv_data():

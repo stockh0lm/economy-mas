@@ -34,7 +34,7 @@ def test_compare_posthoc_smoke_real_export(tmp_path: Path) -> None:
             "--output-prefix",
             "pytest",
         ],
-        capture_output=True,
+        check=False, capture_output=True,
         text=True,
     )
 

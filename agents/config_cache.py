@@ -1,9 +1,8 @@
 """Configuration caching system for performance optimization."""
 
-from typing import Any, ClassVar, Dict, Generic, TypeVar
+from typing import Any, Generic, TypeVar
 
 from config import SimulationConfig
-from logger import log
 
 T = TypeVar("T")
 
@@ -23,8 +22,8 @@ class ConfigCache(Generic[T]):
             max_size: Maximum number of items to cache
             ttl_seconds: Time-to-live for cached items in seconds
         """
-        self._cache: Dict[str, Any] = {}
-        self._access_times: Dict[str, float] = {}
+        self._cache: dict[str, Any] = {}
+        self._access_times: dict[str, float] = {}
         self._max_size = max_size
         self._ttl_seconds = ttl_seconds
         self._hits = 0
@@ -110,7 +109,7 @@ class AgentConfigCache:
         """
         self._config = config
         self._cache = ConfigCache[str]()
-        self._section_caches: Dict[str, ConfigCache] = {}
+        self._section_caches: dict[str, ConfigCache] = {}
 
     def get_config_value(self, path: str) -> Any:
         """

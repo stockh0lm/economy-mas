@@ -22,8 +22,8 @@ from __future__ import annotations
 import ast
 import inspect
 import textwrap
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import Callable, Iterable
 
 
 class ComplexityError(RuntimeError):

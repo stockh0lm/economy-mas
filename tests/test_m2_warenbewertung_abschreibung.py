@@ -1,7 +1,7 @@
 import pytest
 
-from config import SimulationConfig
 from agents.retailer_agent import RetailerAgent
+from config import SimulationConfig
 
 
 def test_warenbewertung_abschreibung():

@@ -1,5 +1,6 @@
-import nox
 import os
+
+import nox
 
 nox.options.force_venv_backend = "none"
 nox.options.reuse_existing_virtualenvs = True

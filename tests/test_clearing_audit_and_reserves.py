@@ -7,7 +7,7 @@ import math
 from typing import Any
 
 import config
-from agents.clearing_agent import ClearingAgent, AuditFinding
+from agents.clearing_agent import ClearingAgent
 
 
 class DummyBank:

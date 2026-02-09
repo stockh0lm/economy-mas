@@ -1,8 +1,7 @@
-from config import SimulationConfig
-
 from agents.company_agent import Company
 from agents.household_agent import Household
 from agents.savings_bank_agent import SavingsBank
+from config import SimulationConfig
 
 
 def test_sparkassen_spargrenzen():

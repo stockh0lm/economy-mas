@@ -1,8 +1,6 @@
-import os
-import pytest
 from config import SimulationConfig
+from main import _m1_proxy, run_simulation
 from simulation.engine import SimulationEngine
-from main import run_simulation, _m1_proxy
 
 
 def test_simulation_engine_step_advances_clock():

@@ -4,16 +4,17 @@ Structural architectural solution for Warengeld money system.
 Implements double-entry accounting and proper money conservation.
 """
 
-from typing import Dict, List, Optional
+
 from agents.clearing_agent import ClearingAgent
 from logger import log
+
 
 class DoubleEntryAccounting:
     """Double-entry accounting system that prevents money creation by design."""
 
     def __init__(self):
-        self.ledger: Dict[str, Dict[str, float]] = {}
-        self.transaction_history: List[Dict] = []
+        self.ledger: dict[str, dict[str, float]] = {}
+        self.transaction_history: list[dict] = []
         self.total_money_supply = 0.0
 
     def record_transaction(self, debit_account: str, credit_account: str, amount: float, purpose: str, step: int):
@@ -83,14 +84,14 @@ class DoubleEntryAccounting:
         total_debits = sum(account['debits'] for account in self.ledger.values())
         return total_credits - total_debits
 
-    def get_transaction_history(self, limit: int = 100) -> List[Dict]:
+    def get_transaction_history(self, limit: int = 100) -> list[dict]:
         """Get recent transaction history."""
         return self.transaction_history[-limit:] if self.transaction_history else []
 
 class MoneyTransactionPipeline:
     """Transaction pipeline that enforces proper money flows."""
 
-    def __init__(self, accounting: DoubleEntryAccounting, clearing_agent: Optional[ClearingAgent] = None):
+    def __init__(self, accounting: DoubleEntryAccounting, clearing_agent: ClearingAgent | None = None):
         self.accounting = accounting
         self.clearing_agent = clearing_agent
 
@@ -164,16 +165,16 @@ class MoneyTransactionPipeline:
 class MoneySupplyGuardian:
     """Actively monitors and guards money supply integrity."""
 
-    def __init__(self, accounting: DoubleEntryAccounting, clearing_agent: Optional[ClearingAgent] = None):
+    def __init__(self, accounting: DoubleEntryAccounting, clearing_agent: ClearingAgent | None = None):
         self.accounting = accounting
         self.clearing_agent = clearing_agent
         self.initial_supply = 0.0
 
-    def initialize(self, agents: List[object]):
+    def initialize(self, agents: list[object]):
         """Initialize with current money supply."""
         self.initial_supply = self.accounting.get_total_money_supply()
 
-    def check_anomalies(self) -> List[Dict]:
+    def check_anomalies(self) -> list[dict]:
         """Check for money supply anomalies."""
         anomalies = []
 
@@ -205,7 +206,7 @@ class MoneySupplyGuardian:
 
         return anomalies
 
-def create_warengeld_accounting_system(clearing_agent: Optional[ClearingAgent] = None):
+def create_warengeld_accounting_system(clearing_agent: ClearingAgent | None = None):
     """Create the complete Warengeld accounting system."""
     accounting = DoubleEntryAccounting()
     pipeline = MoneyTransactionPipeline(accounting, clearing_agent)

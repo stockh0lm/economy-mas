@@ -1,5 +1,5 @@
-from agents.labor_market import LaborMarket
 from agents.household_agent import Household
+from agents.labor_market import LaborMarket
 from config import SimulationConfig
 
 

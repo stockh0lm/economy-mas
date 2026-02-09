@@ -1,12 +1,12 @@
 """Base types and constants for the metrics package."""
 
-from typing import Any, Dict, Protocol, TypedDict, TypeVar, Union
+from typing import Any, Protocol, TypedDict, Union
 
 # Type aliases
 TimeStep = int
 ValueType = Union[float, int, str, bool, None]
-MetricDict = Dict[str, Any]
-TimeSeriesDict = Dict[TimeStep, MetricDict]
+MetricDict = dict[str, Any]
+TimeSeriesDict = dict[TimeStep, MetricDict]
 
 # Constants
 MIN_GLOBAL_METRICS_POINTS = 10
@@ -25,9 +25,9 @@ class TypeDefinitions:
     TimeStep = int
     ValueType = Union[float, int, str, bool, None]
     MetricName = str
-    MetricDict = Dict[str, Any]
-    TimeSeriesDict = Dict[int, Dict[str, Any]]
-    AgentMetricsDict = Dict[str, Dict[int, Dict[str, Any]]]
+    MetricDict = dict[str, Any]
+    TimeSeriesDict = dict[int, dict[str, Any]]
+    AgentMetricsDict = dict[str, dict[int, dict[str, Any]]]
 
     EconomicAgent = EconomicAgent
 

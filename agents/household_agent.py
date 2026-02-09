@@ -14,9 +14,7 @@ from __future__ import annotations
 
 import os
 import random
-from collections import deque
 from collections.abc import Sequence
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
@@ -27,8 +25,8 @@ from sim_clock import SimulationClock
 
 from .base_agent import BaseAgent
 from .household.consumption import ConsumptionComponent, ConsumptionPlan
-from .household.savings import SavingsComponent
 from .household.demography import DemographyComponent, HouseholdFormationEvent
+from .household.savings import SavingsComponent
 
 _DEFAULT_NP_RNG = None
 

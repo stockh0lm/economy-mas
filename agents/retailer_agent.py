@@ -615,7 +615,7 @@ class RetailerAgent(BaseAgent):
 
     def sell_to_state(
         self,
-        state: "State",
+        state: State,
         budget: float,
         *,
         budget_bucket: str = "infrastructure_budget",
@@ -758,7 +758,7 @@ class RetailerAgent(BaseAgent):
 
         return destroyed
 
-    def apply_inventory_write_downs(self, *, current_step: int, bank: "WarengeldBank") -> float:
+    def apply_inventory_write_downs(self, *, current_step: int, bank: WarengeldBank) -> float:
         """Abschreibungen auf Warenlager (Geldvernichtung) + CC-Exposure-Anpassung.
 
         Spezifikation: doc/specs.md Section 4.6.

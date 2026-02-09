@@ -2,29 +2,29 @@ from __future__ import annotations
 
 import os
 import random
-import time
 import sys
+import time
 from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 
-from config import SimulationConfig
+import agents.household.consumption as consumption_module
+import agents.household_agent as household_module
 from agents.bank import WarengeldBank
 from agents.clearing_agent import ClearingAgent
 from agents.company_agent import Company
+from agents.config_cache import GlobalConfigCache
 from agents.environmental_agency import EnvironmentalAgency
 from agents.household_agent import Household
 from agents.labor_market import LaborMarket
 from agents.retailer_agent import RetailerAgent
 from agents.savings_bank_agent import SavingsBank
 from agents.state_agent import State
-from agents.config_cache import GlobalConfigCache
-import agents.household_agent as household_module
-import agents.household.consumption as consumption_module
+from config import SimulationConfig
 from logger import log
-from sim_clock import SimulationClock
 from metrics import MetricsCollector
+from sim_clock import SimulationClock
 
 
 def _format_duration(seconds: float) -> str:

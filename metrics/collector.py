@@ -1,11 +1,11 @@
 """MetricsCollector - collects metrics from simulation agents."""
 
-from typing import Any, Dict, List, Optional, Protocol, Set, cast
-from .base import MetricDict, TimeStep, ValueType
-from agents.company_agent import Company
-from agents.household_agent import Household
+from typing import Any, Protocol, cast
+
 from config import CONFIG_MODEL, SimulationConfig
 from logger import log
+
+from .base import MetricDict, TimeStep
 
 
 class EconomicAgent(Protocol):
@@ -22,24 +22,24 @@ class MetricsCollector:
     to evaluate economic performance of the simulation.
     """
 
-    bank_metrics: Dict[str, Dict[TimeStep, MetricDict]] = {}
-    household_metrics: Dict[str, Dict[TimeStep, MetricDict]] = {}
-    company_metrics: Dict[str, Dict[TimeStep, MetricDict]] = {}
-    retailer_metrics: Dict[str, Dict[TimeStep, MetricDict]] = {}
-    state_metrics: Dict[str, Dict[TimeStep, MetricDict]] = {}
-    market_metrics: Dict[str, Dict[TimeStep, MetricDict]] = {}
-    global_metrics: Dict[TimeStep, MetricDict] = {}
-    registered_households: Set[str] = set()
-    registered_companies: Set[str] = set()
-    registered_retailers: Set[str] = set()
-    registered_banks: Set[str] = set()
-    metrics_config: Dict[str, Any] = {}
+    bank_metrics: dict[str, dict[TimeStep, MetricDict]] = {}
+    household_metrics: dict[str, dict[TimeStep, MetricDict]] = {}
+    company_metrics: dict[str, dict[TimeStep, MetricDict]] = {}
+    retailer_metrics: dict[str, dict[TimeStep, MetricDict]] = {}
+    state_metrics: dict[str, dict[TimeStep, MetricDict]] = {}
+    market_metrics: dict[str, dict[TimeStep, MetricDict]] = {}
+    global_metrics: dict[TimeStep, MetricDict] = {}
+    registered_households: set[str] = set()
+    registered_companies: set[str] = set()
+    registered_retailers: set[str] = set()
+    registered_banks: set[str] = set()
+    metrics_config: dict[str, Any] = {}
     export_path: Any = None
-    latest_labor_metrics: Dict[str, float] = {}
+    latest_labor_metrics: dict[str, float] = {}
     latest_global_metrics: MetricDict = {}
     config: SimulationConfig
 
-    def __init__(self, config: Optional[SimulationConfig] = None):
+    def __init__(self, config: SimulationConfig | None = None):
         """Initialize the metrics collector."""
         self.config = config or CONFIG_MODEL
         self.bank_metrics = {}
@@ -429,13 +429,13 @@ class MetricsCollector:
                 step_metrics["sight_balance"] = float(getattr(bank, "sight_balance", 0.0))
 
             if hasattr(bank, "credit_lines"):
-                credit_lines = getattr(bank, "credit_lines")
+                credit_lines = bank.credit_lines
                 total_credit = float(sum(credit_lines.values()))
                 step_metrics["total_credit"] = total_credit
                 step_metrics["num_borrowers"] = int(len(credit_lines))
 
             if hasattr(bank, "goods_purchase_ledger"):
-                ledger = getattr(bank, "goods_purchase_ledger")
+                ledger = bank.goods_purchase_ledger
                 issuance = 0.0
                 for rec in ledger:
                     if int(getattr(rec, "step", -1)) == int(step):
@@ -443,10 +443,10 @@ class MetricsCollector:
                 step_metrics["issuance_volume"] = float(issuance)
 
             if hasattr(bank, "total_savings"):
-                total_savings = float(getattr(bank, "total_savings"))
+                total_savings = float(bank.total_savings)
                 step_metrics["total_savings"] = total_savings
                 if hasattr(bank, "savings_accounts"):
-                    step_metrics["num_accounts"] = int(len(getattr(bank, "savings_accounts")))
+                    step_metrics["num_accounts"] = int(len(bank.savings_accounts))
 
             self.bank_metrics.setdefault(agent_id, {})[step] = step_metrics
 
@@ -520,19 +520,19 @@ class MetricsCollector:
 
     def calculate_global_metrics(self, step):
         """Calculate global economic metrics aggregated across all agents."""
-        from metrics.calculator import (
-            _global_money_metrics,
-            _price_dynamics,
-            _distribution_metrics,
-            _wage_metrics,
-            _environmental_metrics,
-            _employment_metrics,
-            _investment_metrics,
-            _bankruptcy_metrics,
-            _government_metrics,
-            _global_activity_metrics,
-        )
         from metrics.analyzer import _check_critical_thresholds
+        from metrics.calculator import (
+            _bankruptcy_metrics,
+            _distribution_metrics,
+            _employment_metrics,
+            _environmental_metrics,
+            _global_activity_metrics,
+            _global_money_metrics,
+            _government_metrics,
+            _investment_metrics,
+            _price_dynamics,
+            _wage_metrics,
+        )
 
         metrics = {}
         money_metrics = _global_money_metrics(self, step)

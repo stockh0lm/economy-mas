@@ -16,7 +16,6 @@ from typing import BinaryIO, Literal
 
 from config import CONFIG_MODEL, SimulationConfig
 
-
 # Logger level types
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 

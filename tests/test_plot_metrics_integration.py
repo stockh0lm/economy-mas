@@ -4,11 +4,11 @@ These tests verify end-to-end functionality of plot generation,
 performance optimizations (CSV caching), and robustness.
 """
 
-import pytest
-from pathlib import Path
-import tempfile
-import time
 import sys
+import time
+from pathlib import Path
+
+import pytest
 
 # Import plot script functions
 PROJECT_ROOT = Path(__file__).parents[1].resolve()
@@ -20,22 +20,22 @@ sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 
 from plot_metrics import (
-    load_csv_rows,
-    extract_series,
     aggregate_company_metrics,
+    clear_csv_cache,
     count_agents_per_step,
-    plot_global_output,
-    plot_monetary_system,
+    csv_cache_info,
+    extract_series,
+    load_csv_rows,
+    plot_company_health,
+    plot_company_population,
     plot_crash_diagnostics,
+    plot_global_output,
+    plot_household_population,
     plot_labor_market,
+    plot_monetary_system,
+    plot_overview_dashboard,
     plot_prices_and_wages,
     plot_state_budgets,
-    plot_company_health,
-    plot_household_population,
-    plot_company_population,
-    plot_overview_dashboard,
-    csv_cache_info,
-    clear_csv_cache,
 )
 
 
@@ -192,7 +192,6 @@ class TestPlotMetricsIntegration:
 
     def test_plot_metrics_handles_missing_metrics(self, tmp_path):
         """Verify graceful handling when some metrics are missing."""
-        import pandas as pd
 
         # Create minimal CSV with only some columns
         csv_path = tmp_path / "minimal_metrics.csv"

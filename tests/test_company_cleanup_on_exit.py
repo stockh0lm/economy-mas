@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from config import SimulationConfig
 from agents.company_agent import Company
 from agents.household_agent import Household
 from agents.labor_market import LaborMarket
 from agents.state_agent import State
+from config import SimulationConfig
 
 
 def test_company_bankruptcy_releases_employees_back_to_labor_market() -> None:

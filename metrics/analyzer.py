@@ -69,7 +69,7 @@ def apply_sight_decay(agents, *, config=None):
             continue
 
         burned = min(bal, decay)
-        setattr(a, "sight_balance", bal - burned)
+        a.sight_balance = bal - burned
         destroyed_total += burned
 
     return float(destroyed_total)

@@ -9,29 +9,32 @@ All functionality has been refactored into the metrics package.
 
 # Re-export everything from the new metrics package
 from metrics import (
-    AgentMetricsDict,
+    MIN_GLOBAL_METRICS_POINTS,
     AgentID,
+    AgentMetricsDict,
     EconomicAgent,
     MetricConfig,
     MetricDict,
     MetricName,
     MetricsCollector,
-    MIN_GLOBAL_METRICS_POINTS,
     TimeSeriesDict,
     TimeStep,
     ValueType,
-    apply_sight_decay,
     analyze_economic_cycles,
+    apply_sight_decay,
     get_latest_macro_snapshot,
-    metrics_collector,
     get_metrics_collector,
+    metrics_collector,
     set_metrics_collector,
 )
+from metrics.analyzer import EconomicCycleSnapshot
 
 # Aliases for backward compatibility
-from metrics.calculator import _calculate_gini_coefficient as calculate_gini_coefficient
-from metrics.calculator import LaborMarketMetricsSource, FinancialMarketMetricsSource
-from metrics.analyzer import EconomicCycleSnapshot
+from metrics.calculator import (
+    FinancialMarketMetricsSource,
+    LaborMarketMetricsSource,
+    _calculate_gini_coefficient as calculate_gini_coefficient,
+)
 
 detect_economic_cycles = analyze_economic_cycles  # Alias for backward compatibility
 

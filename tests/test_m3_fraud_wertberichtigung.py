@@ -1,9 +1,8 @@
-from config import SimulationConfig
-
 from agents.bank import GoodsPurchaseRecord, WarengeldBank
 from agents.clearing_agent import ClearingAgent
 from agents.company_agent import Company
 from agents.retailer_agent import RetailerAgent
+from config import SimulationConfig
 
 
 def test_fraud_wertberichtigung():

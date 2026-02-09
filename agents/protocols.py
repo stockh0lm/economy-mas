@@ -4,8 +4,6 @@ from typing import Protocol, runtime_checkable
 
 from typing_extensions import TypedDict
 
-from config import SimulationConfig
-
 
 @runtime_checkable
 class AgentWithBalance(Protocol):

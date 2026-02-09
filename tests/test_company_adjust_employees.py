@@ -5,6 +5,7 @@ from agents.household_agent import Household
 from agents.labor_market import LaborMarket
 from config import SimulationConfig
 
+
 def test_adjust_employees_hiring_logic():
     """Test employee hiring based on production needs."""
     cfg = SimulationConfig(simulation_steps=1)

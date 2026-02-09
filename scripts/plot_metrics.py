@@ -9,10 +9,7 @@ Milestone 1 (doc/issues.md Abschnitt 5): Plot-Metrics Performance
 from __future__ import annotations
 
 import argparse
-import csv
 import os
-import shutil
-from collections import defaultdict
 from collections.abc import Callable, Iterable
 from pathlib import Path
 
@@ -515,7 +512,7 @@ def plot_overview_dashboard(data_by_scope: dict[str, pd.DataFrame]) -> tuple[plt
     axs = axes.flatten()
     steps, gdat = extract_series(global_rows, "gdp", "household_consumption", "government_spending")
     ax = axs[0]
-    if steps and any((gdat.get(k) for k in gdat)):
+    if steps and any(gdat.get(k) for k in gdat):
         ax.plot(steps, gdat.get("gdp", []), label="GDP", color="tab:blue")
         ax.plot(
             steps,

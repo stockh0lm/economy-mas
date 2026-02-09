@@ -2,16 +2,17 @@
 
 import math
 import statistics
-from typing import Any, Dict, List, Protocol, cast
-from .base import MetricDict, TimeStep, ValueType
+from typing import Any, Protocol
+
+from .base import MetricDict, TimeStep
 
 
 class LaborMarketMetricsSource(Protocol):
-    registered_workers: List[object]
+    registered_workers: list[object]
 
 
 class FinancialMarketMetricsSource(Protocol):
-    list_of_assets: Dict[str, float]
+    list_of_assets: dict[str, float]
 
 
 def _global_money_metrics(collector: Any, step: TimeStep) -> MetricDict:
@@ -199,7 +200,7 @@ def _distribution_metrics(collector: Any, step: TimeStep) -> MetricDict:
     return metrics
 
 
-def _calculate_gini_coefficient(values: List[float]) -> float:
+def _calculate_gini_coefficient(values: list[float]) -> float:
     if not values or all(v == 0 for v in values):
         return 0.0
 

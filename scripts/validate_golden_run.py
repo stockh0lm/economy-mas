@@ -8,8 +8,6 @@ import argparse
 import csv
 import sys
 from pathlib import Path
-from typing import Dict, Any
-import pandas as pd
 
 # Thresholds for regression detection (percentage deviation)
 REGRESSION_THRESHOLDS = {
@@ -22,17 +20,17 @@ REGRESSION_THRESHOLDS = {
     "total_retailers": 0.0,
 }
 
-def load_baseline(baseline_path: Path) -> Dict[int, Dict[str, float]]:
+def load_baseline(baseline_path: Path) -> dict[int, dict[str, float]]:
     """Load baseline metrics from CSV file."""
     baseline = {}
-    with open(baseline_path, "r", newline="") as f:
+    with open(baseline_path, newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
             step = int(row["time_step"])
             baseline[step] = {k: float(v) for k, v in row.items() if k != "time_step"}
     return baseline
 
-def compare_metrics(current: Dict[int, Dict[str, float]], baseline: Dict[int, Dict[str, float]], thresholds: Dict[str, float]) -> bool:
+def compare_metrics(current: dict[int, dict[str, float]], baseline: dict[int, dict[str, float]], thresholds: dict[str, float]) -> bool:
     """Compare current metrics against baseline.
     Returns: True if all metrics within thresholds, False otherwise.
     """
@@ -113,7 +111,7 @@ def main():
 
         # Try to find matching current metrics
         # (In practice, run the scenario first or specify exact path)
-        current_path = metrics_dir / f"global_metrics_seed_12345.csv"
+        current_path = metrics_dir / "global_metrics_seed_12345.csv"
         if not current_path.exists():
             print(f"ERROR: Current metrics not found: {current_path}")
             print("Hint: Run the scenario with SIM_SEED=12345 first")

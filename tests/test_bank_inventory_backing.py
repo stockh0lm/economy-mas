@@ -4,6 +4,7 @@ from agents.bank import WarengeldBank
 from agents.retailer_agent import RetailerAgent
 from config import SimulationConfig
 
+
 def test_enforce_inventory_backing_basic_scenario():
     """Test basic inventory backing enforcement."""
     cfg = SimulationConfig(simulation_steps=1)

@@ -8,7 +8,6 @@ Liest die CSV-Metriken des letzten langen Laufs und identifiziert:
 """
 
 import csv
-import sys
 from collections import defaultdict
 from pathlib import Path
 

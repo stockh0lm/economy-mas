@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, cast
 
 import numpy as np
@@ -251,6 +251,10 @@ class ConsumptionComponent:
 
     def __init__(self, household: Household) -> None:
         self._household = household
+        # Ensure this component is the active one on the household.
+        # Tests may instantiate a new component directly and expect delegation.
+        if getattr(household, "consumption_component", None) is not self:
+            household.consumption_component = self
         self._consumption: float = 0.0
         window = int(household.config.clearing.sight_allowance_window_days)
         self._consumption_history: deque[float] = deque(maxlen=max(0, window))

@@ -175,17 +175,17 @@ class SavingsBank(BaseAgent):
         # Credit household sight balance (transfer from savings pool)
         # Use defensive coding to handle Mock objects properly
         if hasattr(household, "sight_balance"):
-            attr_val = getattr(household, "sight_balance")
+            attr_val = household.sight_balance
             if not isinstance(attr_val, Mock):
                 current_val = float(attr_val)
                 household.sight_balance = current_val + withdrawn
         elif hasattr(household, "checking_account"):
-            attr_val = getattr(household, "checking_account")
+            attr_val = household.checking_account
             if not isinstance(attr_val, Mock):
                 current_val = float(attr_val)
                 household.checking_account = current_val + withdrawn
         elif hasattr(household, "balance"):
-            attr_val = getattr(household, "balance")
+            attr_val = household.balance
             if not isinstance(attr_val, Mock):
                 current_val = float(attr_val)
                 household.balance = current_val + withdrawn
@@ -225,12 +225,12 @@ class SavingsBank(BaseAgent):
         if hasattr(borrower, "request_funds_from_bank"):
             borrower.request_funds_from_bank(amount)
         elif hasattr(borrower, "sight_balance"):
-            attr_val = getattr(borrower, "sight_balance")
+            attr_val = borrower.sight_balance
             if not isinstance(attr_val, Mock):
                 current_val = float(attr_val)
                 borrower.sight_balance = current_val + amount
         elif hasattr(borrower, "balance"):
-            attr_val = getattr(borrower, "balance")
+            attr_val = borrower.balance
             if not isinstance(attr_val, Mock):
                 current_val = float(attr_val)
                 borrower.balance = current_val + amount
@@ -251,7 +251,7 @@ class SavingsBank(BaseAgent):
 
         # borrower must pay from sight
         if hasattr(borrower, "sight_balance"):
-            attr_val = getattr(borrower, "sight_balance")
+            attr_val = borrower.sight_balance
             if not isinstance(attr_val, Mock):
                 sight = float(attr_val)
                 paid = min(float(amount), sight, outstanding)
@@ -259,7 +259,7 @@ class SavingsBank(BaseAgent):
             else:
                 return 0.0
         elif hasattr(borrower, "balance"):
-            attr_val = getattr(borrower, "balance")
+            attr_val = borrower.balance
             if not isinstance(attr_val, Mock):
                 sight = float(attr_val)
                 paid = min(float(amount), sight, outstanding)

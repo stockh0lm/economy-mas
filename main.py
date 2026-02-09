@@ -19,17 +19,14 @@ from __future__ import annotations
 import argparse
 import os
 import random
-import sys
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import yaml
 
 from config import SimulationConfig
-from logger import log, setup_logger
+from logger import setup_logger
 from simulation.engine import SimulationEngine
 
 

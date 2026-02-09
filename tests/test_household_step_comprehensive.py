@@ -1,10 +1,11 @@
 """Comprehensive test suite for Household.step method."""
 
 from agents.household_agent import Household
-from agents.savings_bank_agent import SavingsBank
 from agents.retailer_agent import RetailerAgent
+from agents.savings_bank_agent import SavingsBank
 from config import SimulationConfig
 from sim_clock import SimulationClock
+
 
 def test_household_step_consumption_logic():
     """Test consumption decision making in household step."""

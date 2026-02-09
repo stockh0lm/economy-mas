@@ -1,9 +1,9 @@
 """Enhanced base agent class with common functionality and metrics support."""
 
-from typing import Any, ClassVar, Final
+from typing import Any
 
 from agents.logging_utils import create_agent_logger
-from agents.protocols import AgentWithBalance, AgentWithImpact, HasUniqueID
+from agents.protocols import HasUniqueID
 from config import CONFIG_MODEL, SimulationConfig
 from logger import log
 

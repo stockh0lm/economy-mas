@@ -48,7 +48,6 @@ import pandas as pd
 
 from config import CONFIG_MODEL, SimulationConfig
 
-
 DEFAULT_METRICS_DIR = REPO_ROOT / "output" / "metrics"
 DEFAULT_PLOTS_DIR = REPO_ROOT / "output" / "plots"
 

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import random as _random_module
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
 from logger import log

@@ -5,8 +5,9 @@ as described in doc/issues.md Abschnitt 4.
 """
 
 import math
-from metrics import MetricsCollector
+
 from config import CONFIG_MODEL
+from metrics import MetricsCollector
 
 
 def setup_mock_metrics_data(collector: MetricsCollector, step: int):

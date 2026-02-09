@@ -12,18 +12,18 @@ Run:
 
 from __future__ import annotations
 
-from pathlib import Path
 import sys
+from pathlib import Path
 
 # Allow running as a script without installing the package.
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+import logging
+
 import pandas as pd
 from pandas.testing import assert_frame_equal
-
-import logging
 
 # Silence noisy warnings emitted by some legacy code paths.
 logging.getLogger().setLevel(logging.CRITICAL)

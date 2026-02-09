@@ -5,6 +5,7 @@ as described in doc/issues.md Abschnitt 4.
 """
 
 import math
+
 from agents.household_agent import Household
 from agents.savings_bank_agent import SavingsBank
 from agents.state_agent import State

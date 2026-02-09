@@ -1,8 +1,11 @@
 import csv
 from pathlib import Path
+
 import pytest
+
 from config import SimulationConfig
 from main import run_simulation
+
 
 def _latest_csv_from(dir_path: Path, pattern: str) -> Path:
     files = sorted(dir_path.glob(pattern), key=lambda p: p.stat().st_mtime)

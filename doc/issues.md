@@ -99,7 +99,201 @@ und konkrete nächste Schritte – mit Fokus auf **Schlankheit, Verständlichkei
 
 ---
 
-## 5) Neue ToDos (aus aktuellem Review)
+## 5) Neue ToDos (aus aktuellem Review - 2026-02-09 Code Quality Audit)
+
+- [x] **Auto-fix linting issues with ruff**
+  - 252 minor issues auto-fixed (imports, annotations, formatting)
+  - 444 remaining issues (mostly magic values, complexity indicators)
+  - **Status**: Completed 2026-02-09
+
+- [ ] **Critical: SimulationEngine.step() Method Refactoring**
+  - **Problem**: `simulation/engine.py:577` - `step()` method is **516 lines long** with cyclomatic complexity **F(148)**, maintainability index **0.00**
+  - **Indicators**:
+    - 7-level nesting in company founding block
+    - Handles 15 distinct phases in one method
+    - Massive god method: demography, founding, mergers, labor, restocking, production, consumption, settlement, policy, clearing, environment, metrics, progress
+  - **Impact**: Unmaintainable, error-prone, violates single responsibility principle
+  - **Fix**: Break into ~10 private methods:
+    - `_step_demography()` — death + replacement
+    - `_step_company_dynamics()` — founding + mergers
+    - `_step_labor_market()` — posting + matching
+    - `_step_retail_restocking()` — retail ordering
+    - `_step_company_operations()` — produce, wages, bankruptcy
+    - `_step_household_consumption()` — household demand
+    - `_step_retail_settlement()` — CC repayment, write-downs
+    - `_step_monthly_policy()` — fees, revenue recirculation
+    - `_step_clearing()` — audits, sight decay
+    - `_step_metrics()` — data collection
+  - **Files**: `simulation/engine.py`
+  - **Priority**: **P0 (CRITICAL)**
+  - **Effort**: High (requires comprehensive testing)
+
+- [ ] **Critical: Massive Code Duplication Between main.py and simulation/engine.py**
+  - **Problem**: Both files contain complete, duplicate copies of:
+    - `create_households()` (~50 lines)
+    - `create_companies()` (~20 lines)
+    - `create_retailers()` (~40 lines)
+    - `initialize_agents()` (~80 lines)
+    - `_settle_household_estate()` (~120 lines)
+    - Utility functions: `_sample_household_age_days()`, `_m1_proxy()`, `_format_duration()`, progress bar functions, coloring functions
+    - `SimulationAgents` dataclass
+  - **Impact**: Bug fixes must be applied in two places; maintenance burden
+  - **Fix**: Keep factory functions only in `simulation/engine.py`. Reduce `main.py` to:
+    - CLI parsing
+    - Config loading
+    - Engine instantiation and run
+  - **Files**: `main.py`, `simulation/engine.py`
+  - **Priority**: **P0 (CRITICAL)**
+  - **Effort**: Medium
+
+- [ ] **Critical: Duplicate config_cache.py Files**
+  - **Problem**: `config_cache.py` (root) and `agents/config_cache.py` contain virtually identical implementations:
+    - Both define `ConfigCache`, `AgentConfigCache`, `GlobalConfigCache`, `get_cached_config_value`
+    - Engine imports from `agents.config_cache`, conftest resets both
+    - Two parallel singletons can diverge; tests must know about both
+  - **Fix**: Delete root-level `config_cache.py`, keep only `agents/config_cache.py`
+  - **Files**: `config_cache.py`, `agents/config_cache.py`, `simulation/engine.py`, `tests/conftest.py`
+  - **Priority**: **P0 (CRITICAL)**
+  - **Effort**: Low
+
+- [ ] **High Priority: Balance Access Pattern Duplicated 15+ Times**
+  - **Problem**: The `sight_balance` → `checking_account` → `balance` cascade is copy-pasted across 7 files with minor variations:
+    - `bank.py`: 5 instances
+    - `savings_bank_agent.py`: 3 instances
+    - `clearing_agent.py`: 1 instance
+    - `state_agent.py`: 4 instances
+    - `environmental_agency.py`: 2 instances
+  - **Fix**: Extract `BalanceOps` utility module with:
+    - `credit_balance(agent, amount) -> float`
+    - `debit_balance(agent, amount) -> float`
+    - `get_balance(agent) -> float`
+  - **Files**: `agents/bank.py`, `agents/savings_bank_agent.py`, `agents/clearing_agent.py`, `agents/state_agent.py`, `agents/environmental_agency.py`
+  - **Priority**: **P1 (HIGH)**
+  - **Effort**: Medium
+
+- [ ] **High Priority: Retailer Agent sell_to_household vs sell_to_state Duplication**
+  - **Problem**: `retailer_agent.py:565-680` - Two methods are ~70 lines of nearly identical code. Only differences:
+    - State has `budget_bucket` check
+    - Household tracks `_step_sales_units`
+  - **Fix**: Extract `_execute_sale(buyer, budget, budget_bucket=None)` method
+  - **Files**: `agents/retailer_agent.py`
+  - **Priority**: **P1 (HIGH)**
+  - **Effort**: Medium
+
+- [ ] **High Priority: MetricsCollector Class-Level Mutable Defaults**
+  - **Problem**: `metrics/collector.py:25-39` declares dict/set attributes as class variables with mutable defaults:
+    ```python
+    class MetricsCollector:
+        bank_metrics: Dict[str, Dict[TimeStep, MetricDict]] = {}
+        household_metrics: Dict[str, Dict[TimeStep, MetricDict]] = {}
+        # ... 6 more mutable class vars
+    ```
+    Although `__init__` re-assigns them, class-level mutables remain a shared-state trap
+  - **Fix**: Remove class-level declarations; initialize only in `__init__`
+  - **Files**: `metrics/collector.py`
+  - **Priority**: **P1 (HIGH)**
+  - **Effort**: Low
+
+- [ ] **High Priority: 262 Magic Values in Codebase**
+  - **Problem**: Hard-coded thresholds, epsilon values, and policy constants throughout:
+    - `1e-9` epsilon used 6+ times
+    - Thresholds (e.g., `0.01`, `0.5`, `10000`, etc.)
+    - Policy parameters scattered across files
+  - **Fix**:
+    1. Match existing config items (e.g., `company.inventory_holding_cost_per_unit`)
+    2. Add new config items for undocumented constants
+    3. Extract to named constants for frequently-used values
+  - **Files**: All agent files, simulation engine
+  - **Priority**: **P1 (HIGH)**
+  - **Effort**: Medium-High
+
+- [ ] **Medium Priority: Mock Import in Production Code**
+  - **Problem**: `savings_bank_agent.py:19` imports `unittest.mock.Mock` and guards balance updates with `isinstance(attr_val, Mock)` in 3 methods
+  - **Fix**: Remove Mock guard; use proper protocols or user-defined traits
+  - **Files**: `agents/savings_bank_agent.py`
+  - **Priority**: **P2 (MEDIUM)**
+  - **Effort**: Low
+
+- [ ] **Medium Priority: MetricsCollector Module Singleton Unused**
+  - **Problem**: `metrics/__init__.py:82` creates `metrics_collector = MetricsCollector()` at import time
+    - This singleton is never used by the simulation (engine creates its own instance)
+    - Creates confusion and unnecessary imports
+  - **Fix**: Remove module-level `metrics_collector` instance
+  - **Files**: `metrics/__init__.py`
+  - **Priority**: **P2 (MEDIUM)**
+  - **Effort**: Low
+
+- [ ] **Low Priority: Legacy `metrics.py` Shim**
+  - **Problem**: Root-level `metrics.py` is a deprecated re-export shim for `metrics/` package
+    - Creates import ambiguity
+    - Most files now import correctly from `metrics/`
+  - **Fix**: Delete `metrics.py`, update any remaining imports
+  - **Files**: `metrics.py`
+  - **Priority**: **P3 (LOW)**
+  - **Effort**: Low-Medium
+
+- [ ] **Low Priority: Duplicate Protocols in protocols.py**
+  - **Problem**: `agents/protocols.py` has duplicates:
+    - `AgentWithBalance` (line 11) vs `WealthAgent` (line 46) — identical
+    - `AgentWithImpact` (line 18) vs `EnvironmentalImpactAgent` (line 53) — identical
+    - `BillableImpactAgent` (line 66) missing `@runtime_checkable` decorator
+  - **Fix**: Deregister duplicates, add missing decorator
+  - **Files**: `agents/protocols.py`
+  - **Priority**: **P3 (LOW)**
+  - **Effort**: Low
+
+- [ ] **Low Priority: warengeld_accounting.py Dead Code Decision**
+  - **Problem**: `warengeld_accounting.py` defines `DoubleEntryAccounting`, `MoneyTransactionPipeline`, `MoneySupplyGuardian` but:
+    - Not imported or used anywhere in the codebase
+    - Real money flows happen via direct attribute mutation, bypassing this system
+    - Creates false impression of enforced double-entry accounting
+  - **Decision Required**: Either:
+    1. Integrate as canonical transaction layer, OR
+    2. Delete as dead code
+  - **Spec Violation**: The spec (Section 3) implies double-entry accounting, but current implementation doesn't use it
+  - **Files**: `warengeld_accounting.py` + any potential integration points
+  - **Priority**: **P2 (MEDIUM)** — needs architectural decision
+  - **Effort**: High (if integrating) or Low (if deleting)
+
+- [ ] **Spec Compliance Note: String Lifecycle Returns**
+  - **Problem**: Companies return string literals for lifecycle states (`"DEAD"`, `"LIQUIDATED"`)
+  - **Spec**: Should be an Enum per proper Python practice
+  - **Files**: `agents/company_agent.py`
+  - **Priority**: **P3 (LOW)**
+  - **Effort**: Low
+
+- [ ] **Spec Compliance Note: Logging Boilerplate**
+  - **Problem**: All agents manually prefix logging with `f"{AgentType} {self.unique_id}: ..."` (~100+ occurrences)
+  - **Fix**: Add `self._log(msg, level)` to `BaseAgent` that auto-prefixes
+  - **Files**: All agent files
+  - **Priority**: **P3 (LOW)**
+  - **Effort**: Medium
+
+- [ ] **Spec Compliance Note: Engine Mutates Module Privates**
+  - **Problem**: `engine.py:468,493` sets `household_module._DEFAULT_NP_RNG` and `consumption_module._DEFAULT_NP_RNG` directly
+  - **Fix**: Replace with proper dependency injection (pass RNG via parameters)
+  - **Files**: `simulation/engine.py`, `agents/household/consumption.py`, `agents/household/demography.py`
+  - **Priority**: **P2 (MEDIUM)**
+  - **Effort**: Medium
+
+- [ ] **Spec Compliance Note: GLOBAL State via CONFIG_MODEL**
+  - **Problem**: Using `CONFIG_MODEL` as default fallback (21 files import it)
+    - Makes implicit coupling, tests less reliable
+  - **Fix**: Make `config` parameter mandatory (no fallback to global)
+  - **Files**: All agent files, configuration access points
+  - **Priority**: **P2 (MEDIUM)**
+  - **Effort**: High
+
+---
+
+## 6) Test Infrastructure Issues
+
+- [x] **Fix: test_household_components.py test_batch_consumption bug**
+  - **Problem**: Line 140 uses undefined variable `i` (should be loop variable from line 136)
+  - **Fix**: Changed to use `enumerate` with `idx`
+  - **Status**: Completed 2026-02-09
+
+---
 
 - [~] **Performance-Optimierung nach Profiling-Analyse - KRITISCH** *(Status: Milestone 1 erledigt – Logging + Plot-Metrics + erste Hotloop-Fixes)*
   - **Problem**: Profiling zeigt signifikante Performance-Bottlenecks in der Simulation und Metriken-Verarbeitung

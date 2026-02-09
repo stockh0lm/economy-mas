@@ -6,7 +6,7 @@ from pathlib import Path
 def _run_legacy_scan(*args: str) -> subprocess.CompletedProcess[str]:
     repo_root = Path(__file__).resolve().parents[1]
     script = repo_root / "scripts" / "legacy_scan.py"
-    return subprocess.run([sys.executable, str(script), *args], capture_output=True, text=True)
+    return subprocess.run([sys.executable, str(script), *args], check=False, capture_output=True, text=True)
 
 
 def test_legacy_scan_clean() -> None:
