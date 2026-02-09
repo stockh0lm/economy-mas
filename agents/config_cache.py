@@ -181,9 +181,17 @@ class GlobalConfigCache:
         return cls._instance
 
     def __init__(self, config: SimulationConfig | None = None):
-        if not self._initialized:
+        # First initialization: create cache + default config slot.
+        if not getattr(self, "_initialized", False):
             self._cache = ConfigCache(max_size=200)
+            self._config: SimulationConfig | None = None
             self._initialized = True
+        else:
+            # Subsequent constructions: optionally swap config and clear cache.
+            if config is not None:
+                self._config = config
+                self._cache.clear()
+            return
 
         if config is not None:
             self.initialize(config)

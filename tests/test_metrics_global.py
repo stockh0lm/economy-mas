@@ -11,18 +11,18 @@ def test_calculate_global_metrics_tracks_macro_outputs() -> None:
 
     collector.company_metrics = {
         "c1": {
-                0: {"sight_balance": 80.0},
+            0: {"sight_balance": 80.0},
             1: {
-                    "sight_balance": 100.0,
+                "sight_balance": 100.0,
                 "production_capacity": 60.0,
                 "rd_investment": 10.0,
                 "environmental_impact": 3.0,
             },
         },
         "c2": {
-                0: {"sight_balance": 60.0},
+            0: {"sight_balance": 60.0},
             1: {
-                    "sight_balance": 200.0,
+                "sight_balance": 200.0,
                 "production_capacity": 40.0,
                 "rd_investment": 5.0,
                 "environmental_impact": 2.0,
@@ -84,7 +84,9 @@ def test_calculate_global_metrics_tracks_macro_outputs() -> None:
     # Including state deposits increases money_for_price, shifting equilibrium.
     expected_price_index = 134.7
     assert math.isclose(metrics["price_index"], expected_price_index, rel_tol=1e-9)
-    assert math.isclose(metrics["inflation_rate"], (expected_price_index - 120.0) / 120.0, rel_tol=1e-9)
+    assert math.isclose(
+        metrics["inflation_rate"], (expected_price_index - 120.0) / 120.0, rel_tol=1e-9
+    )
 
     assert math.isclose(metrics["employment_rate"], 0.5)
     assert math.isclose(metrics["unemployment_rate"], 0.5)
@@ -126,25 +128,55 @@ def test_calculate_global_metrics_accumulates_multiple_states_and_bankruptcies()
     collector.company_metrics = {
         "c_alive": {
             3: {
-                    "sight_balance": 80.0,
+                "sight_balance": 80.0,
                 "production_capacity": 30.0,
                 "rd_investment": 5.0,
                 "environmental_impact": 1.0,
             },
         },
         "c_dead": {
-                2: {"sight_balance": 20.0, "production_capacity": 10.0},
+            2: {"sight_balance": 20.0, "production_capacity": 10.0},
         },
     }
 
     collector.household_metrics = {
-        "h1": {3: {"checking_account": 40.0, "savings": 10.0, "consumption": 15.0, "employed": True, "total_wealth": 50.0}},
-        "h2": {3: {"checking_account": 10.0, "savings": 0.0, "consumption": 5.0, "employed": False, "total_wealth": 10.0}},
+        "h1": {
+            3: {
+                "checking_account": 40.0,
+                "savings": 10.0,
+                "consumption": 15.0,
+                "employed": True,
+                "total_wealth": 50.0,
+            }
+        },
+        "h2": {
+            3: {
+                "checking_account": 10.0,
+                "savings": 0.0,
+                "consumption": 5.0,
+                "employed": False,
+                "total_wealth": 10.0,
+            }
+        },
     }
 
     collector.state_metrics = {
-        "state_a": {3: {"tax_revenue": 5.0, "infrastructure_budget": 2.0, "social_budget": 1.0, "environment_budget": 1.0}},
-        "state_b": {3: {"tax_revenue": 7.0, "infrastructure_budget": 1.0, "social_budget": 2.0, "environment_budget": 0.5}},
+        "state_a": {
+            3: {
+                "tax_revenue": 5.0,
+                "infrastructure_budget": 2.0,
+                "social_budget": 1.0,
+                "environment_budget": 1.0,
+            }
+        },
+        "state_b": {
+            3: {
+                "tax_revenue": 7.0,
+                "infrastructure_budget": 1.0,
+                "social_budget": 2.0,
+                "environment_budget": 0.5,
+            }
+        },
     }
 
     collector.calculate_global_metrics(step=3)
@@ -167,7 +199,7 @@ def test_calculate_global_metrics_gini_and_blended_price_pressure() -> None:
         collector.company_metrics = {
             "c1": {
                 1: {
-                        "sight_balance": 50.0,
+                    "sight_balance": 50.0,
                     "production_capacity": 20.0,
                     "rd_investment": 5.0,
                     "environmental_impact": 1.0,
@@ -175,9 +207,36 @@ def test_calculate_global_metrics_gini_and_blended_price_pressure() -> None:
             }
         }
         collector.household_metrics = {
-            "h1": {1: {"checking_account": 10.0, "savings": 0.0, "consumption": 5.0, "employed": True, "income": 10.0, "total_wealth": 10.0}},
-            "h2": {1: {"checking_account": 0.0, "savings": 20.0, "consumption": 2.0, "employed": False, "income": 0.0, "total_wealth": 20.0}},
-            "h3": {1: {"checking_account": 30.0, "savings": 5.0, "consumption": 1.0, "employed": True, "income": 15.0, "total_wealth": 35.0}},
+            "h1": {
+                1: {
+                    "checking_account": 10.0,
+                    "savings": 0.0,
+                    "consumption": 5.0,
+                    "employed": True,
+                    "income": 10.0,
+                    "total_wealth": 10.0,
+                }
+            },
+            "h2": {
+                1: {
+                    "checking_account": 0.0,
+                    "savings": 20.0,
+                    "consumption": 2.0,
+                    "employed": False,
+                    "income": 0.0,
+                    "total_wealth": 20.0,
+                }
+            },
+            "h3": {
+                1: {
+                    "checking_account": 30.0,
+                    "savings": 5.0,
+                    "consumption": 1.0,
+                    "employed": True,
+                    "income": 15.0,
+                    "total_wealth": 35.0,
+                }
+            },
         }
         collector.global_metrics[0] = {"price_index": 100.0}
 

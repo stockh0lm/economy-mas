@@ -44,9 +44,14 @@ class BaseAgent(HasUniqueID):
         self.created_at_step: int | None = None
         self.last_updated_step: int | None = None
 
-    def step(self, current_step: int) -> None:
+    def step(self, current_step: int, **kwargs: Any) -> Any:
         """
         Base step method that should be overridden by subclasses.
+
+        Subclasses may extend the signature with additional keyword arguments
+        (e.g. ``clock``, ``savings_bank``, ``retailers``) and narrow or widen
+        the return type.  The ``**kwargs`` catch-all keeps overrides
+        LSP-compatible without requiring ``# type: ignore[override]``.
 
         Args:
             current_step: Current simulation step number

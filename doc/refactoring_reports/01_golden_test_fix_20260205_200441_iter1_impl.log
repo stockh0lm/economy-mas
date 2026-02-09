@@ -1,1 +1,0 @@
-DRY_RUN: opencode run --model devstral --prompt-file /home/andreas/src/Wirtschaftssimulation/doc/refactoring_reports/01_golden_test_fix_20260205_200441_iter1_impl_prompt.md --workspace /home/andreas/src/Wirtschaftssimulation --non-interactive --log-file /home/andreas/src/Wirtschaftssimulation/doc/refactoring_reports/01_golden_test_fix_20260205_200441_iter1_impl.log
