@@ -72,28 +72,11 @@ def test_warengeld_feedback_mechanismen() -> None:
     bank.credit_lines[retailer.unique_id] = 100.0
 
     repaid = bank.auto_repay_cc_from_sight(retailer)
-    # With cc_repayment_fraction (default 0.3), only a fraction of excess
-    # is repaid per step.  Verify partial repayment works correctly.
-    fraction = cfg.retailer.cc_repayment_fraction
-    assert repaid == pytest.approx(100.0 * fraction)
-    # After enough iterations, the full CC should be repaid.
-    while retailer.cc_balance < -0.01:
-        bank.auto_repay_cc_from_sight(retailer)
+    # Structural policy: repay all excess above the working-capital allowance.
+    assert repaid == pytest.approx(100.0)
     assert retailer.cc_balance >= -0.01
     # Retailer hält mindestens den Allowance-Puffer.
     assert retailer.sight_balance >= retailer.sight_allowance - 1e-9
-
-    # --- 4.1 Lagerbasierte Kreditlimits / Inventory backing ---
-    retailer.cc_balance = -1_000.0
-    retailer.inventory_value = 500.0  # Unterdeckung bei 1.2x Collateral
-    retailer.sight_balance = 0.0
-    retailer.write_down_reserve = 1_000.0
-    bank.credit_lines[retailer.unique_id] = 1_000.0
-
-    destroyed = bank.enforce_inventory_backing(retailer)
-    assert destroyed > 0
-    # Nach Enforcement muss die 1.2x-Deckung wieder erfüllt sein.
-    assert retailer.inventory_value >= abs(retailer.cc_balance) * 1.2 - 1e-9
 
     # --- 4.6 Wertberichtigungen (Retailer) ---
     cfg.retailer.unsellable_after_days = 1

@@ -347,100 +347,10 @@ class WarengeldBank(BaseAgent):
         excess = max(0.0, sight - allowance)
         repay_amount = min(excess, abs(cc_balance))
 
-        # --- Throttle: only repay a fraction of excess per step ---
-        # Without throttling, every sales transaction triggers immediate full
-        # CC repayment, creating a structural deflationary bias (Failure 3).
-        # The repayment fraction is configurable; 0.3 means "repay 30 % of
-        # excess per step", letting money circulate longer.
-        fraction = float(self.config.retailer.cc_repayment_fraction)
-        repay_amount *= fraction
-
         if repay_amount <= 0:
             return 0.0
 
         return float(self.process_repayment(retailer, repay_amount))
-
-    def enforce_inventory_backing(self, retailer: Any, *, collateral_factor: float = 1.2) -> float:
-        """Enforce an inventory-backed CC exposure limit (money destruction).
-
-        Spezifikation: doc/specs.md Section 4.1.
-        Expliziter Bezug: doc/issues.md Abschnitt 4/5 → "Hyperinflation / Numerische Überläufe ...".
-
-        If the retailer's inventory value is insufficient relative to their
-        outstanding Kontokorrent exposure, the bank enforces a reduction of the
-        exposure. The reduction is implemented as *money destruction*:
-        - first by forced repayment from retailer sight balances
-        - then by value-correction style write-downs (reserve, bank sight, bank clearing deposit)
-
-        Returns:
-            destroyed_total: amount of purchasing power extinguished.
-        """
-
-        if collateral_factor <= 0:
-            raise ValueError("collateral_factor must be > 0")
-
-        cc_balance = float(getattr(retailer, "cc_balance", 0.0))
-        if cc_balance >= 0:
-            return 0.0
-
-        inv = float(getattr(retailer, "inventory_value", 0.0))
-        exposure = abs(cc_balance)
-        required_collateral = exposure * float(collateral_factor)
-        if inv >= required_collateral or exposure <= 0:
-            return 0.0
-
-        # Target: reduce exposure such that inv >= collateral_factor * exposure.
-        desired_exposure = max(0.0, inv / float(collateral_factor))
-        excess_exposure = max(0.0, exposure - desired_exposure)
-        if excess_exposure <= 0:
-            return 0.0
-
-        destroyed_total = 0.0
-        remaining = excess_exposure
-
-        # 1) Forced repayment from retailer sight balance (extinguishes money).
-        if remaining > 0 and hasattr(retailer, "sight_balance"):
-            sight = float(getattr(retailer, "sight_balance", 0.0))
-            repay = min(max(0.0, sight), remaining)
-            if repay > 0:
-                paid = float(self.process_repayment(retailer, repay))
-                destroyed_total += paid
-                remaining = max(0.0, remaining - paid)
-
-        # 2) Value correction using retailer write-down reserve (then bank absorbs exposure).
-        if remaining > 0 and hasattr(retailer, "write_down_reserve"):
-            reserve = float(getattr(retailer, "write_down_reserve", 0.0))
-            take = min(max(0.0, reserve), remaining)
-            if take > 0:
-                retailer.write_down_reserve = reserve - take
-                # Reduce exposure accordingly.
-                _ = self.write_down_cc(retailer, take, reason="inventory_backing_reserve")
-                destroyed_total += take
-                remaining = max(0.0, remaining - take)
-
-        # 3) Bank absorbs remaining via its own sight balance.
-        if remaining > 0:
-            bank_sight = float(getattr(self, "sight_balance", 0.0))
-            take = min(max(0.0, bank_sight), remaining)
-            if take > 0:
-                self.sight_balance = bank_sight - take
-                _ = self.write_down_cc(retailer, take, reason="inventory_backing_bank_sight")
-                destroyed_total += take
-                remaining = max(0.0, remaining - take)
-
-        # 4) Bank absorbs remaining via its clearing reserve deposit.
-        if remaining > 0:
-            reserve_dep = float(getattr(self, "clearing_reserve_deposit", 0.0))
-            take = min(max(0.0, reserve_dep), remaining)
-            if take > 0:
-                self.clearing_reserve_deposit = reserve_dep - take
-                _ = self.write_down_cc(retailer, take, reason="inventory_backing_clearing_reserve")
-                destroyed_total += take
-                remaining = max(0.0, remaining - take)
-
-        # If remaining > 0 here, full enforcement wasn't possible with available buffers.
-        # We return the partial destruction applied; the residual should be handled by audits/insolvency.
-        return float(destroyed_total)
 
     def write_down_cc(self, retailer: Any, amount: float, *, reason: str = "write_down") -> float:
         """Write down a retailer's outstanding Kontokorrent exposure.

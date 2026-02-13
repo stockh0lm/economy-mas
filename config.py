@@ -424,6 +424,21 @@ class CompanyConfig(BaseConfigModel):
         "Higher = sharper price drops/rises near target.",
     )
 
+    # --- Warenklemme (goods bottleneck) fix parameters for companies ---
+    # These parameters were introduced as part of the Warenklemme fix to prevent
+    # deadlocks and ensure smooth goods flow in the Warengeld system.
+    # They control critical thresholds and tolerances in company operations.
+
+    # Anti-deadlock restock tolerance
+    # Used to prevent deadlocks when CC limit binds and prevents restocking
+    anti_deadlock_order_cutoff: float = Field(
+        1e-9,
+        ge=0,
+        description="Minimum order amount threshold for anti-deadlock restock logic. "
+        "Orders below this threshold are skipped to prevent numerical instability. "
+        "Part of Warenklemme fix to ensure system stability during credit constraints.",
+    )
+
 
 class RetailerConfig(BaseConfigModel):
     # Kontokorrent-Kreditrahmen (zinsenfrei) wird bei Initialisierung gesetzt; Anpassung ist politisch/vertraglich geregelt.
@@ -448,15 +463,9 @@ class RetailerConfig(BaseConfigModel):
     unsellable_market_price_floor_ratio: float = Field(0.05, ge=0, le=1)
     # Anteil des geschätzten Gewinns, der in Warenwertberichtigungskonten fließt
     write_down_reserve_share: float = Field(0.05, ge=0, le=1)
-    # Automatische Tilgung: ab welchem Überschuss wird Kontokorrent zurückgeführt?
+    # Automatische Tilgung: Überschüsse über working_capital_buffer
+    # werden direkt zur Kontokorrent-Rückführung genutzt.
     auto_repay: bool = True
-    # Throttle: fraction of excess sight balance above working_capital_buffer
-    # that is repaid per step.  A value of 1.0 means "repay all excess" (old
-    # behaviour), 0.3 means "repay 30 % of excess per step".  Lower values
-    # let money circulate longer, reducing the structural deflationary bias
-    # caused by immediate full repayment after every sales transaction.
-    # See Failure 3 in systemic diagnosis.
-    cc_repayment_fraction: float = Field(0.3, ge=0, le=1)
 
     # --- Dynamic retail pricing ---
     # Book ref: "Kaufleute sollen und müssen auf Nachfrageänderungen
@@ -477,29 +486,55 @@ class RetailerConfig(BaseConfigModel):
         description="Rolling window for tracking daily sales units to compute turnover.",
     )
 
-    # --- Retailer insolvency ---
-    # Book ref: "Unternehmen, die wiederholt hohen Wertberichtigungsbedarf
-    # verursachen, müssen... in eine geordnete Insolvenz geführt werden"
-    # (line 2018).
-    # Retailers whose cumulative write-downs exceed a threshold relative to
-    # cumulative purchases are chronically loss-making and must exit.
-    insolvency_write_down_ratio_threshold: float = Field(
-        0.5,
+    # --- Warenklemme (goods bottleneck) fix parameters ---
+    # These parameters were introduced as part of the Warenklemme fix to prevent
+    # deadlocks and ensure smooth goods flow in the Warengeld system.
+    # They control critical thresholds and tolerances in retail operations.
+
+    # Floating point comparison tolerance for safe division and zero checks
+    # Used throughout inventory calculations to avoid division by zero
+    floating_point_tolerance: float = Field(
+        1e-9,
         ge=0,
+        description="Small tolerance value for floating point comparisons and safe division operations. "
+        "Part of Warenklemme fix to prevent numerical instability.",
+    )
+
+    # Price comparison tolerance for supplier selection
+    # Used to determine when prices are 'equal enough' for random tie-breaking
+    price_comparison_tolerance: float = Field(
+        1.001,
+        ge=1.0,
+        description="Price comparison tolerance factor for supplier selection. "
+        "Prices within this factor are considered equal for tie-breaking. "
+        "Part of Warenklemme fix to ensure competitive pressure while preventing supplier starvation.",
+    )
+
+    # Dynamic markup stock ratio thresholds
+    # Controls when retailers apply minimum/maximum markup based on inventory levels
+    dynamic_markup_overstock_threshold: float = Field(
+        2.0,
+        ge=1.0,
+        description="Stock ratio threshold for applying minimum markup (overstocked condition). "
+        "When days_of_stock/target_days >= this value, minimum markup is applied. "
+        "Part of Warenklemme fix to prevent inventory buildup and encourage sales.",
+    )
+
+    dynamic_markup_understock_threshold: float = Field(
+        0.3,
+        ge=0.0,
         le=1.0,
-        description="If cumulative write-downs / cumulative purchases exceeds this "
-        "ratio, the retailer is declared insolvent.",
+        description="Stock ratio threshold for applying maximum markup (understocked condition). "
+        "When days_of_stock/target_days <= this value, maximum markup is applied. "
+        "Part of Warenklemme fix to prevent stockouts and ensure goods availability.",
     )
-    insolvency_min_purchase_history: float = Field(
-        100.0,
-        ge=0,
-        description="Minimum cumulative purchases before insolvency check activates "
-        "(avoids false positives during ramp-up).",
-    )
-    insolvency_grace_steps: PositiveInt = Field(
-        60,
-        description="Number of simulation steps before insolvency checks begin "
-        "(startup grace period).",
+
+    dynamic_markup_fallback_target_days: float = Field(
+        10.0,
+        ge=1.0,
+        description="Fallback target days of inventory when calculated target is invalid. "
+        "Used as safety net in dynamic markup calculations. "
+        "Part of Warenklemme fix to ensure stable pricing behavior.",
     )
 
     # --- Demand-driven ordering (Retailer as mediator) ---
@@ -611,6 +646,9 @@ class ClearingConfig(BaseConfigModel):
     audit_interval: PositiveInt = 90  # z.B. 90 Schritte ~ Quartal, wenn Schritt=Tag
     required_reserve_ratio: float = Field(0.1, ge=0, le=1)
     reserve_ratio_step: float = Field(0.02, ge=0, le=1)
+    # Structural resolution: repeated audit under-coverage triggers orderly
+    # retailer insolvency instead of endless parameter fine-tuning.
+    retailer_resolution_audit_failures: PositiveInt = 3
     reserve_bounds_min: float = Field(0.05, ge=0, le=1)
     reserve_bounds_max: float = Field(0.3, ge=0, le=1)
     # Sichtguthaben-Abschmelzung (nur Überschuss über Freibetrag)

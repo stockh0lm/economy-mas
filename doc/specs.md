@@ -369,3 +369,39 @@ Die kombinierten Anpassungen lösen die Warenklemme durch:
 4. **Robustere Fehlerbehandlung**: Bessere Behandlung von Edge-Cases verhindert Systemabstürze und unerwartetes Verhalten.
 
 Diese Anpassungen stellen sicher, dass der Warenkreislauf auch unter schwierigen makroökonomischen Bedingungen funktioniert und die Geldmenge angemessen an die Warenwertmenge gekoppelt bleibt.
+
+### 6.4 Implementierte Vereinfachung (Abweichung zu den zweiten Warenklemme-Fixes)
+
+In der praktischen Implementierung wurden die späteren, stark numerisch
+gedämpften "zweiten Warenklemme-Fixes" wieder vereinfacht, um näher am
+strukturellen Kern dieses Dokuments zu bleiben.
+
+**Aktueller Stand (bewusst vereinfacht):**
+
+1. **Beibehalten:** Teilbestellung bei CC-Limit-Bindung (`headroom`-Logik).
+   - Händler bestellen bei Kreditknappheit nicht "alles oder nichts", sondern
+     nur den finanzierbaren Teil.
+   - Das ist der zentrale Anti-Deadlock-Mechanismus aus Abschnitt 4.1.
+
+2. **Beibehalten:** Clearing-Audit + Wertberichtigung als primärer
+   Korrekturpfad.
+   - Unterdeckung wird im Audit erkannt und über Wertberichtigung verarbeitet.
+
+3. **Neu als strukturelle Auflösung:** Persistente Audit-Verstöße führen nach
+   einer festen Anzahl Audits zur geordneten Händler-Insolvenz.
+   - Damit wird ein endloses "Durchschleppen" chronisch unterdeckter Konten
+     vermieden.
+
+4. **Entfernt:** Zusätzliche numerische Dämpfungsregeln, die vom
+   Strukturmodell wegführten.
+   - Insbesondere tägliche inventory-backing-Zwangseinziehungen als separater
+     Zusatzpfad sowie ein per-Faktor gedrosselter CC-Autorepay wurden entfernt.
+   - Autorepay nutzt wieder den einfachen Überschuss-Mechanismus
+     (über Working-Capital-Buffer), statt eines extra Dämpfungskoeffizienten.
+
+**Begründung der Abweichung:**
+Die "zweiten Warenklemme-Fixes" hatten sich schrittweise von
+institutionellen Regeln (Kreditrahmen, Audit, Clearing-Resolution) zu
+zahlreichen numerischen Stellschrauben verschoben. Die Vereinfachung stellt
+die institutionelle Logik wieder in den Vordergrund und reduziert fragile
+Parameterkopplungen.

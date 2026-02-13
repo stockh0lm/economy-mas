@@ -125,15 +125,20 @@ class ClearingAgent(BaseAgent):
         self.register_bank(bank)
 
         threshold = float(self.config.bank.inventory_coverage_threshold)
+        breach_limit = int(getattr(self.config.clearing, "retailer_resolution_audit_failures", 3))
         findings: list[AuditFinding] = []
 
         for r in retailers:
             rid = str(getattr(r, "unique_id", "retailer"))
             inv = float(getattr(r, "inventory_value", 0.0))
             cc = abs(float(getattr(r, "cc_balance", 0.0)))
+            breached = False
             if cc <= 0:
+                if hasattr(r, "audit_breach_streak"):
+                    r.audit_breach_streak = 0
                 continue
             if inv < threshold * cc:
+                breached = True
                 gap = max(0.0, cc - inv)
                 findings.append(
                     AuditFinding(str(getattr(bank, "unique_id", "bank")), rid, inv, cc, gap)
@@ -147,6 +152,18 @@ class ClearingAgent(BaseAgent):
                         companies_by_id=companies_by_id or {},
                         current_step=current_step,
                     )
+            if breached:
+                prev = int(getattr(r, "audit_breach_streak", 0) or 0)
+                r.audit_breach_streak = prev + 1
+                if r.audit_breach_streak >= breach_limit:
+                    r.force_insolvent = True
+                    log(
+                        f"Clearing: retailer {rid} marked insolvent after "
+                        f"{r.audit_breach_streak} consecutive audit breaches.",
+                        level="WARNING",
+                    )
+            else:
+                r.audit_breach_streak = 0
 
         # If repeated problems: increase required reserve ratio as competition sanction.
         if findings:
@@ -170,6 +187,15 @@ class ClearingAgent(BaseAgent):
         if hasattr(agent, "sight_balance"):
             bal = float(agent.sight_balance)
             take = min(bal, amount)
+            if take <= 0:
+                return 0.0
+            cls_attr = getattr(type(agent), "sight_balance", None)
+            is_read_only_property = isinstance(cls_attr, property) and cls_attr.fset is None
+            if is_read_only_property and hasattr(agent, "pay") and callable(getattr(agent, "pay")):
+                # Read-only computed sight balances (e.g. State) must be debited via API.
+                paid = float(agent.pay(take))
+                self.extinguished_total += paid
+                return paid
             agent.sight_balance = bal - take
             self.extinguished_total += take
             return take

@@ -34,13 +34,12 @@ def test_golden_run_snapshot(monkeypatch, tmp_path):
     # inventory depreciation/holding costs (P2), price responsiveness (P3),
     # insolvency mechanisms (P4), retailer-as-mediator (P5: demand-driven
     # ordering + price-aware supplier selection), and profit distribution /
-    # money-sink fixes (D/E/F).  Profit distribution drains company balances
-    # faster → lower M1; CC throttle + faster household spending → lower CC
-    # exposure at the 30-step snapshot.
+    # money-sink fixes (D/E/F).  Profit distribution and stricter automatic
+    # CC repayment reduce idle balances in short runs.
     assert len(households) == 4
     assert len(retailers) == 2
 
-    assert 120.0 <= m1 <= 350.0
+    assert 90.0 <= m1 <= 350.0
     assert 150.0 <= total_inventory_value <= 350.0
     assert 50.0 <= total_cc_exposure <= 280.0
     assert 0.75 <= employment_rate <= 1.0

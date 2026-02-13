@@ -30,6 +30,8 @@ class DummyRetailer:
         self.cc_balance = cc_balance
         self.write_down_reserve = write_down_reserve
         self.sight_balance = sight_balance
+        self.audit_breach_streak = 0
+        self.force_insolvent = False
 
 
 def test_enforce_reserve_bounds_low_reserves() -> None:
@@ -269,3 +271,28 @@ def test_audit_bank_triggers_value_correction() -> None:
     assert math.isclose(retailer.write_down_reserve, 0.0)  # Fully used
     assert math.isclose(retailer.sight_balance, 100.0)    # 300 - 200
     assert math.isclose(clearing.bank_reserves["bank_1"], 1000.0)  # Unchanged - not needed
+
+
+def test_audit_bank_marks_retailer_insolvent_after_persistent_breaches() -> None:
+    """Persistent under-coverage should trigger structural retailer resolution."""
+    cfg = config.CONFIG_MODEL.model_copy(deep=True)
+    cfg.clearing.audit_interval = 0
+    cfg.clearing.retailer_resolution_audit_failures = 3
+    cfg.bank.inventory_coverage_threshold = 0.8
+    clearing = ClearingAgent("clear_1", cfg)
+
+    bank = DummyBank("bank_1")
+    retailer = DummyRetailer("retailer_1", inventory_value=100.0, cc_balance=-1000.0)
+
+    assert retailer.force_insolvent is False
+    for step in (10, 20, 30):
+        findings = clearing.audit_bank(
+            bank=bank,
+            retailers=[retailer],
+            companies_by_id={},
+            current_step=step,
+        )
+        assert len(findings) == 1
+
+    assert retailer.audit_breach_streak == 3
+    assert retailer.force_insolvent is True

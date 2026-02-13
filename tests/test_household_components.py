@@ -145,14 +145,14 @@ class TestConsumptionComponent:
         retailers = [MockRetailer(sale_value=40.0)]
         households = [Household(unique_id=f"hh_{i}", income=1000.0) for i in range(5)]
 
-        for idx, h in enumerate(households):
+        for i, h in enumerate(households):
             h.sight_balance = 500.0
-            h.growth_phase = idx % 2 == 0
+            h.growth_phase = i % 2 == 0
 
         spent = batch_consume(households, retailers, rng=np.random.default_rng(42))
 
         assert len(spent) == 5
-        # All households should have spent something
+        # All households should have spent something (sale_value is 40, so they spend 40)
         assert all(s > 0 for s in spent)
 
     def test_consumption_component_wrapper(self):
@@ -206,10 +206,12 @@ class TestSavingsComponent:
         household.sight_balance = 100.0
         bank = MockSavingsBank()
         bank.active_loans[household.unique_id] = 50.0
+        # Set a non-zero loan repayment rate
+        household.config.household.loan_repayment_rate = 0.1
 
         paid = repay_savings_loans(household, savings_bank=bank)
 
-        # Some repayment should occur
+        # Some repayment should occur (0 or positive)
         assert paid >= 0.0
 
     def test_savings_component_wrapper(self):
@@ -409,10 +411,12 @@ class TestHouseholdBehaviorConsistency:
         household.income_received_this_month = 1000.0
         household.consumption_this_month = 600.0
         bank = MockSavingsBank()
+        # Set a non-zero savings rate
+        household.config.household.savings_rate = 0.2
 
         saved = save(household, savings_bank=bank)
 
-        # With savings_rate typically around 0.2, and surplus of 400,
+        # With savings_rate around 0.2, and surplus of 400,
         # we expect to save around 80 (minus buffers)
         assert saved > 0
         assert household.last_month_saved == saved

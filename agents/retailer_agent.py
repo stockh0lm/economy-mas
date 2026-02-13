@@ -8,6 +8,37 @@ used to repay the Kontokorrent balance.
 
 This agent is intentionally narrow in scope: it manages inventory, a sight
 account, a Kontokorrent balance, and a reserve account for write-downs.
+
+WARENKLEMME (GOODS BOTTLENECK) FIX PARAMETERS:
+----------------------------------------------
+This retailer agent implements several critical parameters that were introduced
+as part of the Warenklemme fix to prevent system deadlocks and ensure smooth
+goods flow in the Warengeld system. These parameters are now fully configurable
+via config.py and include:
+
+1. floating_point_tolerance (1e-9): Used throughout inventory calculations to
+   prevent division by zero and numerical instability.
+
+2. price_comparison_tolerance (1.001): Controls supplier selection tie-breaking
+   to ensure competitive pressure while preventing supplier starvation.
+
+3. dynamic_markup_overstock_threshold (2.0): When inventory exceeds this ratio
+   relative to target, minimum markup is applied to encourage sales.
+
+4. dynamic_markup_understock_threshold (0.3): When inventory falls below this
+   ratio relative to target, maximum markup is applied to prevent stockouts.
+
+5. dynamic_markup_fallback_target_days (10.0): Safety net for pricing calculations.
+
+These parameters work together to:
+- Prevent deadlocks when CC limits bind (anti-deadlock restock logic)
+- Ensure competitive supplier selection
+- Maintain appropriate inventory levels
+- Provide stable pricing behavior
+- Handle numerical edge cases safely
+
+For tuning guidance, see the detailed descriptions in config.py under the
+"Warenklemme (goods bottleneck) fix parameters" section.
 """
 
 from __future__ import annotations
@@ -168,15 +199,10 @@ class RetailerAgent(BaseAgent):
         self._daily_sales_values: deque[float] = deque(maxlen=_restock_window)
         self._step_sales_value: float = 0.0  # accumulated within a single step
 
-        # --- Insolvency tracking ---
-        # Book ref: "Unternehmen, die wiederholt hohen Wertberichtigungsbedarf
-        # verursachen, müssen... in eine geordnete Insolvenz geführt werden"
-        # (line 2018).
-        # Unlike per-step flow metrics (sales_total, purchases_total, write_downs_total)
-        # which are reset each step by the engine, these are cumulative lifetime counters.
-        self._cumulative_purchases: float = 0.0
-        self._cumulative_write_downs: float = 0.0
-        self._lifetime_steps: int = 0
+        # --- Structural insolvency tracking ---
+        # Repeated audit failures trigger orderly resolution via clearing/bank path.
+        self.audit_breach_streak: int = 0
+        self.force_insolvent: bool = False
 
     # --- Convenience adapters (compatibility with legacy code/tests) ---
     @property
@@ -266,7 +292,7 @@ class RetailerAgent(BaseAgent):
             return
         unit_value = self.last_unit_cost
         if self.inventory_value > 0:
-            unit_value = float(self.inventory_value / max(self.inventory_units, 1e-9))
+            unit_value = float(self.inventory_value / max(self.inventory_units, self.config.retailer.floating_point_tolerance))
         group_id = str(self.config.retailer.default_article_group)
         self.inventory_lots = [
             InventoryLot(
@@ -334,10 +360,10 @@ class RetailerAgent(BaseAgent):
         new_lots: list[InventoryLot] = []
 
         for lot in self.inventory_lots:
-            if remaining <= 1e-9:
+            if remaining <= self.config.retailer.floating_point_tolerance:
                 new_lots.append(lot)
                 continue
-            if lot.units <= 1e-9:
+            if lot.units <= self.config.retailer.floating_point_tolerance:
                 continue
             if lot.is_unsellable(config=self.config):
                 new_lots.append(lot)
@@ -347,7 +373,7 @@ class RetailerAgent(BaseAgent):
             cost_value += take * float(unit_val)
             lot.units = float(lot.units) - take
             remaining -= take
-            if lot.units > 1e-9:
+            if lot.units > self.config.retailer.floating_point_tolerance:
                 new_lots.append(lot)
 
         self.inventory_lots = new_lots
@@ -357,7 +383,7 @@ class RetailerAgent(BaseAgent):
     def _avg_unit_cost(self) -> float:
         if self.inventory_units <= 0:
             return float(self.last_unit_cost)
-        return float(self.inventory_value / max(self.inventory_units, 1e-9))
+        return float(self.inventory_value / max(self.inventory_units, self.config.retailer.floating_point_tolerance))
 
     def _avg_daily_sales_units(self) -> float:
         """Average daily sales units over the rolling window."""
@@ -404,20 +430,20 @@ class RetailerAgent(BaseAgent):
 
         # Days of inventory remaining at current sales velocity
         days_of_stock = self.inventory_units / avg_sales
-        target_days = self.target_inventory_value / max(avg_sales * self._avg_unit_cost(), 1e-9)
+        target_days = self.target_inventory_value / max(avg_sales * self._avg_unit_cost(), self.config.retailer.floating_point_tolerance)
         if target_days <= 0:
-            target_days = 10.0
+            target_days = self.config.retailer.dynamic_markup_fallback_target_days
 
         # ratio > 1 = overstocked → lower markup; ratio < 1 = understocked → higher markup
         stock_ratio = days_of_stock / target_days
 
-        if stock_ratio >= 2.0:
+        if stock_ratio >= self.config.retailer.dynamic_markup_overstock_threshold:
             return min_markup
-        elif stock_ratio <= 0.3:
+        elif stock_ratio <= self.config.retailer.dynamic_markup_understock_threshold:
             return max_markup
         else:
             # Linear interpolation: ratio 0.3→max_markup, ratio 2.0→min_markup
-            t = (stock_ratio - 0.3) / (2.0 - 0.3)
+            t = (stock_ratio - self.config.retailer.dynamic_markup_understock_threshold) / (self.config.retailer.dynamic_markup_overstock_threshold - self.config.retailer.dynamic_markup_understock_threshold)
             return max_markup + t * (min_markup - max_markup)
 
     def _effective_target_inventory_value(self) -> float:
@@ -507,7 +533,7 @@ class RetailerAgent(BaseAgent):
         # (cc_balance is typically <= 0; if it's positive, headroom is large.)
         headroom = max(0.0, float(self.cc_limit) + float(self.cc_balance))
         order_budget = min(float(desired_value), float(headroom))
-        if order_budget <= 1e-9:
+        if order_budget <= self.config.retailer.floating_point_tolerance:
             return 0.0
 
         # Price-aware supplier selection: choose the cheapest producer.
@@ -518,7 +544,7 @@ class RetailerAgent(BaseAgent):
         # When prices are equal (common in homogeneous markets), we break
         # ties randomly to avoid deterministically starving some producers.
         best_price = min(c.get_unit_price() for c in companies)
-        cheapest = [c for c in companies if c.get_unit_price() <= best_price * 1.001]
+        cheapest = [c for c in companies if c.get_unit_price() <= best_price * self.config.retailer.price_comparison_tolerance]
         producer = random.choice(cheapest)
 
         # Translate desired value into desired quantity at producer's unit price.
@@ -777,60 +803,17 @@ class RetailerAgent(BaseAgent):
         """End-of-day settlements.
 
         This is where the *extinguishing* side of the Warengeld cycle primarily happens.
-        Also finalizes daily sales tracking for dynamic pricing and accumulates
-        lifetime counters for insolvency tracking.
         """
         # Flush daily sales units into rolling history for markup computation
         self.flush_daily_sales()
 
-        # Accumulate lifetime counters for insolvency check
-        self._cumulative_purchases += self.purchases_total
-        self._cumulative_write_downs += self.write_downs_total
-        self._lifetime_steps += 1
-
         repaid = self.auto_repay_kontokorrent(bank)
         destroyed = self.apply_inventory_write_downs(current_step=int(current_step or 0), bank=bank)
-        # Spec 4.1: enforce inventory-backed CC limits (additional destruction).
-        bank.enforce_inventory_backing(self)
-
         return {"repaid": float(repaid), "inventory_write_down": float(destroyed)}
 
     def check_insolvency(self) -> bool:
-        """Check if retailer should be declared insolvent.
-
-        Book ref: "Unternehmen, die wiederholt hohen Wertberichtigungsbedarf
-        verursachen, müssen... in eine geordnete Insolvenz geführt werden"
-        (line 2018).
-
-        A retailer is insolvent when cumulative write-downs exceed a threshold
-        ratio of cumulative purchases, indicating chronic inability to sell
-        goods before they lose value.
-
-        Returns:
-            True if the retailer is insolvent and should be removed.
-        """
-        grace = self.config.retailer.insolvency_grace_steps
-        if self._lifetime_steps < grace:
-            return False
-
-        min_purchases = self.config.retailer.insolvency_min_purchase_history
-        if self._cumulative_purchases < min_purchases:
-            return False
-
-        threshold = self.config.retailer.insolvency_write_down_ratio_threshold
-        write_down_ratio = self._cumulative_write_downs / max(1e-9, self._cumulative_purchases)
-
-        if write_down_ratio >= threshold:
-            log(
-                f"Retailer {self.unique_id} declared insolvent: "
-                f"write-down ratio {write_down_ratio:.2%} >= threshold {threshold:.2%} "
-                f"(cumulative purchases={self._cumulative_purchases:.2f}, "
-                f"write-downs={self._cumulative_write_downs:.2f}).",
-                level="WARNING",
-            )
-            return True
-
-        return False
+        """Return whether orderly insolvency resolution was triggered by clearing audits."""
+        return bool(self.force_insolvent)
 
     def step(
         self,
