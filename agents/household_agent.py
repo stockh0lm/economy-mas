@@ -101,6 +101,8 @@ class Household(BaseAgent):
         # Generation bookkeeping: start at 1 for initial households.
         self.generation: int = 1
         self.max_generation: int = self.config.household.max_generation
+        # Natural birth spacing for demographic realism.
+        self.last_birth_age_days: int = -10_000_000
 
         # Labor
         self.employed: bool = False

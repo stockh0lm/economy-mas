@@ -166,12 +166,12 @@ class HouseholdConfig(BaseConfigModel):
     max_age: PositiveInt = 70
     max_generation: PositiveInt = 3
     base_income: float = Field(100.0, ge=0)
-    growth_threshold: PositiveInt = 5
+    growth_threshold: PositiveInt = 12
     consumption_rate_normal: float = Field(0.7, ge=0, le=1)
     consumption_rate_growth: float = Field(0.9, ge=0, le=1)
     savings_growth_trigger: float = Field(500.0, ge=0)
     # New: allow growth to trigger from sustained disposable sight-balance (when savings_rate is low).
-    sight_growth_trigger: float = Field(0.0, ge=0)
+    sight_growth_trigger: float = Field(1000.0, ge=0)
     loan_repayment_rate: float = Field(0.25, ge=0, le=1)
     child_rearing_cost: float = Field(200.0, ge=0)
 
@@ -182,7 +182,7 @@ class HouseholdConfig(BaseConfigModel):
     # --- Demography (age-dependent mortality) ---
     # All rates are annual and translated to daily probabilities via the global
     # calendar (360 days/year).
-    mortality_base_annual: float = Field(0.002, ge=0)
+    mortality_base_annual: float = Field(0.008, ge=0)
     mortality_senescence_annual: float = Field(0.15, ge=0)
     mortality_shape: float = Field(3.0, ge=0.1)
 
@@ -190,7 +190,7 @@ class HouseholdConfig(BaseConfigModel):
     # Births are modeled as *household formation* events. They MUST be funded
     # by transfers from the parent household (no money creation).
     fertility_base_annual: float = Field(
-        0.02,
+        0.008,
         ge=0,
         description="Baseline annual birth probability for eligible households",
     )
@@ -198,14 +198,20 @@ class HouseholdConfig(BaseConfigModel):
     fertility_age_max: PositiveInt = 42
     fertility_peak_age: PositiveInt = 30
     fertility_income_sensitivity: float = Field(
-        0.5,
-        ge=0,
+        -0.2,
+        ge=-2.0,
+        le=2.0,
         description="Elasticity of fertility to income (relative to base_income)",
     )
     fertility_wealth_sensitivity: float = Field(
-        0.5,
-        ge=0,
+        0.2,
+        ge=-2.0,
+        le=2.0,
         description="Elasticity of fertility to (sight+savings) wealth relative to savings_growth_trigger",
+    )
+    fertility_cooldown_days: PositiveInt = Field(
+        360,
+        description="Minimum number of days between two birth events of the same household.",
     )
     birth_endowment_share: float = Field(
         0.2,

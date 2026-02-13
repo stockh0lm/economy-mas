@@ -156,6 +156,10 @@ def fertility_probability_daily(household: Household, *, savings_bank: SavingsBa
     amax = int(cfg.fertility_age_max)
     if age < amin or age > amax:
         return 0.0
+    cooldown_days = int(getattr(cfg, "fertility_cooldown_days", 360) or 360)
+    last_birth_age_days = int(getattr(household, "last_birth_age_days", -10_000_000) or -10_000_000)
+    if int(getattr(household, "age_days", 0) or 0) - last_birth_age_days < cooldown_days:
+        return 0.0
 
     bank_savings = float(savings_bank.savings_accounts.get(household.unique_id, 0.0))
     wealth = float(household.sight_balance) + float(household.local_savings) + bank_savings
@@ -188,22 +192,22 @@ def fertility_probability_daily(household: Household, *, savings_bank: SavingsBa
         age_factor = 1.0
 
     base_income = float(cfg.base_income) if float(cfg.base_income) > 0 else 1.0
-    income_rel = float(household.income) / base_income
+    income_rel = max(1e-6, float(household.income) / base_income)
     income_elasticity = float(cfg.fertility_income_sensitivity)
     income_factor = income_rel**income_elasticity if income_elasticity != 0.0 else 1.0
-    if income_factor < 0.25:
-        income_factor = 0.25
-    elif income_factor > 4.0:
-        income_factor = 4.0
+    if income_factor < 0.5:
+        income_factor = 0.5
+    elif income_factor > 1.5:
+        income_factor = 1.5
 
     trigger = float(cfg.savings_growth_trigger) if float(cfg.savings_growth_trigger) > 0 else 1.0
-    wealth_rel = wealth / trigger
+    wealth_rel = max(1e-6, wealth / trigger)
     wealth_elasticity = float(cfg.fertility_wealth_sensitivity)
     wealth_factor = wealth_rel**wealth_elasticity if wealth_elasticity != 0.0 else 1.0
-    if wealth_factor < 0.25:
-        wealth_factor = 0.25
-    elif wealth_factor > 4.0:
-        wealth_factor = 4.0
+    if wealth_factor < 0.5:
+        wealth_factor = 0.5
+    elif wealth_factor > 1.5:
+        wealth_factor = 1.5
 
     days_per_year = float(household.config.time.days_per_year)
     annual = base_annual * age_factor * income_factor * wealth_factor
@@ -366,7 +370,10 @@ def apply_household_formation_event(
     if event.kind == "split":
         return split_household(household=household, savings_bank=savings_bank)
     if event.kind == "birth":
-        return birth_new_household(household=household, savings_bank=savings_bank)
+        child = birth_new_household(household=household, savings_bank=savings_bank)
+        if child is not None:
+            household.last_birth_age_days = int(getattr(household, "age_days", 0) or 0)
+        return child
     raise ValueError(f"Unknown HouseholdFormationEvent.kind: {event.kind!r}")
 
 

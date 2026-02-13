@@ -293,6 +293,19 @@ class TestDemographyComponent:
 
         assert p_daily == 0.0
 
+    def test_fertility_probability_respects_cooldown(self):
+        """Birth probability should be zero during post-birth cooldown."""
+        household = Household(unique_id="test_hh", income=1000.0)
+        household.age = 30
+        household.age_days = 30 * int(household.config.time.days_per_year)
+        household.last_birth_age_days = household.age_days - 30
+        household.config.household.fertility_base_annual = 0.2
+        household.config.household.fertility_cooldown_days = 360
+        bank = MockSavingsBank()
+
+        p_daily = fertility_probability_daily(household, savings_bank=bank)
+        assert p_daily == 0.0
+
     def test_birth_new_household(self):
         """Test birth of new household."""
         household = Household(unique_id="test_hh", income=1000.0)

@@ -650,24 +650,6 @@ class SimulationEngine:
                     level="INFO",
                 )
 
-                replacement = Household(
-                    unique_id=f"{self.config.HOUSEHOLD_ID_PREFIX}{self.next_household_idx}",
-                    config=self.config,
-                )
-                replacement.region_id = getattr(h, "region_id", "region_0")
-                replacement.age_days = _sample_household_age_days(
-                    self.config, working_age_only=True
-                )
-                replacement.age = replacement.age_days // max(1, days_per_year)
-                self.next_household_idx += 1
-                self.collector.register_household(replacement)
-                self.labor_market.register_worker(replacement)
-                alive_households.append(replacement)
-                births_this_step += 1
-                log(
-                    f"birth: household {replacement.unique_id} (replacement for {h.unique_id}) at step={step}",
-                    level="INFO",
-                )
                 continue
             alive_households.append(h)
 
