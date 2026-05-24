@@ -39,10 +39,10 @@ class State(BaseAgent):
         self.config: SimulationConfig = config or CONFIG_MODEL
 
         # Financial accounts
-        self.tax_revenue: float = 0.0
-        self.infrastructure_budget: float = 0.0
-        self.social_budget: float = 0.0
-        self.environment_budget: float = 0.0
+        self.tax_revenue: float = float(self.config.state.initial_tax_revenue)
+        self.infrastructure_budget: float = float(self.config.state.initial_infrastructure_budget)
+        self.social_budget: float = float(self.config.state.initial_social_budget)
+        self.environment_budget: float = float(self.config.state.initial_environment_budget)
 
         # Tax parameters from configuration
         self.bodensteuer_rate: float = self.config.tax_rates.bodensteuer

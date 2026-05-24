@@ -25,12 +25,18 @@ class InitialHousehold(BaseModel):
     income: float = Field(100.0, ge=0)
     land_area: float = Field(50.0, ge=0)
     environmental_impact: float = Field(1.0, ge=0)
+    # Optional explicit initial stocks. Defaults preserve the historical zero-money bootstrap.
+    initial_sight_balance: float = Field(0.0, ge=0)
+    initial_local_savings: float = Field(0.0, ge=0)
 
 
 class InitialCompany(BaseModel):
     production_capacity: float = Field(100.0, ge=0)
     land_area: float = Field(100.0, ge=0)
     environmental_impact: float = Field(5.0, ge=0)
+    # Optional explicit initial stocks. Defaults preserve the historical zero-money bootstrap.
+    initial_sight_balance: float = Field(0.0, ge=0)
+    initial_finished_goods_units: float = Field(0.0, ge=0)
 
 
 class InitialRetailer(BaseModel):
@@ -38,6 +44,10 @@ class InitialRetailer(BaseModel):
     target_inventory_value: float = Field(200.0, ge=0)
     land_area: float = Field(20.0, ge=0)
     environmental_impact: float = Field(1.0, ge=0)
+    # Optional explicit initial stocks. Inventory is carried at cost by default.
+    initial_sight_balance: float = Field(0.0, ge=0)
+    initial_inventory_units: float = Field(0.0, ge=0)
+    initial_inventory_unit_cost: float = Field(10.0, ge=0)
 
 
 class BaseConfigModel(BaseModel):
@@ -190,7 +200,7 @@ class HouseholdConfig(BaseConfigModel):
     # Births are modeled as *household formation* events. They MUST be funded
     # by transfers from the parent household (no money creation).
     fertility_base_annual: float = Field(
-        0.008,
+        0.002,
         ge=0,
         description="Baseline annual birth probability for eligible households",
     )
@@ -204,7 +214,7 @@ class HouseholdConfig(BaseConfigModel):
         description="Elasticity of fertility to income (relative to base_income)",
     )
     fertility_wealth_sensitivity: float = Field(
-        0.2,
+        0.1,
         ge=-2.0,
         le=2.0,
         description="Elasticity of fertility to (sight+savings) wealth relative to savings_growth_trigger",
@@ -349,7 +359,7 @@ class CompanyConfig(BaseConfigModel):
         "Companies try to hold this many days of stock.",
     )
     production_min_utilization: float = Field(
-        0.1,
+        0.001,
         ge=0,
         le=1,
         description="Minimum production rate as fraction of capacity, "
@@ -565,6 +575,16 @@ class RetailerConfig(BaseConfigModel):
         description="Floor for effective target_inventory_value during ramp-up "
         "(prevents zero ordering when no sales history exists).",
     )
+    restock_bootstrap_order_value: float = Field(
+        50.0,
+        ge=0,
+        description="Maximum daily bootstrap order while the retailer has no reliable sales history.",
+    )
+    restock_flow_replenishment_multiple: float = Field(
+        1.25,
+        ge=0,
+        description="Daily replenishment cap as a multiple of recent average daily cost of goods sold.",
+    )
 
 
 class BankConfig(BaseConfigModel):
@@ -588,6 +608,7 @@ class BankConfig(BaseConfigModel):
     credit_inflation_sensitivity: float = Field(0.7, ge=0)
     credit_interest_rate: float = 0.0
     initial_liquidity: float = Field(1000.0, ge=0)
+    initial_sight_balance: float = Field(0.0, ge=0)
     # Fee recirculation: fraction of accumulated fee income that the bank
     # pays out as "operating expenses" (wages to bank employees, etc.) each
     # month.  Without recirculation, fee income becomes a permanent money
@@ -669,6 +690,10 @@ class ClearingConfig(BaseConfigModel):
 
 class StateConfig(BaseConfigModel):
     budget_allocation: dict[str, float] = Field(default_factory=_default_state_budget_allocation)
+    initial_tax_revenue: float = Field(0.0, ge=0)
+    initial_infrastructure_budget: float = Field(0.0, ge=0)
+    initial_social_budget: float = Field(0.0, ge=0)
+    initial_environment_budget: float = Field(0.0, ge=0)
 
     @field_validator("budget_allocation")
     @classmethod

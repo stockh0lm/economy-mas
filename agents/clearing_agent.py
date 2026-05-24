@@ -41,6 +41,7 @@ class ClearingAgent(BaseAgent):
         self.bank_reserves: dict[str, float] = {}
         self.required_reserve_ratio: dict[str, float] = {}
         self.last_audit_step: int = -1
+        self.last_audit_step_by_bank: dict[str, int] = {}
 
         # Accounting of destroyed money (for diagnostics)
         self.extinguished_total: float = 0.0
@@ -117,11 +118,14 @@ class ClearingAgent(BaseAgent):
 
         Returns list of findings (inventory under-coverage).
         """
+        bank_id = str(getattr(bank, "unique_id", "bank"))
         audit_interval = int(self.config.clearing.audit_interval)
-        if audit_interval > 0 and current_step - self.last_audit_step < audit_interval:
+        last_for_bank = int(self.last_audit_step_by_bank.get(bank_id, -1))
+        if audit_interval > 0 and current_step - last_for_bank < audit_interval:
             return []
 
-        self.last_audit_step = current_step
+        self.last_audit_step_by_bank[bank_id] = int(current_step)
+        self.last_audit_step = int(current_step)
         self.register_bank(bank)
 
         threshold = float(self.config.bank.inventory_coverage_threshold)

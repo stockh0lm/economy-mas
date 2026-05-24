@@ -47,3 +47,32 @@ def test_recycling_company_collects_waste(env_setup) -> None:
     expected_waste = sum(agent.environmental_impact for agent in agents) * agency.config.environmental.waste_output_per_env_impact
     assert recycler.waste_collected == pytest.approx(expected_waste)
 
+
+
+def test_environmental_tax_is_capped_by_available_balance_and_routed_to_state() -> None:
+    config = SimulationConfig()
+    config.tax_rates.umweltsteuer = 1.0
+    state = State("state_test", config)
+    agency = EnvironmentalAgency("env_test", state=state, config=config)
+    agent = DummyAgent("poor", impact=10.0, balance=3.0)
+
+    paid = agency.collect_env_tax([agent], state)
+
+    assert paid == pytest.approx(3.0)
+    assert agent.balance == pytest.approx(0.0)
+    assert state.environment_budget + state.tax_revenue == pytest.approx(3.0)
+
+
+def test_environmental_penalties_are_capped_and_paid_to_public_budget() -> None:
+    config = SimulationConfig()
+    state = State("state_test", config)
+    agency = EnvironmentalAgency("env_test", state=state, config=config)
+    agency.set_env_standards({"max_environmental_impact": 1.0})
+    company = DummyAgent("dirty", impact=5.0, balance=7.0)
+
+    paid = agency.audit_company(company, state)
+
+    assert paid == pytest.approx(7.0)
+    assert company.balance == pytest.approx(0.0)
+    assert state.environment_budget == pytest.approx(7.0)
+    assert agency.environmental_penalties_transferred_to_state == pytest.approx(7.0)

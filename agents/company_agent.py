@@ -97,6 +97,7 @@ class Company(BaseAgent, LineageMixin):
         self.innovation_index: float = 0.0
         self._zero_staff_steps: int = 0
         self._consecutive_underpaid_steps: int = 0
+        self.last_wage_pay_ratio: float = 1.0
 
         # Flow metrics (reset per step by the main loop if desired)
         # Services are booked as pure transfers (no inventory) and are explicitly
@@ -221,7 +222,12 @@ class Company(BaseAgent, LineageMixin):
             self._flush_step_sales()
             return 0.0
 
-        efficiency: float = len(self.employees) / self.max_employees
+        wage_pay_ratio = max(0.0, min(1.0, float(getattr(self, "last_wage_pay_ratio", 1.0))))
+        if wage_pay_ratio <= 0.0:
+            self._flush_step_sales()
+            return 0.0
+
+        efficiency: float = (len(self.employees) / self.max_employees) * wage_pay_ratio
         max_production: float = self.production_capacity * efficiency
 
         # --- Demand-responsive throttling ---
@@ -510,6 +516,7 @@ class Company(BaseAgent, LineageMixin):
             Total wages paid
         """
         if not self.employees:
+            self.last_wage_pay_ratio = 1.0
             log(f"Company {self.unique_id} has no employees to pay wages.", level="DEBUG")
             return 0.0
 
@@ -526,12 +533,15 @@ class Company(BaseAgent, LineageMixin):
             wage_by_employee.append((employee, rate))
 
         if planned_wage_bill <= 0:
+            self.last_wage_pay_ratio = 1.0
             return 0.0
 
         # Warengeld rule: no overdraft on producers. Pay only what is available.
         buffer = float(self.config.company.min_working_capital_buffer)
         available = max(0.0, self.sight_balance - buffer)
         if available <= 0.0:
+            self.last_wage_pay_ratio = 0.0
+            self._consecutive_underpaid_steps += 1
             log(
                 f"Company {self.unique_id} cannot pay wages (balance {self.sight_balance:.2f}, buffer {buffer:.2f}).",
                 level="DEBUG",
@@ -546,6 +556,8 @@ class Company(BaseAgent, LineageMixin):
                 f"paying pro-rata at {pay_ratio:.2%}.",
                 level="INFO",
             )
+
+        self.last_wage_pay_ratio = float(pay_ratio)
 
         total_paid: float = 0.0
         for employee, rate in wage_by_employee:
@@ -838,11 +850,24 @@ class Company(BaseAgent, LineageMixin):
         )
 
     def _run_operations(self) -> None:
-        """Produce goods (if staffed), depreciate inventory, pay wages, distribute profits."""
+        """Fund wages before ongoing production; allow one narrow bootstrap lot from zero."""
         if self.employees:
-            self.produce()
+            no_sales_history = not any(float(s) > 0.0 for s in self._sales_history)
+            startup_no_stock = (
+                float(self.sight_balance) <= float(self.config.company.min_working_capital_buffer)
+                and float(self.finished_goods_units) <= 1e-9
+                and float(self._step_sales) <= 1e-9
+                and no_sales_history
+            )
+            if startup_no_stock:
+                self.last_wage_pay_ratio = 1.0
+                self.produce()
+            else:
+                self.pay_wages()
+                self.produce()
+        else:
+            self._flush_step_sales()
         self.depreciate_inventory()
-        self.pay_wages()
         self.distribute_profits()
 
     def _trigger_growth_and_investment(self, savings_bank: SavingsBank | None) -> None:

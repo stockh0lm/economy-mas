@@ -165,6 +165,10 @@ def create_households(config: SimulationConfig) -> list[Household]:
         age_years = float(rng.triangular(min_y, max_y, mode_y))
         h.age_days = int(age_years * days_per_year)
 
+    def _apply_initial_state(h: Household, template: Any) -> None:
+        h.sight_balance = float(getattr(template, "initial_sight_balance", 0.0) or 0.0)
+        h.local_savings = float(getattr(template, "initial_local_savings", 0.0) or 0.0)
+
     if config.population.num_households is not None:
         count = int(config.population.num_households)
         template = config.population.household_template
@@ -175,6 +179,7 @@ def create_households(config: SimulationConfig) -> list[Household]:
             for i in range(count)
         ]
         for h in households:
+            _apply_initial_state(h, template)
             _seed_age(h)
         return households
 
@@ -182,20 +187,31 @@ def create_households(config: SimulationConfig) -> list[Household]:
     households: list[Household] = []
     for i, h in enumerate(config.INITIAL_HOUSEHOLDS):
         hh = Household(unique_id=f"{config.HOUSEHOLD_ID_PREFIX}{i}", income=h.income, config=config)
+        _apply_initial_state(hh, h)
         _seed_age(hh)
         households.append(hh)
     return households
 
 
 def create_companies(config: SimulationConfig) -> list[Company]:
+    def _apply_initial_state(company: Company, template: Any) -> Company:
+        company.sight_balance = float(getattr(template, "initial_sight_balance", 0.0) or 0.0)
+        company.finished_goods_units = float(
+            getattr(template, "initial_finished_goods_units", 0.0) or 0.0
+        )
+        return company
+
     if config.population.num_companies is not None:
         count = int(config.population.num_companies)
         template = config.population.company_template
         return [
-            Company(
-                unique_id=f"{config.COMPANY_ID_PREFIX}{i}",
-                production_capacity=template.production_capacity,
-                config=config,
+            _apply_initial_state(
+                Company(
+                    unique_id=f"{config.COMPANY_ID_PREFIX}{i}",
+                    production_capacity=template.production_capacity,
+                    config=config,
+                ),
+                template,
             )
             for i in range(count)
         ]
@@ -203,59 +219,64 @@ def create_companies(config: SimulationConfig) -> list[Company]:
     companies: list[Company] = []
     for i, c in enumerate(config.INITIAL_COMPANIES):
         companies.append(
-            Company(
-                unique_id=f"{config.COMPANY_ID_PREFIX}{i}",
-                production_capacity=c.production_capacity,
-                config=config,
+            _apply_initial_state(
+                Company(
+                    unique_id=f"{config.COMPANY_ID_PREFIX}{i}",
+                    production_capacity=c.production_capacity,
+                    config=config,
+                ),
+                c,
             )
         )
     return companies
 
 
 def create_retailers(config: SimulationConfig) -> list[RetailerAgent]:
+    def _build_retailer(idx: int, template: Any) -> RetailerAgent:
+        retailer = RetailerAgent(
+            unique_id=f"{config.RETAILER_ID_PREFIX}{idx}",
+            config=config,
+            cc_limit=getattr(template, "initial_cc_limit", config.retailer.initial_cc_limit),
+            target_inventory_value=getattr(
+                template, "target_inventory_value", config.retailer.target_inventory_value
+            ),
+            initial_sight_balance=float(getattr(template, "initial_sight_balance", 0.0) or 0.0),
+        )
+        initial_units = float(getattr(template, "initial_inventory_units", 0.0) or 0.0)
+        if initial_units > 0:
+            unit_cost = float(
+                getattr(
+                    template,
+                    "initial_inventory_unit_cost",
+                    config.company.production_base_price,
+                )
+                or config.company.production_base_price
+            )
+            retailer.add_inventory_lot(
+                group_id=str(config.retailer.default_article_group),
+                units=initial_units,
+                unit_cost=unit_cost,
+                unit_market_price=unit_cost,
+                age_days=0,
+            )
+        return retailer
+
     # explicit list wins if present and population not specified
     if config.population.num_retailers is not None:
         count = int(config.population.num_retailers)
         template = config.population.retailer_template
-        return [
-            RetailerAgent(
-                unique_id=f"{config.RETAILER_ID_PREFIX}{i}",
-                config=config,
-                cc_limit=getattr(template, "initial_cc_limit", config.retailer.initial_cc_limit),
-                target_inventory_value=getattr(
-                    template, "target_inventory_value", config.retailer.target_inventory_value
-                ),
-            )
-            for i in range(count)
-        ]
+        return [_build_retailer(i, template) for i in range(count)]
 
     retailers: list[RetailerAgent] = []
     for i, r in enumerate(getattr(config, "INITIAL_RETAILERS", [])):
-        retailers.append(
-            RetailerAgent(
-                unique_id=f"{config.RETAILER_ID_PREFIX}{i}",
-                config=config,
-                cc_limit=getattr(r, "initial_cc_limit", config.retailer.initial_cc_limit),
-                target_inventory_value=getattr(
-                    r, "target_inventory_value", config.retailer.target_inventory_value
-                ),
-            )
-        )
+        retailers.append(_build_retailer(i, r))
 
     if retailers:
         return retailers
 
     # fallback heuristic: a few retailers per regionless economy
     default_count = max(1, len(config.INITIAL_COMPANIES) // 2)
-    return [
-        RetailerAgent(
-            unique_id=f"{config.RETAILER_ID_PREFIX}{i}",
-            config=config,
-            cc_limit=config.retailer.initial_cc_limit,
-            target_inventory_value=config.retailer.target_inventory_value,
-        )
-        for i in range(default_count)
-    ]
+    return [_build_retailer(i, config.retailer) for i in range(default_count)]
 
 
 @dataclass

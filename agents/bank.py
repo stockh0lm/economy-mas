@@ -53,9 +53,11 @@ class WarengeldBank(BaseAgent):
         self.credit_lines: dict[str, float] = {}  # client_id -> outstanding credit (positive)
         self.cc_limits: dict[str, float] = {}  # retailer_id -> agreed cc_limit
         self.goods_purchase_ledger: list[GoodsPurchaseRecord] = []
+        self.issuance_volume_current_step: float = 0.0
+        self._issuance_step: int | None = None
 
         # Bank income is collected via fees into a sight account.
-        self.sight_balance: float = 0.0
+        self.sight_balance: float = float(self.config.bank.initial_sight_balance)
         self.fee_income: float = 0.0
         # Diagnostic: portion of fee income attributable to shared risk premium.
         self.risk_pool_collected: float = 0.0
@@ -255,6 +257,11 @@ class WarengeldBank(BaseAgent):
         # 2) Retailer draws on CC (becomes more negative)
         retailer.cc_balance = cc_balance - amount
         self.credit_lines[retailer_id] = self.credit_lines.get(retailer_id, 0.0) + amount
+
+        if self._issuance_step != int(current_step):
+            self._issuance_step = int(current_step)
+            self.issuance_volume_current_step = 0.0
+        self.issuance_volume_current_step += float(amount)
 
         self.goods_purchase_ledger.append(
             GoodsPurchaseRecord(current_step, retailer_id, seller_id, float(amount))

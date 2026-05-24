@@ -434,7 +434,15 @@ class MetricsCollector:
                 step_metrics["total_credit"] = total_credit
                 step_metrics["num_borrowers"] = int(len(credit_lines))
 
-            if hasattr(bank, "goods_purchase_ledger"):
+            if hasattr(bank, "issuance_volume_current_step"):
+                issuance_step = getattr(bank, "_issuance_step", None)
+                if issuance_step is not None and int(issuance_step) == int(step):
+                    step_metrics["issuance_volume"] = float(
+                        getattr(bank, "issuance_volume_current_step", 0.0)
+                    )
+                else:
+                    step_metrics["issuance_volume"] = 0.0
+            elif hasattr(bank, "goods_purchase_ledger"):
                 ledger = bank.goods_purchase_ledger
                 issuance = 0.0
                 for rec in ledger:
@@ -544,7 +552,7 @@ class MetricsCollector:
         activity_metrics = _global_activity_metrics(self, step)
         metrics.update(activity_metrics)
 
-        market_cfg = getattr(CONFIG_MODEL, "market", None)
+        market_cfg = getattr(self.config, "market", None)
         pressure_ratio = getattr(market_cfg, "price_index_pressure_ratio", "money_supply")
         pressure_mode = str(pressure_ratio)
 

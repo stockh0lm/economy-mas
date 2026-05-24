@@ -138,8 +138,6 @@ def _global_money_metrics(collector: Any, step: TimeStep) -> MetricDict:
 def _price_dynamics(
     collector: Any, step: TimeStep, total_money: float, gdp: float, household_consumption: float
 ) -> MetricDict:
-    from config import CONFIG_MODEL
-
     metrics: MetricDict = {}
     price_index_base = float(collector.config.market.price_index_base)
     price_index_max = float(getattr(collector.config.market, "price_index_max", 1000.0))
@@ -147,7 +145,7 @@ def _price_dynamics(
     price_sensitivity = float(collector.config.market.price_index_sensitivity)
     pressure_mode = str(
         getattr(
-            getattr(CONFIG_MODEL, "market", None),
+            getattr(collector.config, "market", None),
             "price_index_pressure_ratio",
             collector.config.market.price_index_pressure_ratio,
         )

@@ -63,6 +63,7 @@ class EnvironmentalAgency(BaseAgent):
         self.collected_env_tax: float = 0.0
         self.env_tax_state_share: float = self.config.environmental.environmental_tax_state_share
         self.env_tax_transferred_to_state: float = 0.0
+        self.environmental_penalties_transferred_to_state: float = 0.0
         self.state: State | None = state
 
         # Penalty factor from configuration
@@ -92,6 +93,30 @@ class EnvironmentalAgency(BaseAgent):
             level="INFO",
         )
 
+    @staticmethod
+    def _debit_available(agent: AgentWithImpact, amount: float) -> float:
+        """Debit at most the currently available non-negative balance.
+
+        Environmental taxes and penalties are transfers, not magic creation of
+        negative deposits.  Agents that cannot pay the full amount pay what is
+        available; the state is credited only with the actually paid amount.
+        """
+
+        if amount <= 0 or not isinstance(agent, BillingAgent):
+            return 0.0
+
+        billing_agent = cast(BillingAgent, agent)
+        if hasattr(billing_agent, "sight_balance"):
+            current = max(0.0, float(getattr(billing_agent, "sight_balance")))
+            paid = min(float(amount), current)
+            setattr(billing_agent, "sight_balance", current - paid)
+            return paid
+
+        current = max(0.0, float(billing_agent.balance))
+        paid = min(float(amount), current)
+        billing_agent.balance = current - paid
+        return paid
+
     def collect_env_tax(self, agents: list[AgentWithImpact], state: State | None = None) -> float:
         """
         Collect environmental tax from agents based on their impact.
@@ -101,27 +126,18 @@ class EnvironmentalAgency(BaseAgent):
             state: Optional state agent to credit with a share of the revenue
 
         Returns:
-            Total environmental tax collected in this operation
+            Total environmental tax actually collected in this operation
         """
         tax_rate: float = self.config.tax_rates.umweltsteuer
-        total_tax: float = 0.0
+        total_paid: float = 0.0
 
         for agent in agents:
-            # Calculate tax based on environmental impact
-            tax: float = agent.environmental_impact * tax_rate
-            total_tax += tax
+            # Calculate tax based on environmental impact.
+            tax_due: float = agent.environmental_impact * tax_rate
+            paid = self._debit_available(agent, tax_due)
+            total_paid += paid
 
-            # Deduct tax from agent's balances if available
-            if isinstance(agent, BillingAgent):
-                billing_agent = cast(BillingAgent, agent)
-                if hasattr(billing_agent, "sight_balance"):
-                    billing_agent.sight_balance = (
-                        float(billing_agent.sight_balance) - tax
-                    )
-                else:
-                    billing_agent.balance -= tax
-
-            # Route waste to recycling company if available
+            # Route waste to recycling company if available.
             if self.recycling_company:
                 waste = (
                     agent.environmental_impact
@@ -131,20 +147,22 @@ class EnvironmentalAgency(BaseAgent):
                     self.recycling_company.collect_waste(cast(BaseAgent, agent), waste)
 
             log(
-                f"EnvironmentalAgency {self.unique_id} collected {tax:.2f} env tax from agent {agent.unique_id}.",
+                f"EnvironmentalAgency {self.unique_id} collected {paid:.2f}/{tax_due:.2f} "
+                f"env tax from agent {agent.unique_id}.",
                 level="INFO",
             )
 
-        self.collected_env_tax += total_tax
+        self.collected_env_tax += total_paid
         env_state: State | None = state or self.state
-        if env_state and self.env_tax_state_share > 0 and total_tax > 0:
+        if env_state and total_paid > 0:
             share = min(max(self.env_tax_state_share, 0.0), 1.0)
-            transfer_amount = total_tax * share
+            transfer_amount = total_paid * share
             env_state.environment_budget += transfer_amount
-            env_state.tax_revenue += total_tax - transfer_amount
+            env_state.tax_revenue += total_paid - transfer_amount
             self.env_tax_transferred_to_state += transfer_amount
             log(
-                f"EnvironmentalAgency {self.unique_id} transferred {transfer_amount:.2f} env tax to State {env_state.unique_id}.",
+                f"EnvironmentalAgency {self.unique_id} transferred {total_paid:.2f} env tax to State "
+                f"{env_state.unique_id} ({transfer_amount:.2f} to environment budget).",
                 level="INFO",
             )
         log(
@@ -152,42 +170,39 @@ class EnvironmentalAgency(BaseAgent):
             level="INFO",
         )
 
-        return total_tax
+        return total_paid
 
-    def audit_company(self, company: AgentWithImpact) -> float:
+    def audit_company(self, company: AgentWithImpact, state: State | None = None) -> float:
         """
         Audit a company for environmental compliance and impose penalties if needed.
 
         Args:
             company: Company to audit for environmental compliance
+            state: Optional state agent to receive the actually paid penalty
 
         Returns:
-            Amount of penalty imposed (0.0 if compliant)
+            Amount of penalty actually paid (0.0 if compliant or unable to pay)
         """
         max_impact: float = self.env_standards.get("max_environmental_impact", 10.0)
 
         if company.environmental_impact > max_impact:
-            # Calculate penalty based on excess impact
+            # Calculate penalty based on excess impact.
             excess: float = company.environmental_impact - max_impact
-            penalty: float = excess * self.penalty_factor
+            penalty_due: float = excess * self.penalty_factor
+            paid = self._debit_available(company, penalty_due)
 
-            # Apply penalty if company has balances
-            if isinstance(company, BillingAgent):
-                billing_company = cast(BillingAgent, company)
-                if hasattr(billing_company, "sight_balance"):
-                    billing_company.sight_balance = (
-                        float(billing_company.sight_balance) - penalty
-                    )
-                else:
-                    billing_company.balance -= penalty
+            env_state: State | None = state or self.state
+            if env_state and paid > 0:
+                env_state.environment_budget += paid
+                self.environmental_penalties_transferred_to_state += paid
 
             log(
                 f"EnvironmentalAgency {self.unique_id} audited company {company.unique_id} and imposed "
-                f"a penalty of {penalty:.2f} for excess environmental impact.",
+                f"a penalty of {paid:.2f}/{penalty_due:.2f} for excess environmental impact.",
                 level="WARNING",
             )
 
-            return penalty
+            return paid
         else:
             log(
                 f"EnvironmentalAgency {self.unique_id} audited company {company.unique_id}: Compliance confirmed.",
@@ -214,7 +229,7 @@ class EnvironmentalAgency(BaseAgent):
 
         # Audit all agents with environmental_impact attribute
         for agent in agents:
-            self.audit_company(agent)
+            self.audit_company(agent, state)
 
         log(f"EnvironmentalAgency {self.unique_id} completed step {current_step}.", level="INFO")
 

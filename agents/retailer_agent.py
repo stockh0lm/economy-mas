@@ -478,6 +478,26 @@ class RetailerAgent(BaseAgent):
 
         return max(min_target, effective_target)
 
+    def _recent_daily_sales_cost_value(self) -> float:
+        """Average daily cost of goods sold over recent settled history."""
+        window = int(self.config.retailer.restock_sales_window_days)
+        if window <= 0 or not self.cogs_history:
+            return 0.0
+        history = self.cogs_history[-window:]
+        if not history:
+            return 0.0
+        return float(sum(history) / len(history))
+
+    def _daily_order_cap(self) -> float:
+        """Bound one-day restocking to recent throughput instead of target-filling spikes."""
+        recent_cogs = self._recent_daily_sales_cost_value()
+        if recent_cogs <= self.config.retailer.floating_point_tolerance:
+            return float(self.config.retailer.restock_bootstrap_order_value)
+        return max(
+            float(self.config.retailer.floating_point_tolerance),
+            recent_cogs * float(self.config.retailer.restock_flow_replenishment_multiple),
+        )
+
     def unit_sale_price(self) -> float:
         cost = self._avg_unit_cost()
         self.last_unit_cost = cost
@@ -510,11 +530,19 @@ class RetailerAgent(BaseAgent):
         effective_target = self._effective_target_inventory_value()
 
         reorder_point = self.config.retailer.reorder_point_ratio * effective_target
-        if self.inventory_value >= reorder_point:
-            return 0.0
+        recent_cogs_value = self._recent_daily_sales_cost_value()
+        daily_cap = self._daily_order_cap()
 
-        desired_value = max(0.0, effective_target - self.inventory_value)
-        if desired_value <= 0:
+        if recent_cogs_value > self.config.retailer.floating_point_tolerance:
+            replacement_value = min(float(daily_cap), float(recent_cogs_value))
+            top_up_value = max(0.0, float(effective_target) - float(self.inventory_value))
+            desired_value = max(top_up_value, replacement_value)
+        else:
+            if self.inventory_value >= reorder_point:
+                return 0.0
+            desired_value = max(0.0, effective_target - self.inventory_value)
+
+        if desired_value <= 0 or daily_cap <= 0:
             return 0.0
 
         # IMPORTANT (stability / no-deadlock):
@@ -532,7 +560,7 @@ class RetailerAgent(BaseAgent):
         #
         # (cc_balance is typically <= 0; if it's positive, headroom is large.)
         headroom = max(0.0, float(self.cc_limit) + float(self.cc_balance))
-        order_budget = min(float(desired_value), float(headroom))
+        order_budget = min(float(desired_value), float(headroom), float(daily_cap))
         if order_budget <= self.config.retailer.floating_point_tolerance:
             return 0.0
 
@@ -768,7 +796,8 @@ class RetailerAgent(BaseAgent):
 
         remaining = write_down_total - use_reserve
         if remaining > 0:
-            use_sight = min(self.sight_balance, remaining)
+            surplus_sight = max(0.0, float(self.sight_balance) - float(self.sight_allowance))
+            use_sight = min(surplus_sight, remaining)
             self.sight_balance -= use_sight
             destroyed += use_sight
 

@@ -219,6 +219,41 @@ def test_audit_bank_interval_skipping() -> None:
     assert clearing.last_audit_step == 130  # Should update
 
 
+def test_audit_bank_interval_is_tracked_per_bank() -> None:
+    cfg = config.CONFIG_MODEL.model_copy(deep=True)
+    cfg.clearing.audit_interval = 30
+    clearing = ClearingAgent("clear_1", cfg)
+
+    bank1 = DummyBank("bank_1")
+    bank2 = DummyBank("bank_2")
+    retailer = DummyRetailer("retailer_1", inventory_value=500.0, cc_balance=-1000.0)
+
+    findings1 = clearing.audit_bank(
+        bank=bank1,
+        retailers=[retailer],
+        companies_by_id={},
+        current_step=100,
+    )
+    findings2 = clearing.audit_bank(
+        bank=bank2,
+        retailers=[retailer],
+        companies_by_id={},
+        current_step=105,
+    )
+    findings3 = clearing.audit_bank(
+        bank=bank1,
+        retailers=[retailer],
+        companies_by_id={},
+        current_step=110,
+    )
+
+    assert len(findings1) > 0
+    assert len(findings2) > 0
+    assert len(findings3) == 0
+    assert clearing.last_audit_step_by_bank["bank_1"] == 100
+    assert clearing.last_audit_step_by_bank["bank_2"] == 105
+
+
 def test_audit_bank_zero_cc_balance() -> None:
     """Test audit_bank when retailer has zero CC balance."""
     cfg = config.CONFIG_MODEL.model_copy(deep=True)
