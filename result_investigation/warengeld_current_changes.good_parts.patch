@@ -1,0 +1,737 @@
+diff -ruN '--exclude=__pycache__' '--exclude=.pytest_cache' '--exclude=htmlcov' '--exclude=output' wirtschaft_original/agents/bank.py wirtschaft_unzipped/agents/bank.py
+--- wirtschaft_original/agents/bank.py	2026-05-24 09:08:56.000000000 +0000
++++ wirtschaft_unzipped/agents/bank.py	2026-05-24 11:16:20.858007573 +0000
+@@ -57,7 +57,7 @@
+         self._issuance_step: int | None = None
+ 
+         # Bank income is collected via fees into a sight account.
+-        self.sight_balance: float = 0.0
++        self.sight_balance: float = float(self.config.bank.initial_sight_balance)
+         self.fee_income: float = 0.0
+         # Diagnostic: portion of fee income attributable to shared risk premium.
+         self.risk_pool_collected: float = 0.0
+diff -ruN '--exclude=__pycache__' '--exclude=.pytest_cache' '--exclude=htmlcov' '--exclude=output' wirtschaft_original/agents/environmental_agency.py wirtschaft_unzipped/agents/environmental_agency.py
+--- wirtschaft_original/agents/environmental_agency.py	2026-02-09 15:54:19.000000000 +0000
++++ wirtschaft_unzipped/agents/environmental_agency.py	2026-05-24 11:05:18.629431958 +0000
+@@ -63,6 +63,7 @@
+         self.collected_env_tax: float = 0.0
+         self.env_tax_state_share: float = self.config.environmental.environmental_tax_state_share
+         self.env_tax_transferred_to_state: float = 0.0
++        self.environmental_penalties_transferred_to_state: float = 0.0
+         self.state: State | None = state
+ 
+         # Penalty factor from configuration
+@@ -92,6 +93,30 @@
+             level="INFO",
+         )
+ 
++    @staticmethod
++    def _debit_available(agent: AgentWithImpact, amount: float) -> float:
++        """Debit at most the currently available non-negative balance.
++
++        Environmental taxes and penalties are transfers, not magic creation of
++        negative deposits.  Agents that cannot pay the full amount pay what is
++        available; the state is credited only with the actually paid amount.
++        """
++
++        if amount <= 0 or not isinstance(agent, BillingAgent):
++            return 0.0
++
++        billing_agent = cast(BillingAgent, agent)
++        if hasattr(billing_agent, "sight_balance"):
++            current = max(0.0, float(getattr(billing_agent, "sight_balance")))
++            paid = min(float(amount), current)
++            setattr(billing_agent, "sight_balance", current - paid)
++            return paid
++
++        current = max(0.0, float(billing_agent.balance))
++        paid = min(float(amount), current)
++        billing_agent.balance = current - paid
++        return paid
++
+     def collect_env_tax(self, agents: list[AgentWithImpact], state: State | None = None) -> float:
+         """
+         Collect environmental tax from agents based on their impact.
+@@ -101,27 +126,18 @@
+             state: Optional state agent to credit with a share of the revenue
+ 
+         Returns:
+-            Total environmental tax collected in this operation
++            Total environmental tax actually collected in this operation
+         """
+         tax_rate: float = self.config.tax_rates.umweltsteuer
+-        total_tax: float = 0.0
++        total_paid: float = 0.0
+ 
+         for agent in agents:
+-            # Calculate tax based on environmental impact
+-            tax: float = agent.environmental_impact * tax_rate
+-            total_tax += tax
+-
+-            # Deduct tax from agent's balances if available
+-            if isinstance(agent, BillingAgent):
+-                billing_agent = cast(BillingAgent, agent)
+-                if hasattr(billing_agent, "sight_balance"):
+-                    billing_agent.sight_balance = (
+-                        float(billing_agent.sight_balance) - tax
+-                    )
+-                else:
+-                    billing_agent.balance -= tax
++            # Calculate tax based on environmental impact.
++            tax_due: float = agent.environmental_impact * tax_rate
++            paid = self._debit_available(agent, tax_due)
++            total_paid += paid
+ 
+-            # Route waste to recycling company if available
++            # Route waste to recycling company if available.
+             if self.recycling_company:
+                 waste = (
+                     agent.environmental_impact
+@@ -131,20 +147,22 @@
+                     self.recycling_company.collect_waste(cast(BaseAgent, agent), waste)
+ 
+             log(
+-                f"EnvironmentalAgency {self.unique_id} collected {tax:.2f} env tax from agent {agent.unique_id}.",
++                f"EnvironmentalAgency {self.unique_id} collected {paid:.2f}/{tax_due:.2f} "
++                f"env tax from agent {agent.unique_id}.",
+                 level="INFO",
+             )
+ 
+-        self.collected_env_tax += total_tax
++        self.collected_env_tax += total_paid
+         env_state: State | None = state or self.state
+-        if env_state and self.env_tax_state_share > 0 and total_tax > 0:
++        if env_state and total_paid > 0:
+             share = min(max(self.env_tax_state_share, 0.0), 1.0)
+-            transfer_amount = total_tax * share
++            transfer_amount = total_paid * share
+             env_state.environment_budget += transfer_amount
+-            env_state.tax_revenue += total_tax - transfer_amount
++            env_state.tax_revenue += total_paid - transfer_amount
+             self.env_tax_transferred_to_state += transfer_amount
+             log(
+-                f"EnvironmentalAgency {self.unique_id} transferred {transfer_amount:.2f} env tax to State {env_state.unique_id}.",
++                f"EnvironmentalAgency {self.unique_id} transferred {total_paid:.2f} env tax to State "
++                f"{env_state.unique_id} ({transfer_amount:.2f} to environment budget).",
+                 level="INFO",
+             )
+         log(
+@@ -152,42 +170,39 @@
+             level="INFO",
+         )
+ 
+-        return total_tax
++        return total_paid
+ 
+-    def audit_company(self, company: AgentWithImpact) -> float:
++    def audit_company(self, company: AgentWithImpact, state: State | None = None) -> float:
+         """
+         Audit a company for environmental compliance and impose penalties if needed.
+ 
+         Args:
+             company: Company to audit for environmental compliance
++            state: Optional state agent to receive the actually paid penalty
+ 
+         Returns:
+-            Amount of penalty imposed (0.0 if compliant)
++            Amount of penalty actually paid (0.0 if compliant or unable to pay)
+         """
+         max_impact: float = self.env_standards.get("max_environmental_impact", 10.0)
+ 
+         if company.environmental_impact > max_impact:
+-            # Calculate penalty based on excess impact
++            # Calculate penalty based on excess impact.
+             excess: float = company.environmental_impact - max_impact
+-            penalty: float = excess * self.penalty_factor
++            penalty_due: float = excess * self.penalty_factor
++            paid = self._debit_available(company, penalty_due)
+ 
+-            # Apply penalty if company has balances
+-            if isinstance(company, BillingAgent):
+-                billing_company = cast(BillingAgent, company)
+-                if hasattr(billing_company, "sight_balance"):
+-                    billing_company.sight_balance = (
+-                        float(billing_company.sight_balance) - penalty
+-                    )
+-                else:
+-                    billing_company.balance -= penalty
++            env_state: State | None = state or self.state
++            if env_state and paid > 0:
++                env_state.environment_budget += paid
++                self.environmental_penalties_transferred_to_state += paid
+ 
+             log(
+                 f"EnvironmentalAgency {self.unique_id} audited company {company.unique_id} and imposed "
+-                f"a penalty of {penalty:.2f} for excess environmental impact.",
++                f"a penalty of {paid:.2f}/{penalty_due:.2f} for excess environmental impact.",
+                 level="WARNING",
+             )
+ 
+-            return penalty
++            return paid
+         else:
+             log(
+                 f"EnvironmentalAgency {self.unique_id} audited company {company.unique_id}: Compliance confirmed.",
+@@ -214,7 +229,7 @@
+ 
+         # Audit all agents with environmental_impact attribute
+         for agent in agents:
+-            self.audit_company(agent)
++            self.audit_company(agent, state)
+ 
+         log(f"EnvironmentalAgency {self.unique_id} completed step {current_step}.", level="INFO")
+ 
+diff -ruN '--exclude=__pycache__' '--exclude=.pytest_cache' '--exclude=htmlcov' '--exclude=output' wirtschaft_original/agents/state_agent.py wirtschaft_unzipped/agents/state_agent.py
+--- wirtschaft_original/agents/state_agent.py	2026-02-09 15:54:19.000000000 +0000
++++ wirtschaft_unzipped/agents/state_agent.py	2026-05-24 11:03:03.450445053 +0000
+@@ -39,10 +39,10 @@
+         self.config: SimulationConfig = config or CONFIG_MODEL
+ 
+         # Financial accounts
+-        self.tax_revenue: float = 0.0
+-        self.infrastructure_budget: float = 0.0
+-        self.social_budget: float = 0.0
+-        self.environment_budget: float = 0.0
++        self.tax_revenue: float = float(self.config.state.initial_tax_revenue)
++        self.infrastructure_budget: float = float(self.config.state.initial_infrastructure_budget)
++        self.social_budget: float = float(self.config.state.initial_social_budget)
++        self.environment_budget: float = float(self.config.state.initial_environment_budget)
+ 
+         # Tax parameters from configuration
+         self.bodensteuer_rate: float = self.config.tax_rates.bodensteuer
+diff -ruN '--exclude=__pycache__' '--exclude=.pytest_cache' '--exclude=htmlcov' '--exclude=output' wirtschaft_original/config.py wirtschaft_unzipped/config.py
+--- wirtschaft_original/config.py	2026-05-24 09:08:28.000000000 +0000
++++ wirtschaft_unzipped/config.py	2026-05-24 11:16:20.857484250 +0000
+@@ -25,12 +25,18 @@
+     income: float = Field(100.0, ge=0)
+     land_area: float = Field(50.0, ge=0)
+     environmental_impact: float = Field(1.0, ge=0)
++    # Optional explicit initial stocks. Defaults preserve the historical zero-money bootstrap.
++    initial_sight_balance: float = Field(0.0, ge=0)
++    initial_local_savings: float = Field(0.0, ge=0)
+ 
+ 
+ class InitialCompany(BaseModel):
+     production_capacity: float = Field(100.0, ge=0)
+     land_area: float = Field(100.0, ge=0)
+     environmental_impact: float = Field(5.0, ge=0)
++    # Optional explicit initial stocks. Defaults preserve the historical zero-money bootstrap.
++    initial_sight_balance: float = Field(0.0, ge=0)
++    initial_finished_goods_units: float = Field(0.0, ge=0)
+ 
+ 
+ class InitialRetailer(BaseModel):
+@@ -38,6 +44,10 @@
+     target_inventory_value: float = Field(200.0, ge=0)
+     land_area: float = Field(20.0, ge=0)
+     environmental_impact: float = Field(1.0, ge=0)
++    # Optional explicit initial stocks. Inventory is carried at cost by default.
++    initial_sight_balance: float = Field(0.0, ge=0)
++    initial_inventory_units: float = Field(0.0, ge=0)
++    initial_inventory_unit_cost: float = Field(10.0, ge=0)
+ 
+ 
+ class BaseConfigModel(BaseModel):
+@@ -598,6 +608,7 @@
+     credit_inflation_sensitivity: float = Field(0.7, ge=0)
+     credit_interest_rate: float = 0.0
+     initial_liquidity: float = Field(1000.0, ge=0)
++    initial_sight_balance: float = Field(0.0, ge=0)
+     # Fee recirculation: fraction of accumulated fee income that the bank
+     # pays out as "operating expenses" (wages to bank employees, etc.) each
+     # month.  Without recirculation, fee income becomes a permanent money
+@@ -679,6 +690,10 @@
+ 
+ class StateConfig(BaseConfigModel):
+     budget_allocation: dict[str, float] = Field(default_factory=_default_state_budget_allocation)
++    initial_tax_revenue: float = Field(0.0, ge=0)
++    initial_infrastructure_budget: float = Field(0.0, ge=0)
++    initial_social_budget: float = Field(0.0, ge=0)
++    initial_environment_budget: float = Field(0.0, ge=0)
+ 
+     @field_validator("budget_allocation")
+     @classmethod
+diff -ruN '--exclude=__pycache__' '--exclude=.pytest_cache' '--exclude=htmlcov' '--exclude=output' wirtschaft_original/main.py wirtschaft_unzipped/main.py
+--- wirtschaft_original/main.py	2026-02-09 15:54:19.000000000 +0000
++++ wirtschaft_unzipped/main.py	2026-05-24 11:03:22.990630030 +0000
+@@ -165,6 +165,10 @@
+         age_years = float(rng.triangular(min_y, max_y, mode_y))
+         h.age_days = int(age_years * days_per_year)
+ 
++    def _apply_initial_state(h: Household, template: Any) -> None:
++        h.sight_balance = float(getattr(template, "initial_sight_balance", 0.0) or 0.0)
++        h.local_savings = float(getattr(template, "initial_local_savings", 0.0) or 0.0)
++
+     if config.population.num_households is not None:
+         count = int(config.population.num_households)
+         template = config.population.household_template
+@@ -175,6 +179,7 @@
+             for i in range(count)
+         ]
+         for h in households:
++            _apply_initial_state(h, template)
+             _seed_age(h)
+         return households
+ 
+@@ -182,20 +187,31 @@
+     households: list[Household] = []
+     for i, h in enumerate(config.INITIAL_HOUSEHOLDS):
+         hh = Household(unique_id=f"{config.HOUSEHOLD_ID_PREFIX}{i}", income=h.income, config=config)
++        _apply_initial_state(hh, h)
+         _seed_age(hh)
+         households.append(hh)
+     return households
+ 
+ 
+ def create_companies(config: SimulationConfig) -> list[Company]:
++    def _apply_initial_state(company: Company, template: Any) -> Company:
++        company.sight_balance = float(getattr(template, "initial_sight_balance", 0.0) or 0.0)
++        company.finished_goods_units = float(
++            getattr(template, "initial_finished_goods_units", 0.0) or 0.0
++        )
++        return company
++
+     if config.population.num_companies is not None:
+         count = int(config.population.num_companies)
+         template = config.population.company_template
+         return [
+-            Company(
+-                unique_id=f"{config.COMPANY_ID_PREFIX}{i}",
+-                production_capacity=template.production_capacity,
+-                config=config,
++            _apply_initial_state(
++                Company(
++                    unique_id=f"{config.COMPANY_ID_PREFIX}{i}",
++                    production_capacity=template.production_capacity,
++                    config=config,
++                ),
++                template,
+             )
+             for i in range(count)
+         ]
+@@ -203,59 +219,64 @@
+     companies: list[Company] = []
+     for i, c in enumerate(config.INITIAL_COMPANIES):
+         companies.append(
+-            Company(
+-                unique_id=f"{config.COMPANY_ID_PREFIX}{i}",
+-                production_capacity=c.production_capacity,
+-                config=config,
++            _apply_initial_state(
++                Company(
++                    unique_id=f"{config.COMPANY_ID_PREFIX}{i}",
++                    production_capacity=c.production_capacity,
++                    config=config,
++                ),
++                c,
+             )
+         )
+     return companies
+ 
+ 
+ def create_retailers(config: SimulationConfig) -> list[RetailerAgent]:
++    def _build_retailer(idx: int, template: Any) -> RetailerAgent:
++        retailer = RetailerAgent(
++            unique_id=f"{config.RETAILER_ID_PREFIX}{idx}",
++            config=config,
++            cc_limit=getattr(template, "initial_cc_limit", config.retailer.initial_cc_limit),
++            target_inventory_value=getattr(
++                template, "target_inventory_value", config.retailer.target_inventory_value
++            ),
++            initial_sight_balance=float(getattr(template, "initial_sight_balance", 0.0) or 0.0),
++        )
++        initial_units = float(getattr(template, "initial_inventory_units", 0.0) or 0.0)
++        if initial_units > 0:
++            unit_cost = float(
++                getattr(
++                    template,
++                    "initial_inventory_unit_cost",
++                    config.company.production_base_price,
++                )
++                or config.company.production_base_price
++            )
++            retailer.add_inventory_lot(
++                group_id=str(config.retailer.default_article_group),
++                units=initial_units,
++                unit_cost=unit_cost,
++                unit_market_price=unit_cost,
++                age_days=0,
++            )
++        return retailer
++
+     # explicit list wins if present and population not specified
+     if config.population.num_retailers is not None:
+         count = int(config.population.num_retailers)
+         template = config.population.retailer_template
+-        return [
+-            RetailerAgent(
+-                unique_id=f"{config.RETAILER_ID_PREFIX}{i}",
+-                config=config,
+-                cc_limit=getattr(template, "initial_cc_limit", config.retailer.initial_cc_limit),
+-                target_inventory_value=getattr(
+-                    template, "target_inventory_value", config.retailer.target_inventory_value
+-                ),
+-            )
+-            for i in range(count)
+-        ]
++        return [_build_retailer(i, template) for i in range(count)]
+ 
+     retailers: list[RetailerAgent] = []
+     for i, r in enumerate(getattr(config, "INITIAL_RETAILERS", [])):
+-        retailers.append(
+-            RetailerAgent(
+-                unique_id=f"{config.RETAILER_ID_PREFIX}{i}",
+-                config=config,
+-                cc_limit=getattr(r, "initial_cc_limit", config.retailer.initial_cc_limit),
+-                target_inventory_value=getattr(
+-                    r, "target_inventory_value", config.retailer.target_inventory_value
+-                ),
+-            )
+-        )
++        retailers.append(_build_retailer(i, r))
+ 
+     if retailers:
+         return retailers
+ 
+     # fallback heuristic: a few retailers per regionless economy
+     default_count = max(1, len(config.INITIAL_COMPANIES) // 2)
+-    return [
+-        RetailerAgent(
+-            unique_id=f"{config.RETAILER_ID_PREFIX}{i}",
+-            config=config,
+-            cc_limit=config.retailer.initial_cc_limit,
+-            target_inventory_value=config.retailer.target_inventory_value,
+-        )
+-        for i in range(default_count)
+-    ]
++    return [_build_retailer(i, config.retailer) for i in range(default_count)]
+ 
+ 
+ @dataclass
+diff -ruN '--exclude=__pycache__' '--exclude=.pytest_cache' '--exclude=htmlcov' '--exclude=output' wirtschaft_original/metrics/calculator.py wirtschaft_unzipped/metrics/calculator.py
+--- wirtschaft_original/metrics/calculator.py	2026-02-09 15:54:19.000000000 +0000
++++ wirtschaft_unzipped/metrics/calculator.py	2026-05-24 11:05:41.332935368 +0000
+@@ -138,8 +138,6 @@
+ def _price_dynamics(
+     collector: Any, step: TimeStep, total_money: float, gdp: float, household_consumption: float
+ ) -> MetricDict:
+-    from config import CONFIG_MODEL
+-
+     metrics: MetricDict = {}
+     price_index_base = float(collector.config.market.price_index_base)
+     price_index_max = float(getattr(collector.config.market, "price_index_max", 1000.0))
+@@ -147,7 +145,7 @@
+     price_sensitivity = float(collector.config.market.price_index_sensitivity)
+     pressure_mode = str(
+         getattr(
+-            getattr(CONFIG_MODEL, "market", None),
++            getattr(collector.config, "market", None),
+             "price_index_pressure_ratio",
+             collector.config.market.price_index_pressure_ratio,
+         )
+diff -ruN '--exclude=__pycache__' '--exclude=.pytest_cache' '--exclude=htmlcov' '--exclude=output' wirtschaft_original/metrics/collector.py wirtschaft_unzipped/metrics/collector.py
+--- wirtschaft_original/metrics/collector.py	2026-05-24 09:09:10.000000000 +0000
++++ wirtschaft_unzipped/metrics/collector.py	2026-05-24 11:05:17.434783185 +0000
+@@ -552,7 +552,7 @@
+         activity_metrics = _global_activity_metrics(self, step)
+         metrics.update(activity_metrics)
+ 
+-        market_cfg = getattr(CONFIG_MODEL, "market", None)
++        market_cfg = getattr(self.config, "market", None)
+         pressure_ratio = getattr(market_cfg, "price_index_pressure_ratio", "money_supply")
+         pressure_mode = str(pressure_ratio)
+ 
+diff -ruN '--exclude=__pycache__' '--exclude=.pytest_cache' '--exclude=htmlcov' '--exclude=output' wirtschaft_original/simulation/engine.py wirtschaft_unzipped/simulation/engine.py
+--- wirtschaft_original/simulation/engine.py	2026-05-24 09:09:05.000000000 +0000
++++ wirtschaft_unzipped/simulation/engine.py	2026-05-24 11:03:22.990170058 +0000
+@@ -143,6 +143,10 @@
+         age_years = float(rng.triangular(min_y, max_y, mode_y))
+         h.age_days = int(age_years * days_per_year)
+ 
++    def _apply_initial_state(h: Household, template: Any) -> None:
++        h.sight_balance = float(getattr(template, "initial_sight_balance", 0.0) or 0.0)
++        h.local_savings = float(getattr(template, "initial_local_savings", 0.0) or 0.0)
++
+     if config.population.num_households is not None:
+         count = int(config.population.num_households)
+         template = config.population.household_template
+@@ -153,6 +157,7 @@
+             for i in range(count)
+         ]
+         for h in households:
++            _apply_initial_state(h, template)
+             _seed_age(h)
+         return households
+ 
+@@ -160,20 +165,31 @@
+     households: list[Household] = []
+     for i, h in enumerate(config.INITIAL_HOUSEHOLDS):
+         hh = Household(unique_id=f"{config.HOUSEHOLD_ID_PREFIX}{i}", income=h.income, config=config)
++        _apply_initial_state(hh, h)
+         _seed_age(hh)
+         households.append(hh)
+     return households
+ 
+ 
+ def create_companies(config: SimulationConfig) -> list[Company]:
++    def _apply_initial_state(company: Company, template: Any) -> Company:
++        company.sight_balance = float(getattr(template, "initial_sight_balance", 0.0) or 0.0)
++        company.finished_goods_units = float(
++            getattr(template, "initial_finished_goods_units", 0.0) or 0.0
++        )
++        return company
++
+     if config.population.num_companies is not None:
+         count = int(config.population.num_companies)
+         template = config.population.company_template
+         return [
+-            Company(
+-                unique_id=f"{config.COMPANY_ID_PREFIX}{i}",
+-                production_capacity=template.production_capacity,
+-                config=config,
++            _apply_initial_state(
++                Company(
++                    unique_id=f"{config.COMPANY_ID_PREFIX}{i}",
++                    production_capacity=template.production_capacity,
++                    config=config,
++                ),
++                template,
+             )
+             for i in range(count)
+         ]
+@@ -181,59 +197,64 @@
+     companies: list[Company] = []
+     for i, c in enumerate(config.INITIAL_COMPANIES):
+         companies.append(
+-            Company(
+-                unique_id=f"{config.COMPANY_ID_PREFIX}{i}",
+-                production_capacity=c.production_capacity,
+-                config=config,
++            _apply_initial_state(
++                Company(
++                    unique_id=f"{config.COMPANY_ID_PREFIX}{i}",
++                    production_capacity=c.production_capacity,
++                    config=config,
++                ),
++                c,
+             )
+         )
+     return companies
+ 
+ 
+ def create_retailers(config: SimulationConfig) -> list[RetailerAgent]:
++    def _build_retailer(idx: int, template: Any) -> RetailerAgent:
++        retailer = RetailerAgent(
++            unique_id=f"{config.RETAILER_ID_PREFIX}{idx}",
++            config=config,
++            cc_limit=getattr(template, "initial_cc_limit", config.retailer.initial_cc_limit),
++            target_inventory_value=getattr(
++                template, "target_inventory_value", config.retailer.target_inventory_value
++            ),
++            initial_sight_balance=float(getattr(template, "initial_sight_balance", 0.0) or 0.0),
++        )
++        initial_units = float(getattr(template, "initial_inventory_units", 0.0) or 0.0)
++        if initial_units > 0:
++            unit_cost = float(
++                getattr(
++                    template,
++                    "initial_inventory_unit_cost",
++                    config.company.production_base_price,
++                )
++                or config.company.production_base_price
++            )
++            retailer.add_inventory_lot(
++                group_id=str(config.retailer.default_article_group),
++                units=initial_units,
++                unit_cost=unit_cost,
++                unit_market_price=unit_cost,
++                age_days=0,
++            )
++        return retailer
++
+     # explicit list wins if present and population not specified
+     if config.population.num_retailers is not None:
+         count = int(config.population.num_retailers)
+         template = config.population.retailer_template
+-        return [
+-            RetailerAgent(
+-                unique_id=f"{config.RETAILER_ID_PREFIX}{i}",
+-                config=config,
+-                cc_limit=getattr(template, "initial_cc_limit", config.retailer.initial_cc_limit),
+-                target_inventory_value=getattr(
+-                    template, "target_inventory_value", config.retailer.target_inventory_value
+-                ),
+-            )
+-            for i in range(count)
+-        ]
++        return [_build_retailer(i, template) for i in range(count)]
+ 
+     retailers: list[RetailerAgent] = []
+     for i, r in enumerate(getattr(config, "INITIAL_RETAILERS", [])):
+-        retailers.append(
+-            RetailerAgent(
+-                unique_id=f"{config.RETAILER_ID_PREFIX}{i}",
+-                config=config,
+-                cc_limit=getattr(r, "initial_cc_limit", config.retailer.initial_cc_limit),
+-                target_inventory_value=getattr(
+-                    r, "target_inventory_value", config.retailer.target_inventory_value
+-                ),
+-            )
+-        )
++        retailers.append(_build_retailer(i, r))
+ 
+     if retailers:
+         return retailers
+ 
+     # fallback heuristic: a few retailers per regionless economy
+     default_count = max(1, len(config.INITIAL_COMPANIES) // 2)
+-    return [
+-        RetailerAgent(
+-            unique_id=f"{config.RETAILER_ID_PREFIX}{i}",
+-            config=config,
+-            cc_limit=config.retailer.initial_cc_limit,
+-            target_inventory_value=config.retailer.target_inventory_value,
+-        )
+-        for i in range(default_count)
+-    ]
++    return [_build_retailer(i, config.retailer) for i in range(default_count)]
+ 
+ 
+ def initialize_agents(config: SimulationConfig) -> dict[str, Any]:
+diff -ruN '--exclude=__pycache__' '--exclude=.pytest_cache' '--exclude=htmlcov' '--exclude=output' wirtschaft_original/tests/test_environmental_agency.py wirtschaft_unzipped/tests/test_environmental_agency.py
+--- wirtschaft_original/tests/test_environmental_agency.py	2026-05-23 16:01:07.000000000 +0000
++++ wirtschaft_unzipped/tests/test_environmental_agency.py	2026-05-24 11:06:15.501036938 +0000
+@@ -47,3 +47,32 @@
+     expected_waste = sum(agent.environmental_impact for agent in agents) * agency.config.environmental.waste_output_per_env_impact
+     assert recycler.waste_collected == pytest.approx(expected_waste)
+ 
++
++
++def test_environmental_tax_is_capped_by_available_balance_and_routed_to_state() -> None:
++    config = SimulationConfig()
++    config.tax_rates.umweltsteuer = 1.0
++    state = State("state_test", config)
++    agency = EnvironmentalAgency("env_test", state=state, config=config)
++    agent = DummyAgent("poor", impact=10.0, balance=3.0)
++
++    paid = agency.collect_env_tax([agent], state)
++
++    assert paid == pytest.approx(3.0)
++    assert agent.balance == pytest.approx(0.0)
++    assert state.environment_budget + state.tax_revenue == pytest.approx(3.0)
++
++
++def test_environmental_penalties_are_capped_and_paid_to_public_budget() -> None:
++    config = SimulationConfig()
++    state = State("state_test", config)
++    agency = EnvironmentalAgency("env_test", state=state, config=config)
++    agency.set_env_standards({"max_environmental_impact": 1.0})
++    company = DummyAgent("dirty", impact=5.0, balance=7.0)
++
++    paid = agency.audit_company(company, state)
++
++    assert paid == pytest.approx(7.0)
++    assert company.balance == pytest.approx(0.0)
++    assert state.environment_budget == pytest.approx(7.0)
++    assert agency.environmental_penalties_transferred_to_state == pytest.approx(7.0)
+diff -ruN '--exclude=__pycache__' '--exclude=.pytest_cache' '--exclude=htmlcov' '--exclude=output' wirtschaft_original/tests/test_initial_agent_state_config.py wirtschaft_unzipped/tests/test_initial_agent_state_config.py
+--- wirtschaft_original/tests/test_initial_agent_state_config.py	1970-01-01 00:00:00.000000000 +0000
++++ wirtschaft_unzipped/tests/test_initial_agent_state_config.py	2026-05-24 11:06:28.313467288 +0000
+@@ -0,0 +1,62 @@
++from config import InitialCompany, InitialHousehold, InitialRetailer, SimulationConfig
++from simulation.engine import create_companies, create_households, create_retailers, initialize_agents
++
++
++def test_population_templates_seed_initial_agent_stocks() -> None:
++    config = SimulationConfig()
++    config.population.num_households = 2
++    config.population.household_template = InitialHousehold(
++        income=100.0,
++        initial_sight_balance=125.0,
++        initial_local_savings=45.0,
++    )
++    config.population.num_companies = 1
++    config.population.company_template = InitialCompany(
++        production_capacity=80.0,
++        initial_sight_balance=300.0,
++        initial_finished_goods_units=12.0,
++    )
++    config.population.num_retailers = 1
++    config.population.retailer_template = InitialRetailer(
++        initial_cc_limit=900.0,
++        target_inventory_value=250.0,
++        initial_sight_balance=70.0,
++        initial_inventory_units=9.0,
++        initial_inventory_unit_cost=11.0,
++    )
++
++    households = create_households(config)
++    companies = create_companies(config)
++    retailers = create_retailers(config)
++
++    assert {h.sight_balance for h in households} == {125.0}
++    assert {h.local_savings for h in households} == {45.0}
++
++    assert companies[0].sight_balance == 300.0
++    assert companies[0].finished_goods_units == 12.0
++
++    assert retailers[0].sight_balance == 70.0
++    assert retailers[0].cc_limit == 900.0
++    assert retailers[0].inventory_units == 9.0
++    assert retailers[0].inventory_value == 99.0
++
++
++def test_state_and_bank_initial_balances_are_configurable() -> None:
++    config = SimulationConfig()
++    config.spatial.num_regions = 1
++    config.state.initial_tax_revenue = 100.0
++    config.state.initial_infrastructure_budget = 200.0
++    config.state.initial_social_budget = 300.0
++    config.state.initial_environment_budget = 400.0
++    config.bank.initial_sight_balance = 50.0
++
++    agents = initialize_agents(config)
++    state = agents["state"]
++    bank = agents["warengeld_banks"][0]
++
++    assert state.tax_revenue == 100.0
++    assert state.infrastructure_budget == 200.0
++    assert state.social_budget == 300.0
++    assert state.environment_budget == 400.0
++    assert state.sight_balance == 1000.0
++    assert bank.sight_balance == 50.0
+diff -ruN '--exclude=__pycache__' '--exclude=.pytest_cache' '--exclude=htmlcov' '--exclude=output' wirtschaft_original/tests/test_metrics_config_reference.py wirtschaft_unzipped/tests/test_metrics_config_reference.py
+--- wirtschaft_original/tests/test_metrics_config_reference.py	1970-01-01 00:00:00.000000000 +0000
++++ wirtschaft_unzipped/tests/test_metrics_config_reference.py	2026-05-24 11:06:28.313743786 +0000
+@@ -0,0 +1,31 @@
++import pytest
++from config import SimulationConfig
++from metrics import MetricsCollector
++
++
++def test_price_dynamics_uses_collector_config_not_global_config() -> None:
++    config = SimulationConfig()
++    config.market.price_index_base = 100.0
++    config.market.price_index_pressure_ratio = "consumption_to_production"
++    config.market.price_index_pressure_target = 1.0
++    config.market.price_index_sensitivity = 1.0
++    config.market.price_index_max = 10_000.0
++
++    collector = MetricsCollector(config=config)
++    collector.registered_companies = {"c1"}
++    collector.company_metrics = {"c1": {1: {"production_capacity": 100.0}}}
++    collector.household_metrics = {
++        "h1": {
++            1: {
++                "checking_account": 0.0,
++                "savings": 0.0,
++                "consumption": 25.0,
++                "employed": True,
++            }
++        }
++    }
++
++    collector.calculate_global_metrics(step=1)
++
++    assert collector.global_metrics[1]["price_index"] == pytest.approx(25.0)
++    assert collector.global_metrics[1]["price_pressure"] == pytest.approx(0.25)
